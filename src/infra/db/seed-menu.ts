@@ -72,7 +72,7 @@ export const MENU: SeedCategory[] = [
         featured: true,
         groups: [
           {
-            name: "Bebida para Acompanhar Senhor(a)?",
+            name: "Escolha sua bebida (Opcional)",
             min: 0,
             max: 3,
             addons: [
@@ -87,7 +87,7 @@ export const MENU: SeedCategory[] = [
             addons: [
               { name: "Smash + queijo (Mais uma carne)", priceCents: 899, max: 4 },
               { name: "Bacon Fatias", priceCents: 385 },
-              { name: "Pimenta Jalepeño", priceCents: 299 },
+              { name: "Pimenta Jalapeño", priceCents: 299 },
             ],
           },
         ],
@@ -338,7 +338,7 @@ export const MENU: SeedCategory[] = [
         priceCents: 960,
       },
       {
-        name: "Nugguets",
+        name: "Nuggets",
         description:
           "Saboreie nossos Nuggets suculentos feitos de Peito de frango, com qualidade única e livres de hormônios. Com uma crocância leve e macia, cada mordida é uma explosão de sabor. Experimente já e sinta o desejo pelo próximo!",
         priceCents: 0,

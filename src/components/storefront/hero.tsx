@@ -10,6 +10,7 @@ import type { StoreStatus } from "@/core/store/opening-hours";
 import { PlaneTrail } from "./brand-marks";
 import { DESTINATIONS, matchDestination } from "./destinations";
 import { DigitalBoardingPass } from "./digital-boarding-pass";
+import { HeroCartSpacer } from "./hero-cart-spacer";
 import { HeroSyncProvider } from "./hero-sync";
 import { PassportCarousel, type CarouselCard } from "./passport-carousel";
 
@@ -137,6 +138,7 @@ export function Hero({
           ))}
         </ul>
       </div>
+      <HeroCartSpacer />
     </section>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { Bike, ChevronDown, Loader2, LocateFixed, Store } from "lucide-react";
+import { ArrowLeft, Bike, ChevronDown, Loader2, LocateFixed, Store } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 
@@ -508,7 +508,18 @@ export function CheckoutForm({
     );
 
   return (
-    <div className="bg-[#F4F6F9] text-[#0A2540]">
+    <div className="min-h-[calc(100dvh-64px)] bg-[#F4F6F9] text-[#0A2540]">
+      <nav aria-label="Navegação do checkout" className="border-b border-slate-200 bg-white">
+        <div className="mx-auto flex h-12 max-w-xl items-center px-4">
+          <Link
+            href="/#cardapio"
+            className="-ml-2 inline-flex h-10 items-center gap-1.5 rounded-lg px-2 text-sm font-semibold text-[#0A2540] transition hover:bg-slate-100 active:scale-95"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Voltar ao cardápio
+          </Link>
+        </div>
+      </nav>
       <form
         onSubmit={handleSubmit}
         className="mx-auto max-w-xl space-y-4 px-4 pb-44 pt-6 md:pb-10"
@@ -543,7 +554,14 @@ export function CheckoutForm({
               summaryOpen ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
             )}
           >
-            <ul className="space-y-2 overflow-hidden border-t border-slate-200 p-4 text-sm">
+            <div className="min-h-0 overflow-hidden">
+            <ul
+              className={cn(
+                "space-y-2 p-4 text-sm",
+                summaryOpen && "border-t border-slate-200",
+                "md:border-t md:border-slate-200",
+              )}
+            >
               {lines.map((l) => (
                 <li key={l.key} className="flex justify-between gap-3">
                   <span>
@@ -571,6 +589,7 @@ export function CheckoutForm({
                 </li>
               ))}
             </ul>
+            </div>
           </div>
         </section>
 

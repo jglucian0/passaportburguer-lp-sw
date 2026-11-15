@@ -1,10 +1,10 @@
 "use client";
 
-import { BadgeCheck, Globe2, Search, X } from "lucide-react";
+import { BadgeCheck, ChevronDown, Globe2, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { CatalogCategory, CatalogProduct } from "@/core/schemas/product";
-import { cn } from "@/lib/utils";
+import { cn, normalizeSearch } from "@/lib/utils";
 
 import { useCart } from "./cart-provider";
 import {
@@ -17,9 +17,6 @@ import { PassportStamp } from "./passport-stamp";
 import { ProductCard } from "./product-card";
 import { ProductModal } from "./product-modal";
 import { pickBestSellers, pickUpsells } from "./upsell";
-
-const normalize = (text: string) =>
-  text.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
 
 export function Menu({
   categories,
@@ -93,14 +90,14 @@ export function Menu({
 
   /* Categorias reais do cardápio, filtradas pelo destino ativo e pela busca (nome ou ingredientes). */
   const visible = useMemo(() => {
-    const needle = normalize(query.trim());
+    const needle = normalizeSearch(query);
     return categories
       .map((category) => ({
         ...category,
         products: category.products.filter(
           (p) =>
             (active === "all" || destinationByProduct.get(p.id)?.id === active) &&
-            (!needle || normalize(`${p.name} ${p.description ?? ""}`).includes(needle)),
+            (!needle || normalizeSearch(`${p.name} ${p.description ?? ""}`).includes(needle)),
         ),
       }))
       .filter((category) => category.products.length > 0);
@@ -115,7 +112,7 @@ export function Menu({
     const ids = visibleKey ? visibleKey.split("|") : [];
     if (ids.length === 0 || typeof IntersectionObserver === "undefined") return;
 
-    const topOffset = window.matchMedia("(min-width: 768px)").matches ? 270 : 270;
+    const topOffset = window.matchMedia("(min-width: 768px)").matches ? 270 : 72;
     const inView = new Set<string>();
 
     const observer = new IntersectionObserver(
@@ -143,9 +140,15 @@ export function Menu({
   /* Mantém a pílula ativa centralizada na barra horizontal. */
   useEffect(() => {
     if (!currentCat) return;
-    pillRefs.current
-      .get(currentCat)
-      ?.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+    /* Rola só a lista horizontal; scrollIntoView também rolaria a página (pulo ao recarregar). */
+    const pill = pillRefs.current.get(currentCat);
+    const list = pill?.closest("ul");
+    if (!pill || !list) return;
+    const pillBox = pill.getBoundingClientRect();
+    const listBox = list.getBoundingClientRect();
+    const left =
+      list.scrollLeft + (pillBox.left - listBox.left) - (listBox.width - pillBox.width) / 2;
+    list.scrollTo({ left, behavior: "smooth" });
   }, [currentCat]);
 
   /* Popover dos carimbos: fecha ao clicar fora ou com ESC. */
@@ -175,7 +178,16 @@ export function Menu({
 
   function openSearch() {
     setSearchOpen(true);
-    requestAnimationFrame(() => searchInputRef.current?.focus());
+    requestAnimationFrame(() => {
+      searchInputRef.current?.focus({ preventScroll: true });
+      /* No mobile, leva o início dos resultados ao topo para o teclado não cobrir os primeiros cards. */
+      if (!window.matchMedia("(max-width: 767px)").matches) return;
+      const first = visible[0] ? document.getElementById(`cat-${visible[0].id}`) : null;
+      (first ?? document.getElementById("cardapio"))?.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+    });
   }
 
   function closeSearch() {
@@ -208,12 +220,16 @@ export function Menu({
   return (
     <section id="cardapio" className="scroll-mt-20 bg-[#F4F6F9] text-[#0A2540]">
       {/* Carimbos + categorias: fixos juntos ao topo ao rolar (abaixo do header) */}
-      <div className="sticky top-20 z-30 bg-[#F4F6F9]/95 backdrop-blur-md">
+      {/* Mobile: só a barra de categorias é sticky (wrapper vira `contents`); md+: ambos juntos */}
+      <div className="contents md:sticky md:top-20 md:z-30 md:block md:bg-[#F4F6F9]/95 md:backdrop-blur-md">
       {available.length > 0 ? (
         <div className="border-b border-slate-200/80">
-          <div className="mx-auto flex max-w-5xl items-center">
-          <nav aria-label="Filtrar por destino" className="no-scrollbar min-w-0 flex-1 overflow-x-auto">
-            <ul className="flex items-end gap-2.5 px-4 py-4">
+          <div className="relative mx-auto flex max-w-5xl items-center">
+          <nav
+            aria-label="Filtrar por destino"
+            className="no-scrollbar min-w-0 flex-1 mr-2 overflow-x-auto stamps-fade"
+          >
+            <ul className="flex items-end gap-2.5 py-4 pl-4 pr-6">
               <li>
                 <button
                   type="button"
@@ -283,17 +299,27 @@ export function Menu({
           </nav>
 
           {available.length > 1 ? (
-            <div ref={popoverRef} className="relative shrink-0 pl-1 pr-4">
+            <div ref={popoverRef} className="shrink-0 pl-1 pr-4">
               <button
                 type="button"
                 onClick={() => setPopoverOpen((o) => !o)}
                 aria-expanded={popoverOpen}
                 aria-haspopup="dialog"
-                className="rounded-lg px-2 py-1.5 text-right text-[11px] font-bold text-[#0A2540] transition hover:bg-slate-200/60 active:scale-95"
+                className="flex shrink-0 flex-col items-center justify-center rounded-xl border border-slate-200/90 bg-white px-3 py-2 shadow-xs transition hover:border-amber-400 active:scale-95"
               >
-                {visited.size}/{available.length}
-                <span className="block font-medium text-[#475569] underline decoration-dotted underline-offset-2">
-                  carimbos
+                <span className="flex items-center gap-0.5 text-xs font-bold text-[#0A2540]">
+                  {visited.size}/{available.length}
+                  <ChevronDown
+                    size={14}
+                    className={cn("text-slate-400 transition-transform", popoverOpen && "rotate-180")}
+                  />
+                </span>
+                <span className="text-[11px] font-medium text-slate-600">carimbos</span>
+                <span className="mt-1.5 h-1 w-10 overflow-hidden rounded-full bg-slate-100">
+                  <span
+                    className="block h-full rounded-full bg-amber-400 transition-all"
+                    style={{ width: `${(visited.size / available.length) * 100}%` }}
+                  />
                 </span>
               </button>
 
@@ -301,7 +327,7 @@ export function Menu({
                 <div
                   role="dialog"
                   aria-label="Seus carimbos"
-                  className="absolute right-3 top-full z-40 mt-1 w-64 rounded-xl border border-slate-200 bg-white p-3 text-left shadow-xl animate-in fade-in zoom-in-95 duration-150"
+                  className="absolute right-4 top-full z-40 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-3 text-left shadow-xl animate-in fade-in zoom-in-95 duration-150"
                 >
                   <p className="text-xs font-bold text-[#0A2540]">
                     {passportComplete
@@ -349,8 +375,8 @@ export function Menu({
       ) : null}
 
       {/* Categorias */}
-      <div className="border-b border-slate-200/80">
-        <div className="mx-auto flex max-w-5xl items-center gap-2 px-4 py-2.5">
+      <div className="sticky top-0 z-30 h-14 border-b border-slate-200 bg-[#F4F6F9]/95 backdrop-blur-md md:static md:z-auto md:h-auto md:border-slate-200/80 md:bg-transparent md:backdrop-blur-none">
+        <div className="mx-auto flex h-full max-w-5xl items-center gap-2 px-4 md:h-auto md:py-2.5">
           {searchOpen ? (
             <>
               <div className="relative min-w-0 flex-1">
@@ -419,7 +445,7 @@ export function Menu({
 
       <div
         id="rota"
-        className="mx-auto max-w-5xl scroll-mt-64 space-y-5 px-4 py-6 pb-32"
+        className="mx-auto max-w-5xl scroll-mt-16 space-y-5 md:scroll-mt-64 px-4 py-6 pb-32 md:pb-12"
       >
         {passportComplete ? (
           <p className="animate-in fade-in zoom-in-95 rounded-2xl border-2 border-dashed border-[#F59E0B] bg-[#F59E0B]/10 p-4 text-center text-sm font-bold text-[#0A2540]">
@@ -467,7 +493,7 @@ export function Menu({
             key={category.id}
             id={`cat-${category.id}`}
             data-cat={category.id}
-            className="scroll-mt-64 space-y-4"
+            className="scroll-mt-16 space-y-4 md:scroll-mt-64"
           >
             <h2 className="font-display text-xl font-bold uppercase tracking-wide text-[#0A2540]">
               {category.name}

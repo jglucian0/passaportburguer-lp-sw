@@ -13,6 +13,7 @@ import { cn, formatCents, formatDateTime, whatsappLink } from "@/lib/utils";
 import {
   buildLineKey,
   clearStoredCart,
+  ACTIVE_ORDER_KEY,
   CUSTOMER_PREFILL_KEY,
   loadCart,
   MAX_LINE_QUANTITY,
@@ -259,6 +260,17 @@ export function OrdersView({
   const active = orders.filter((o) => !isTerminalStatus(o.status));
   const history = orders.filter((o) => isTerminalStatus(o.status));
   const hasActive = active.length > 0;
+
+  // Sinaliza pedido em andamento para o indicador da bottom tab bar.
+  useEffect(() => {
+    try {
+      if (hasActive) window.localStorage.setItem(ACTIVE_ORDER_KEY, "1");
+      else window.localStorage.removeItem(ACTIVE_ORDER_KEY);
+      window.dispatchEvent(new Event("pb:active-order-change"));
+    } catch {
+      /* ignorar */
+    }
+  }, [hasActive]);
 
   // Pedido recém-criado: limpa o carrinho persistido.
   useEffect(() => {

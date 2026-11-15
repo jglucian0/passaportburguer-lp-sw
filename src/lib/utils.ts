@@ -41,3 +41,12 @@ export function formatDateTime(iso: string): string {
     timeZone: "America/Sao_Paulo",
   });
 }
+
+/** Normaliza texto para busca: sem acentos, minúsculas, sem hífens e espaços. */
+export function normalizeSearch(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[-\s]+/g, "");
+}

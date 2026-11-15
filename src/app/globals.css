@@ -9,11 +9,15 @@
 
 html {
   scroll-behavior: smooth;
+  /* clip (nunca hidden): não cria scroll container, preserva o position: sticky e o snap no iOS */
+  overflow-x: clip;
 }
 
 body {
+  overflow-x: clip;
   @apply bg-background font-sans text-foreground antialiased;
   -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: contain;
 }
 
 @layer base {
@@ -74,4 +78,27 @@ body {
   .animate-float {
     animation: none !important;
   }
+}
+
+/* Fade curto e suave (curva smoothstep, 24px) na borda direita do carrossel de carimbos. */
+.stamps-fade {
+  --fade: 30px;
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - var(--fade)),
+    rgba(0, 0, 0, 0.9) calc(100% - var(--fade) * 0.8),
+    rgba(0, 0, 0, 0.65) calc(100% - var(--fade) * 0.6),
+    rgba(0, 0, 0, 0.35) calc(100% - var(--fade) * 0.4),
+    rgba(0, 0, 0, 0.1) calc(100% - var(--fade) * 0.2),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    #000 calc(100% - var(--fade)),
+    rgba(0, 0, 0, 0.9) calc(100% - var(--fade) * 0.8),
+    rgba(0, 0, 0, 0.65) calc(100% - var(--fade) * 0.6),
+    rgba(0, 0, 0, 0.35) calc(100% - var(--fade) * 0.4),
+    rgba(0, 0, 0, 0.1) calc(100% - var(--fade) * 0.2),
+    transparent 100%
+  );
 }

@@ -10,7 +10,8 @@ import { cn, formatCents } from "@/lib/utils";
 
 import { useCart } from "./cart-provider";
 import { MAX_LINE_QUANTITY, type CartLine, type CartLineAddon } from "./cart-storage";
-import { MAIN_CATEGORY } from "./upsell";
+import { useRegisterOverlay } from "./overlay-context";
+import { MAIN_CATEGORY, isDrinkGroup, isDrinkProduct } from "./upsell";
 
 const NOTE_MAX = 140;
 
@@ -73,6 +74,7 @@ export function ProductModal({
   upsells?: CatalogProduct[];
 }) {
   const { addLine, removeLine } = useCart();
+  useRegisterOverlay();
   const [extras, setExtras] = useState<Set<string>>(() => new Set());
   const [quantity, setQuantity] = useState(editing?.quantity ?? 1);
   const [selection, setSelection] = useState<Record<string, number>>(() =>
@@ -109,11 +111,19 @@ export function ProductModal({
   const unitTotal =
     product.priceCents + selectedAddons.reduce((sum, a) => sum + a.priceCents * a.quantity, 0);
   const shelf = useMemo(
-    () =>
-      !editing && categoryName && MAIN_CATEGORY.test(categoryName)
-        ? upsells.filter((u) => u.id !== product.id)
-        : [],
-    [editing, categoryName, upsells, product.id],
+    () => {
+      if (editing || !categoryName || !MAIN_CATEGORY.test(categoryName)) return [];
+      const norm = (v: string) => v.trim().toLowerCase();
+      const hasDrinkGroup = groups.some((g) => isDrinkGroup(g.name));
+      const addonNames = new Set(groups.flatMap((g) => g.addons.map((a) => norm(a.name))));
+      return upsells.filter(
+        (u) =>
+          u.id !== product.id &&
+          !addonNames.has(norm(u.name)) &&
+          !(hasDrinkGroup && isDrinkProduct(u.name)),
+      );
+    },
+    [editing, categoryName, upsells, product.id, groups],
   );
   const chosenExtras = shelf.filter((u) => extras.has(u.id));
   const total =
@@ -189,7 +199,7 @@ export function ProductModal({
             <Dialog.Title className="sr-only">{product.name}</Dialog.Title>
             <Dialog.Close
               aria-label="Fechar"
-              className="absolute right-3 top-3 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-white/90 text-slate-900 shadow-md hover:bg-white"
+              className="absolute right-3 top-3 z-20 flex h-10 w-10 items-center justify-center rounded-full bg-white/90 text-slate-900 shadow-md hover:bg-white"
             >
               <X className="h-5 w-5" />
             </Dialog.Close>

@@ -22,6 +22,8 @@ export const MAX_LINE_QUANTITY = 50;
 /** Flag em sessionStorage: o checkout marca antes de enviar; /meus-pedidos limpa o carrinho ao chegar. */
 export const ORDER_PLACED_FLAG = "pb:order-placed";
 export const CUSTOMER_PREFILL_KEY = "pb:customer";
+/** "1" quando /meus-pedidos viu algum pedido em andamento; alimenta o indicador da tab bar. */
+export const ACTIVE_ORDER_KEY = "pb:active-order";
 /** Bairro escolhido no cartão de embarque do hero; o checkout pré-seleciona. */
 export const ZONE_PREFILL_KEY = "pb:zone";
 

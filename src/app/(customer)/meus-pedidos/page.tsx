@@ -22,7 +22,7 @@ export default async function MyOrdersPage() {
   const { tenant, categories, store } = storefront;
 
   return (
-    <StorefrontShell tenant={tenant} store={store} showCartBar={false} categories={categories}>
+    <StorefrontShell tenant={tenant} store={store} categories={categories}>
       {/* Faixa escura integrada à navbar */}
       <div className="bg-[#071329] px-4 pb-10 pt-8 text-center">
         <h1 className="font-display text-3xl font-bold uppercase tracking-wide text-white">
@@ -33,7 +33,7 @@ export default async function MyOrdersPage() {
         </p>
       </div>
 
-      <div className="min-h-[55dvh] bg-[#F4F6F9] px-4 pb-16 pt-6 text-[#0A2540]">
+      <div className="min-h-[calc(100dvh-64px)] bg-[#F4F6F9] px-4 pb-24 pt-6 text-[#0A2540]">
         <div className="mx-auto max-w-lg">
           {customerData ? (
             <OrdersView

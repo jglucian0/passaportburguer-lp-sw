@@ -1,7 +1,8 @@
 "use client";
 
-import { ShoppingBag, X } from "lucide-react";
+import { ReceiptText, ShoppingBag, User, UtensilsCrossed, X } from "lucide-react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import type { PublicTenant } from "@/actions/storefront";
@@ -11,8 +12,10 @@ import { brandStyle, cn, formatCents } from "@/lib/utils";
 
 import { CartDrawer } from "./cart-drawer";
 import { CartProvider, useCart } from "./cart-provider";
+import { ACTIVE_ORDER_KEY, CUSTOMER_PREFILL_KEY } from "./cart-storage";
 import { PASSPORT_SELECT_EVENT } from "./destinations";
 import { Header } from "./header";
+import { OverlayProvider, useOverlayOpen } from "./overlay-context";
 import { DRINK_CATEGORY, MAIN_CATEGORY } from "./upsell";
 
 const NUDGE_DISMISSED_KEY = "pb:drinks-nudge-dismissed";
@@ -20,6 +23,7 @@ const NUDGE_DISMISSED_KEY = "pb:drinks-nudge-dismissed";
 function FloatingCartBar({ categories }: { categories: CatalogCategory[] }) {
   const { lines, count, subtotalCents, hydrated, openCart, isOpen } = useCart();
   const [dismissed, setDismissed] = useState(false);
+  const overlayOpen = useOverlayOpen();
 
   useEffect(() => {
     try {
@@ -63,15 +67,18 @@ function FloatingCartBar({ categories }: { categories: CatalogCategory[] }) {
     }, 80);
   }
 
-  // Esconde a barra enquanto o carrinho está aberto, para não sobrepor a gaveta.
-  if (!hydrated || count === 0 || isOpen) return null;
+  // Esconde a barra enquanto o carrinho ou um modal está aberto, para não sobrepor.
+  if (!hydrated || count === 0 || isOpen || overlayOpen) return null;
   const nudge = showNudge && !dismissed;
 
   return (
-    <div className="fixed bottom-3 inset-x-3 z-40 animate-in fade-in slide-in-from-bottom-4 duration-300 md:inset-x-auto md:left-1/2 md:w-full md:max-w-2xl md:-translate-x-1/2">
+    <div className="fixed bottom-16 inset-x-3 z-40 animate-in fade-in slide-in-from-bottom-4 duration-300 md:bottom-3 md:inset-x-auto md:left-1/2 md:w-full md:max-w-2xl md:-translate-x-1/2">
       {nudge ? (
         <div className="flex items-center justify-between gap-2 rounded-t-xl bg-[#0A2540] px-4 py-2 text-xs text-white">
-          <span className="min-w-0 truncate">🥤 Que tal uma bebida gelada para acompanhar?</span>
+          <span className="min-w-0 truncate">
+            <span className="md:hidden">🥤 Que tal uma bebida gelada?</span>
+            <span className="hidden md:inline">🥤 Que tal uma bebida gelada para acompanhar?</span>
+          </span>
           <span className="flex shrink-0 items-center gap-1">
             <button
               type="button"
@@ -109,6 +116,89 @@ function FloatingCartBar({ categories }: { categories: CatalogCategory[] }) {
   );
 }
 
+function BottomTabBar() {
+  const pathname = usePathname();
+  const { isOpen } = useCart();
+  const overlayOpen = useOverlayOpen();
+  const [hasActiveOrder, setHasActiveOrder] = useState(false);
+  const [firstName, setFirstName] = useState<string | null>(null);
+
+  useEffect(() => {
+    function read() {
+      try {
+        setHasActiveOrder(window.localStorage.getItem(ACTIVE_ORDER_KEY) === "1");
+        const raw = window.localStorage.getItem(CUSTOMER_PREFILL_KEY);
+        const name = raw ? (JSON.parse(raw) as { name?: string }).name?.trim() : "";
+        setFirstName(name ? name.split(/\s+/)[0] : null);
+      } catch {
+        /* armazenamento indisponível: sem indicador/nome */
+      }
+    }
+    read();
+    window.addEventListener("pb:active-order-change", read);
+    window.addEventListener("storage", read);
+    return () => {
+      window.removeEventListener("pb:active-order-change", read);
+      window.removeEventListener("storage", read);
+    };
+  }, [pathname]);
+
+  // O checkout tem a própria barra fixa de ação; carrinho/modal abertos também escondem a tab bar.
+  if (isOpen || overlayOpen || pathname.startsWith("/checkout")) return null;
+
+  const onMenu = pathname === "/";
+  const onOrders = pathname.startsWith("/meus-pedidos");
+
+  function goToMenu(event: React.MouseEvent) {
+    if (pathname !== "/") return;
+    const target = document.getElementById("cardapio");
+    if (!target) return;
+    event.preventDefault();
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.history.replaceState(null, "", "/#cardapio");
+  }
+
+  const items = [
+    { key: "menu", href: "/#cardapio", label: "Cardápio", Icon: UtensilsCrossed, active: onMenu, onClick: goToMenu },
+    { key: "orders", href: "/meus-pedidos", label: "Meus Pedidos", Icon: ReceiptText, active: onOrders, dot: hasActiveOrder },
+    { key: "profile", href: "/meus-pedidos", label: firstName ?? "Entrar", Icon: User, active: false },
+  ];
+
+  return (
+    <nav
+      aria-label="Navegação principal"
+      className="fixed inset-x-0 bottom-0 z-30 box-content flex h-14 items-center justify-around border-t border-slate-200 bg-white/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden"
+    >
+      {items.map(({ key, href, label, Icon, active, onClick, dot }) => (
+        <Link
+          key={key}
+          href={href}
+          onClick={onClick}
+          aria-current={active ? "page" : undefined}
+          className={cn(
+            "relative flex h-full flex-1 flex-col items-center justify-center gap-0.5 text-[11px] transition active:scale-95",
+            active ? "font-semibold text-[#0A2540]" : "font-medium text-slate-500",
+          )}
+        >
+          {active ? (
+            <span aria-hidden="true" className="absolute inset-x-6 top-0 h-0.5 rounded-b bg-[#F59E0B]" />
+          ) : null}
+          <span className="relative">
+            <Icon size={20} strokeWidth={1.75} />
+            {dot ? (
+              <span className="absolute -right-1 -top-0.5 flex h-2 w-2" aria-label="Pedido em andamento">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
+              </span>
+            ) : null}
+          </span>
+          <span className="max-w-full truncate px-1">{label}</span>
+        </Link>
+      ))}
+    </nav>
+  );
+}
+
 export function StorefrontShell({
   tenant,
   store,
@@ -125,7 +215,8 @@ export function StorefrontShell({
 }) {
   return (
     <CartProvider tenantId={tenant.id}>
-      <div style={brandStyle(tenant.primaryColor)} className="min-h-dvh bg-[#071329] pb-28">
+      <OverlayProvider>
+      <div style={brandStyle(tenant.primaryColor)} className="min-h-dvh bg-[#071329] pb-32 md:pb-12">
         <Header tenant={tenant} store={store} />
         <main>{children}</main>
         <footer className="border-t border-white/10 bg-[#071329] px-4 py-8 text-center text-xs text-muted">
@@ -140,8 +231,10 @@ export function StorefrontShell({
           </p>
         </footer>
         {showCartBar ? <FloatingCartBar categories={categories} /> : null}
+        <BottomTabBar />
         <CartDrawer minOrderCents={tenant.minOrderCents} storeOpen={store.isOpen} categories={categories} />
       </div>
+      </OverlayProvider>
     </CartProvider>
   );
 }

@@ -31,7 +31,7 @@ export function Header({ tenant, store }: { tenant: PublicTenant; store: StoreSt
   }
 
   return (
-    <header className="sticky top-0 z-50 h-20 border-b border-white/10 bg-[#071329]">
+    <header className="relative z-50 h-20 md:sticky md:top-0 border-b border-white/10 bg-[#071329]">
       <div className="mx-auto flex h-full max-w-7xl items-center justify-between gap-4 px-4">
         {/* Marca */}
         <Link href="/" className="flex min-w-0 items-center gap-3">

@@ -4,7 +4,19 @@ import type { CatalogCategory, CatalogProduct } from "@/core/schemas/product";
 export const MAIN_CATEGORY = /hamb|kids/i;
 export const DRINK_CATEGORY = /bebida/i;
 
-const SIDE_CATEGORY = /acompanh/i;
+/** Heurística por nome: o produto do upsell não carrega o nome da categoria. */
+const DRINK_NAME =
+  /coca|guaran|refri|suco|[aá]gua|fanta|sprite|pepsi|cerveja|\bh2o|\blata\b|\b\d+\s?ml\b/i;
+
+export function isDrinkGroup(name: string): boolean {
+  return DRINK_CATEGORY.test(name);
+}
+
+export function isDrinkProduct(name: string): boolean {
+  return DRINK_NAME.test(name);
+}
+
+const SIDE_CATEGORY =/acompanh/i;
 const SAUCE_CATEGORY = /molho/i;
 
 const MAX_UPSELLS = 4;
