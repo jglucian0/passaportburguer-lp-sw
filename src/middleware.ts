@@ -1,0 +1,59 @@
+import { NextResponse, type NextRequest } from "next/server";
+
+import { ADMIN_COOKIE, verifyAdminToken } from "@/infra/auth/session";
+
+const ADMIN_LOGIN_PATH = "/admin/login";
+
+function isProtectedApi(pathname: string): boolean {
+  return pathname.startsWith("/api/admin/") || pathname.startsWith("/api/upload/");
+}
+
+function isAdminPage(pathname: string): boolean {
+  return pathname === "/admin" || pathname.startsWith("/admin/");
+}
+
+export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  /* Resolução de tenant: host (domínio customizado) + slug padrão do ambiente.
+     A consulta ao banco ocorre nas camadas seguintes (cache), nunca no edge. */
+  const headers = new Headers(request.headers);
+  const host = (request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "")
+    .split(":")[0]
+    .toLowerCase();
+  headers.set("x-tenant-host", host);
+  headers.set("x-tenant-slug", process.env.DEFAULT_TENANT_SLUG ?? "passaportburguer");
+  headers.delete("x-tenant-id");
+
+  const needsAuth =
+    (isAdminPage(pathname) && pathname !== ADMIN_LOGIN_PATH) || isProtectedApi(pathname);
+  const isLogin = pathname === ADMIN_LOGIN_PATH;
+
+  if (needsAuth || isLogin) {
+    const session = await verifyAdminToken(request.cookies.get(ADMIN_COOKIE)?.value);
+
+    if (needsAuth && !session) {
+      if (isProtectedApi(pathname)) {
+        return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
+      }
+      const loginUrl = new URL(ADMIN_LOGIN_PATH, request.url);
+      return NextResponse.redirect(loginUrl);
+    }
+
+    if (isLogin && session) {
+      return NextResponse.redirect(new URL("/admin", request.url));
+    }
+
+    if (session) {
+      headers.set("x-tenant-id", session.tenantId);
+      headers.set("x-admin-user-id", session.userId);
+      headers.set("x-admin-role", session.role);
+    }
+  }
+
+  return NextResponse.next({ request: { headers } });
+}
+
+export const config = {
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|avif|ico)$).*)"],
+};

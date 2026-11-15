@@ -1,0 +1,77 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand-rgb: 245 166 35;
+  color-scheme: dark;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-background font-sans text-foreground antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@layer base {
+  h1,
+  h2 {
+    font-family: var(--font-display), var(--font-sans), system-ui, sans-serif;
+  }
+}
+
+@layer utilities {
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  /* Barra de rolagem fina e clara (para superfícies brancas) */
+  .light-scrollbar {
+    color-scheme: light;
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 transparent;
+  }
+  .light-scrollbar::-webkit-scrollbar {
+    width: 6px;
+  }
+  .light-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .light-scrollbar::-webkit-scrollbar-thumb {
+    background-color: #cbd5e1;
+    border-radius: 9999px;
+  }
+  .light-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: #94a3b8;
+  }
+  /* Textura sutil de papel para cartões creme */
+  .paper-grain {
+    background-image:
+      radial-gradient(rgba(11, 22, 44, 0.05) 1px, transparent 1px),
+      radial-gradient(rgba(11, 22, 44, 0.04) 1px, transparent 1px);
+    background-size:
+      7px 7px,
+      11px 11px;
+    background-position:
+      0 0,
+      4px 6px;
+  }
+}
+
+/*
+ * Antes havia aqui uma regra global que zerava TODAS as animações e transições
+ * quando o sistema do usuário tinha "reduzir movimento" ativo (no Windows:
+ * Configurações > Acessibilidade > Efeitos visuais > Efeitos de animação desligado).
+ * Isso bloqueava tudo. Agora só o movimento contínuo (flutuação em loop) é pausado.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .animate-float {
+    animation: none !important;
+  }
+}
