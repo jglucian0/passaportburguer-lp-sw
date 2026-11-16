@@ -6,7 +6,7 @@ import { matchDestination } from "@/components/storefront/destinations";
 
 /*
  * Fotos locais do cardápio: public/lanches/<destino>/, public/lanches/outros/,
- * public/combos/ e public/bebidas/. O arquivo é `<slug-do-nome-do-produto>.webp`.
+ * public/combos/, public/bebidas/ e public/molhos/. O arquivo é `<slug-do-nome-do-produto>.webp`.
  * Se existir, é usado no lugar do imageUrl do banco; senão nada muda.
  */
 
@@ -62,6 +62,7 @@ function buildIndex() {
     ...subdirs("lanches").map((d) => `lanches/${d}`),
     "combos",
     "bebidas",
+    "molhos",
   ];
   for (const folder of folders) {
     byFolder.set(
@@ -90,9 +91,11 @@ export function applyLocalImages<C extends CatalogCategory>(categories: C[]): C[
         destination ? `lanches/${destination.id}` : null,
         categorySlug.includes("combo") ? "combos" : null,
         categorySlug.includes("bebida") ? "bebidas" : null,
+        categorySlug.includes("molho") ? "molhos" : null,
         "lanches/outros",
         "combos",
         "bebidas",
+        "molhos",
       ].filter((f): f is string => !!f);
       const folders = [...new Set([...preferred, ...index.keys()])];
 

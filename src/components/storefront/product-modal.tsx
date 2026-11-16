@@ -9,11 +9,24 @@ import type { CatalogAddon, CatalogAddonGroup, CatalogProduct } from "@/core/sch
 import { cn, formatCents } from "@/lib/utils";
 
 import { useCart } from "./cart-provider";
+import { matchDestination } from "./destinations";
 import { MAX_LINE_QUANTITY, type CartLine, type CartLineAddon } from "./cart-storage";
 import { useRegisterOverlay } from "./overlay-context";
 import { MAIN_CATEGORY, isDrinkGroup, isDrinkProduct } from "./upsell";
 
 const NOTE_MAX = 140;
+
+/* Fotos das cidades em public/cidades (nomes dos arquivos como estão na pasta). */
+const CITY_BACKGROUNDS: Record<string, string> = {
+  "st-louis": "/cidades/backgorund-stloius.webp",
+  mexico: "/cidades/backgorund-mexico.webp",
+  tokyo: "/cidades/backgorund-tokyo.webp",
+  "buenos-aires": "/cidades/backgorund-buenosaires.webp",
+  milao: "/cidades/backgorund-milao.webp",
+  cremona: "/cidades/backgorund-cremona.webp",
+  corbin: "/cidades/backgorund-corbin.webp",
+  gwangju: "/cidades/backgorund-gwangju.webp",
+};
 
 function groupHint(group: CatalogAddonGroup): string {
   if (group.minSelections > 0 && group.minSelections === group.maxSelections) {
@@ -88,6 +101,15 @@ export function ProductModal({
   );
 
   const displayPrice = getProductDisplayPrice(product);
+
+  /* Fundo desfocado: hambúrguer usa a foto da cidade (public/cidades/<destino>.webp);
+   * combos, bebidas etc. usam a própria foto do produto. */
+  const destination =
+    categoryName && MAIN_CATEGORY.test(categoryName)
+      ? matchDestination(categoryName, product.name)
+      : null;
+  const cityUrl = destination ? CITY_BACKGROUNDS[destination.id] : undefined;
+  const atmosphereUrl = cityUrl ?? product.imageUrl;
 
   const groupCount = (group: CatalogAddonGroup) =>
     group.addons.reduce((sum, a) => sum + (selection[a.id] ?? 0), 0);
@@ -199,29 +221,39 @@ export function ProductModal({
             <Dialog.Title className="sr-only">{product.name}</Dialog.Title>
             <Dialog.Close
               aria-label="Fechar"
-              className="absolute right-3 top-3 z-20 flex h-10 w-10 items-center justify-center rounded-full bg-white/90 text-slate-900 shadow-md hover:bg-white"
+              className="absolute right-3 top-3 z-20 flex items-center justify-center rounded-full bg-black/50 p-2 text-white backdrop-blur-md transition hover:bg-black/70"
             >
               <X className="h-5 w-5" />
             </Dialog.Close>
 
             <div className="light-scrollbar min-h-0 flex-1 overflow-y-auto">
-              <div
-                className={cn(
-                  "relative w-full bg-[#E2E8F0]",
-                  product.imageUrl ? "h-44" : "h-32",
-                )}
-              >
-                {product.imageUrl ? (
+              <div className="relative flex h-56 items-center justify-center overflow-hidden bg-slate-950 sm:h-64">
+                {atmosphereUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
-                    src={product.imageUrl}
-                    alt={product.name}
-                    className="h-full w-full object-cover"
+                    src={atmosphereUrl}
+                    alt=""
+                    aria-hidden="true"
+                    className={cn(
+                      "absolute inset-0 h-full w-full object-cover",
+                      !cityUrl && "scale-125 opacity-60 blur-sm",
+                    )}
                   />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center text-[#94A3B8]">
-                    <Stamp className="h-12 w-12" strokeWidth={1.25} />
+                ) : null}
+                {!cityUrl ? <div className="absolute inset-0 bg-black/40" /> : null}
+                <div className="absolute inset-0 bg-gradient-to-t from-slate-950/70 via-transparent to-black/20" />
+                {product.imageUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <div className="relative z-10 mx-auto h-48 w-48 overflow-hidden rounded-2xl bg-slate-900/50 shadow-[0_16px_32px_rgba(0,0,0,0.6)] ring-2 ring-white/15 sm:h-56 sm:w-56">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={product.imageUrl}
+                      alt={product.name}
+                      className="h-full w-full object-contain"
+                    />
                   </div>
+                ) : (
+                  <Stamp className="relative z-10 h-12 w-12 text-slate-500" strokeWidth={1.25} />
                 )}
               </div>
 

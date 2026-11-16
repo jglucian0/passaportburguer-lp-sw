@@ -173,7 +173,7 @@ export const MENU: SeedCategory[] = [
             ],
           },
           {
-            name: "Vai uma bebida Sr(a)?",
+            name: "Escolha sua bebida (Opcional)",
             min: 0,
             max: 5,
             addons: [
@@ -352,7 +352,7 @@ export const MENU: SeedCategory[] = [
         priceCents: 0,
         groups: [
           {
-            name: "Inteira ou Meia porçao?",
+            name: "Inteira ou meia porçao?",
             min: 1,
             max: 1,
             addons: [
@@ -363,7 +363,7 @@ export const MENU: SeedCategory[] = [
         ],
       },
       {
-        name: "Bolinha de queijo Gouda",
+        name: "Bolinha de Queijo Gouda",
         description: "Deliciosa empanado crocante por fora e queijo derretido por dentro!",
         priceCents: 0,
         groups: [
@@ -405,6 +405,7 @@ export const MENU: SeedCategory[] = [
       { name: "Ketchup", priceCents: 199 },
       { name: "Mostarda e Mel", priceCents: 299 },
       { name: "Maionese de Wasabi", priceCents: 260 },
+      { name: "Maionese de Bacon", priceCents: 299 },
     ],
   },
 
