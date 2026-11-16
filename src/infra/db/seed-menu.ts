@@ -288,6 +288,13 @@ export const MENU: SeedCategory[] = [
         groups: [GIMME_THE_WORKS],
       },
       {
+        name: "Gorgonzola - Milão + Batata + Coca-Cola 350ml",
+        description:
+          "Nosso Gorgonzola - Milão na versão Combo! Hambúrguer de 170 g de carne suculenta, queijo prato derretido, bacon e cebola caramelizados e um cremoso molho de Gorgonzola, finalizado com nossa maionese especial no pão Brioche macio. Acompanhado de uma porção de batatas crocantes (150g) e Coca-Cola gelada de 350ml.",
+        priceCents: 5499,
+        groups: [GIMME_THE_WORKS],
+      },
+      {
         name: "Los Favoritos + 2 Batata + 2 Coca-Cola",
         description:
           "A fusão de sabores com nosso combo de favoritos composto por 1 burger levemente apimentado Cidade do México e 1 delicioso burger Asiático Tokyo, acompanhados de 2 porções generosas de batata (150g) e 2 Coca-Cola (350ml) Satisfaça sua fome e seu paladar com essa combinação perfeita. Peça agora!",
