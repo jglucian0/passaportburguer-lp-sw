@@ -1,10 +1,11 @@
 "use client";
 
-import { BadgeCheck, ChevronDown, Globe2, Search, X } from "lucide-react";
+import { BadgeCheck, Globe2, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { CatalogCategory, CatalogProduct } from "@/core/schemas/product";
 import { cn, normalizeSearch } from "@/lib/utils";
+import { centerInContainer, scrollToElement } from "@/lib/smooth-scroll";
 
 import { useCart } from "./cart-provider";
 import {
@@ -31,10 +32,8 @@ export function Menu({
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [activeCat, setActiveCat] = useState<string | null>(null);
-  const [popoverOpen, setPopoverOpen] = useState(false);
   const pillRefs = useRef(new Map<string, HTMLElement>());
   const spyLockUntil = useRef(0);
-  const popoverRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const upsells = useMemo(() => pickUpsells(categories), [categories]);
@@ -144,36 +143,13 @@ export function Menu({
     const pill = pillRefs.current.get(currentCat);
     const list = pill?.closest("ul");
     if (!pill || !list) return;
-    const pillBox = pill.getBoundingClientRect();
-    const listBox = list.getBoundingClientRect();
-    const left =
-      list.scrollLeft + (pillBox.left - listBox.left) - (listBox.width - pillBox.width) / 2;
-    list.scrollTo({ left, behavior: "smooth" });
+    centerInContainer(list, pill);
   }, [currentCat]);
-
-  /* Popover dos carimbos: fecha ao clicar fora ou com ESC. */
-  useEffect(() => {
-    if (!popoverOpen) return;
-    function onDown(event: MouseEvent | TouchEvent) {
-      if (!popoverRef.current?.contains(event.target as Node)) setPopoverOpen(false);
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") setPopoverOpen(false);
-    }
-    document.addEventListener("mousedown", onDown);
-    document.addEventListener("touchstart", onDown);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDown);
-      document.removeEventListener("touchstart", onDown);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [popoverOpen]);
 
   const goToCategory = useCallback((id: string) => {
     setActiveCat(id);
     spyLockUntil.current = Date.now() + 900;
-    document.getElementById(`cat-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    scrollToElement(document.getElementById(`cat-${id}`));
   }, []);
 
   function openSearch() {
@@ -183,10 +159,7 @@ export function Menu({
       /* No mobile, leva o início dos resultados ao topo para o teclado não cobrir os primeiros cards. */
       if (!window.matchMedia("(max-width: 767px)").matches) return;
       const first = visible[0] ? document.getElementById(`cat-${visible[0].id}`) : null;
-      (first ?? document.getElementById("cardapio"))?.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
+      scrollToElement(first ?? document.getElementById("cardapio"));
     });
   }
 
@@ -210,11 +183,11 @@ export function Menu({
   const passportComplete =
     available.length > 1 && visited.size === available.length;
 
-  function choose(id: string) {
+  function choose(id: string, el?: HTMLElement) {
     setActive(id);
-    document
-      .getElementById("rota")
-      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+    const list = el?.closest("nav");
+    if (el && list) centerInContainer(list, el);
+    scrollToElement(document.getElementById("rota"));
   }
 
   return (
@@ -224,19 +197,19 @@ export function Menu({
       <div className="contents md:sticky md:top-20 md:z-30 md:block md:bg-[#F4F6F9]/95 md:backdrop-blur-md">
       {available.length > 0 ? (
         <div className="border-b border-slate-200/80">
-          <div className="relative mx-auto flex max-w-5xl items-center">
+          <div className="relative mx-auto max-w-5xl">
           <nav
             aria-label="Filtrar por destino"
-            className="no-scrollbar min-w-0 flex-1 mr-2 overflow-x-auto stamps-fade"
+            className="no-scrollbar w-full overflow-x-auto"
           >
-            <ul className="flex items-end gap-2.5 py-4 pl-4 pr-6">
+            <ul className="flex items-end gap-2.5 px-4 py-3">
               <li>
                 <button
                   type="button"
-                  onClick={() => choose("all")}
+                  onClick={(e) => choose("all", e.currentTarget)}
                   aria-pressed={active === "all"}
                   className={cn(
-                    "flex h-[84px] w-[72px] flex-col items-center justify-center gap-1 rounded-xl border-2 text-[11px] font-bold transition duration-150 ease-out active:scale-95",
+                    "flex h-[78px] min-w-[74px] flex-col items-center justify-center gap-1 rounded-xl border-2 text-[11px] font-bold transition duration-150 ease-out active:scale-95",
                     active === "all"
                       ? "border-dashed border-[#0A2540] bg-[#F59E0B] text-[#0A2540]"
                       : "border-transparent bg-[#0A2540] text-white hover:bg-[#0A2540]/90",
@@ -255,11 +228,11 @@ export function Menu({
                   <li key={destination.id} className="relative">
                     <button
                       type="button"
-                      onClick={() => choose(destination.id)}
+                      onClick={(e) => choose(destination.id, e.currentTarget)}
                       aria-pressed={isActive}
                       aria-label={`${destination.city}${isVisited ? " (carimbado)" : ""}`}
                       className={cn(
-                        "flex h-[84px] w-[72px] flex-col items-center justify-center rounded-xl border-2 px-1 transition duration-150 ease-out hover:-translate-y-0.5 active:scale-95",
+                        "flex h-[78px] min-w-[74px] flex-col items-center justify-center rounded-xl border-2 px-1 transition duration-150 ease-out hover:-translate-y-0.5 active:scale-95",
                         isActive
                           ? "border-dashed border-[#0A2540] bg-[#F59E0B]"
                           : "border-transparent bg-[#0A2540] hover:bg-[#0A2540]/90",
@@ -269,14 +242,12 @@ export function Menu({
                         key={isVisited ? "visited" : "pending"}
                         stamp={destination.stamp}
                         destinationId={destination.id}
-                        size={48}
+                        size={40}
                         distressed={false}
+                        tone={isActive ? "blue" : isVisited ? "yellow" : "white"}
                         className={cn(
-                          isActive
-                            ? "text-[#0A2540] brightness-0"
-                            : isVisited
-                              ? "animate-stamp-in text-[#F59E0B]"
-                              : "text-white opacity-60",
+                          !isActive && isVisited && "animate-stamp-in",
+                          !isActive && !isVisited && "opacity-60",
                         )}
                       />
                       <span
@@ -298,78 +269,6 @@ export function Menu({
             </ul>
           </nav>
 
-          {available.length > 1 ? (
-            <div ref={popoverRef} className="shrink-0 pl-1 pr-4">
-              <button
-                type="button"
-                onClick={() => setPopoverOpen((o) => !o)}
-                aria-expanded={popoverOpen}
-                aria-haspopup="dialog"
-                className="flex shrink-0 flex-col items-center justify-center rounded-xl border border-slate-200/90 bg-white px-3 py-2 shadow-xs transition hover:border-amber-400 active:scale-95"
-              >
-                <span className="flex items-center gap-0.5 text-xs font-bold text-[#0A2540]">
-                  {visited.size}/{available.length}
-                  <ChevronDown
-                    size={14}
-                    className={cn("text-slate-400 transition-transform", popoverOpen && "rotate-180")}
-                  />
-                </span>
-                <span className="text-[11px] font-medium text-slate-600">carimbos</span>
-                <span className="mt-1.5 h-1 w-10 overflow-hidden rounded-full bg-slate-100">
-                  <span
-                    className="block h-full rounded-full bg-amber-400 transition-all"
-                    style={{ width: `${(visited.size / available.length) * 100}%` }}
-                  />
-                </span>
-              </button>
-
-              {popoverOpen ? (
-                <div
-                  role="dialog"
-                  aria-label="Seus carimbos"
-                  className="absolute right-4 top-full z-40 mt-2 w-64 rounded-xl border border-slate-200 bg-white p-3 text-left shadow-xl animate-in fade-in zoom-in-95 duration-150"
-                >
-                  <p className="text-xs font-bold text-[#0A2540]">
-                    {passportComplete
-                      ? "Passaporte completo! 🎉"
-                      : `Faltam ${available.length - visited.size} destino(s) para completar`}
-                  </p>
-                  <ul className="mt-2 space-y-1">
-                    {available.map((d) => {
-                      const done = visited.has(d.id);
-                      return (
-                        <li key={d.id}>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setPopoverOpen(false);
-                              choose(d.id);
-                            }}
-                            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs transition hover:bg-slate-100"
-                          >
-                            <span
-                              className={cn(
-                                "flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold",
-                                done ? "bg-emerald-600 text-white" : "border border-slate-300 text-transparent",
-                              )}
-                            >
-                              ✓
-                            </span>
-                            <span className={cn("font-semibold", done ? "text-[#0A2540]" : "text-slate-500")}>
-                              {d.city}
-                            </span>
-                            <span className="ml-auto text-[10px] text-slate-400">
-                              {done ? "no carrinho" : "explorar"}
-                            </span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
           </div>
         </div>
       ) : null}
@@ -462,7 +361,8 @@ export function Menu({
               stamp={activeDestination.stamp}
               destinationId={activeDestination.id}
               size={92}
-              className="shrink-0 animate-stamp-in text-[#0A2540]"
+              tone="blue"
+              className="shrink-0 animate-stamp-in"
             />
             <div className="min-w-0">
               <p className="text-[11px] font-bold uppercase tracking-[0.25em] text-[#B45309]">

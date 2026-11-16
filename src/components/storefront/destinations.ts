@@ -34,6 +34,7 @@ const DESTINATION_PATTERNS: Record<string, RegExp[]> = {
   milao: [/milao/, /gorgonzola/, /gorngozola/],
   cremona: [/cremona/, /conessione/],
   corbin: [/corbin/],
+  gwangju: [/gwangju/, /kwangju/, /coreia/, /kimchi/],
 };
 
 export const DESTINATIONS: Destination[] = [
@@ -57,7 +58,7 @@ export const DESTINATIONS: Destination[] = [
     id: "mexico",
     code: "MEX",
     cardTitle: "MÉXICO",
-    city: "Cidade do México",
+    city: "México",
     country: "México",
     accent: "#d97706",
     stamp: { top: "CIDADE DO MÉXICO", middle: "MÉXICO", bottom: "★ ★ ★" },
@@ -137,6 +138,22 @@ export const DESTINATIONS: Destination[] = [
       "Mel silvestre",
       "Alface americana",
       "Maionese verde",
+    ],
+  },
+  {
+    id: "gwangju",
+    code: "KWJ",
+    cardTitle: "GWANGJU",
+    city: "Gwangju",
+    country: "Coreia do Sul",
+    accent: "#0f766e",
+    stamp: { top: "COREIA DO SUL", middle: "GWANGJU", bottom: "APPROVED" },
+    tagline: "Pra quem ama pimenta: kimchi coreano e bacon crocante.",
+    ingredients: [
+      "Kimchi coreano",
+      "Smash bovino 90g",
+      "Bacon crocante",
+      "Maionese verde Pass",
     ],
   },
 ];

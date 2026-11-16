@@ -7,6 +7,7 @@ import { usePathname } from "next/navigation";
 import type { PublicTenant } from "@/actions/storefront";
 import type { StoreStatus } from "@/core/store/opening-hours";
 import { cn } from "@/lib/utils";
+import { scrollToElement } from "@/lib/smooth-scroll";
 
 import { useCart } from "./cart-provider";
 
@@ -26,7 +27,7 @@ export function Header({ tenant, store }: { tenant: PublicTenant; store: StoreSt
     const target = document.getElementById(href.slice(2));
     if (!target) return;
     event.preventDefault();
-    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    scrollToElement(target);
     window.history.replaceState(null, "", href);
   }
 
@@ -37,7 +38,7 @@ export function Header({ tenant, store }: { tenant: PublicTenant; store: StoreSt
         <Link href="/" className="flex min-w-0 items-center gap-3">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/logo_passaportburguer_nav.min.png"
+            src="/logo_passaportburguer_nav.min.webp"
             alt={tenant.name}
             className="h-12 w-auto shrink-0 object-contain"
           />
@@ -72,7 +73,7 @@ export function Header({ tenant, store }: { tenant: PublicTenant; store: StoreSt
         <div className="flex items-center gap-2 sm:gap-3">
           <span
             className={cn(
-              "hidden rounded-full px-2.5 py-1 text-xs font-semibold lg:inline-block",
+              "inline-block rounded-full px-2.5 py-1 text-xs font-semibold md:hidden lg:inline-block",
               store.isOpen ? "bg-emerald-500/15 text-emerald-300" : "bg-red-500/15 text-red-300",
             )}
           >
@@ -81,7 +82,7 @@ export function Header({ tenant, store }: { tenant: PublicTenant; store: StoreSt
 
           <Link
             href="/meus-pedidos"
-            className="rounded-lg border border-white/80 px-4 py-2 text-sm font-medium text-white transition hover:bg-white/10"
+            className="hidden rounded-lg border border-white/80 px-4 md:block py-2 text-sm font-medium text-white transition hover:bg-white/10"
           >
             Fazer Login
           </Link>
@@ -90,7 +91,7 @@ export function Header({ tenant, store }: { tenant: PublicTenant; store: StoreSt
             type="button"
             onClick={openCart}
             aria-label={`Abrir carrinho${hydrated && count > 0 ? ` com ${count} item(ns)` : ""}`}
-            className="relative flex h-11 w-11 items-center justify-center rounded-lg text-white transition hover:bg-white/10"
+            className="relative hidden h-11 w-11 items-center md:flex justify-center rounded-lg text-white transition hover:bg-white/10"
           >
             <ShoppingBag className="h-6 w-6" strokeWidth={1.75} />
             {hydrated && count > 0 ? (

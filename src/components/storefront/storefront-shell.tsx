@@ -9,6 +9,7 @@ import type { PublicTenant } from "@/actions/storefront";
 import type { CatalogCategory } from "@/core/schemas/product";
 import type { StoreStatus } from "@/core/store/opening-hours";
 import { brandStyle, cn, formatCents } from "@/lib/utils";
+import { scrollToElement } from "@/lib/smooth-scroll";
 
 import { CartDrawer } from "./cart-drawer";
 import { CartProvider, useCart } from "./cart-provider";
@@ -61,9 +62,7 @@ function FloatingCartBar({ categories }: { categories: CatalogCategory[] }) {
     // Limpa filtros de destino/busca para que a seção de bebidas exista na página.
     window.dispatchEvent(new CustomEvent(PASSPORT_SELECT_EVENT, { detail: "all" }));
     window.setTimeout(() => {
-      document
-        .getElementById(`cat-${drinksCategory.id}`)
-        ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      scrollToElement(document.getElementById(`cat-${drinksCategory.id}`));
     }, 80);
   }
 
@@ -154,7 +153,7 @@ function BottomTabBar() {
     const target = document.getElementById("cardapio");
     if (!target) return;
     event.preventDefault();
-    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    scrollToElement(target);
     window.history.replaceState(null, "", "/#cardapio");
   }
 

@@ -69,12 +69,12 @@ export function Hero({
   const cards = buildCards(categories);
 
   return (
-    <section className="relative isolate flex min-h-[calc(100svh-5rem)] flex-col overflow-hidden bg-[#071329]">
+    <section className="relative isolate flex min-h-[calc(100svh-5rem)] flex-col max-md:min-h-0 overflow-hidden bg-[#071329]">
       {/* ----------------------------- Fundo ----------------------------- */}
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 -z-10 bg-cover bg-center bg-no-repeat"
-        style={{ backgroundImage: "url(/backgorund-hero.min.jpg)" }}
+        style={{ backgroundImage: "url(/backgorund-hero.min.webp)" }}
       />
       {/* Escurece levemente e suaviza as bordas para manter o texto legível */}
       <div
@@ -84,26 +84,29 @@ export function Hero({
 
       {/* --------------------------- Conteúdo --------------------------- */}
       <HeroSyncProvider>
-        <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 content-center items-center gap-10 px-4 py-10 lg:grid-cols-12">
-          {/* Copy + cartão de embarque */}
-          <div className="lg:col-span-6">
-            <h1 className="font-poppins text-5xl font-extrabold uppercase leading-[1.08] tracking-tight text-white sm:text-6xl">
-              O <span className="text-[#F59E0B]">MUNDO</span> EM
-              <br />
-              CADA <span className="text-[#F59E0B]">MORDIDA</span>
-            </h1>
+        <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 content-center items-center gap-10 px-4 py-10 max-md:flex max-md:min-h-[calc(100svh-116px)] max-md:flex-col max-md:justify-evenly max-md:gap-2 max-md:px-4 max-md:py-2.5 max-md:pb-16 lg:grid-cols-12 [@media(min-height:800px)]:max-md:gap-4">
+          {/* Copy + cartão de embarque (no mobile os filhos são reordenados) */}
+          <div className="max-md:contents lg:col-span-6">
+            <div className="max-md:order-1 max-md:pt-5">
+              <h1 className="font-poppins text-5xl font-extrabold uppercase leading-[1.08] tracking-tight text-white max-md:text-center max-md:text-2xl max-md:leading-[1.1] sm:text-6xl max-md:sm:text-[28px]">
+                O <span className="text-[#F59E0B]">MUNDO</span> EM
+                <br />
+                CADA <span className="text-[#F59E0B]">MORDIDA</span>
+              </h1>
 
-            <p className="mt-5 max-w-lg text-base leading-relaxed text-[#CBD5E1]">
-              Hambúrgueres artesanais inspirados na gastronomia de cada país, preparados com ingredientes típicos. Escolha seu próximo destino.
-            </p>
+              <p className="mt-5 max-w-lg text-base leading-relaxed text-[#CBD5E1] max-md:mx-auto max-md:mt-1.5 max-md:max-w-xs max-md:text-center max-md:text-xs max-md:leading-snug max-md:text-slate-300">
+                <span className="md:hidden">Hambúrgueres artesanais inspirados em cada país. Escolha seu próximo destino.</span>
+                <span className="hidden md:inline">Hambúrgueres artesanais inspirados na gastronomia de cada país, preparados com ingredientes típicos. Escolha seu próximo destino.</span>
+              </p>
+            </div>
 
-            <div className="mt-7">
+            <div className="mt-7 max-md:order-3 max-md:mt-0 max-md:w-full">
               <DigitalBoardingPass cards={cards} storeOpen={store.isOpen} />
             </div>
           </div>
 
           {/* Carrossel de passaportes */}
-          <div className="relative lg:col-span-6">
+          <div className="relative max-md:order-2 lg:col-span-6">
             <PlaneTrail
               width={140}
               className="pointer-events-none absolute -left-9 -top-6 hidden text-gold lg:block"
@@ -123,8 +126,17 @@ export function Hero({
       </HeroSyncProvider>
 
       {/* ------------------------- Diferenciais ------------------------- */}
-      <div className="mx-auto w-full max-w-7xl px-4 pb-8">
-        <ul className="mx-auto grid w-fit grid-cols-1 gap-5 text-white sm:flex sm:w-auto sm:flex-wrap sm:items-center sm:justify-center sm:gap-x-12">
+      <div className="mx-auto w-full max-w-7xl px-4 pb-8 max-md:pb-3">
+        {/* Mobile: faixa horizontal compacta */}
+        <ul className="grid grid-cols-3 gap-2 border-t border-white/10 pt-3 text-center md:hidden">
+          {FEATURES.map(({ icon: Icon, title }) => (
+            <li key={title} className="flex flex-col items-center gap-1">
+              <Icon className="h-4 w-4 text-[#F59E0B]" strokeWidth={1.75} />
+              <p className="text-[11px] font-medium text-slate-300">{title}</p>
+            </li>
+          ))}
+        </ul>
+        <ul className="mx-auto hidden w-auto flex-wrap items-center justify-center gap-5 gap-x-12 text-white md:flex">
           {FEATURES.map(({ icon: Icon, title, subtitle }) => (
             <li key={title} className="flex items-center gap-3">
               <Icon className="h-9 w-9 shrink-0 text-[#F59E0B]" strokeWidth={1.5} />

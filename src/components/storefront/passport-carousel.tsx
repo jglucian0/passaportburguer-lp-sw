@@ -5,6 +5,7 @@ import { useLayoutEffect, useRef } from "react";
 
 import type { CatalogProduct } from "@/core/schemas/product";
 import { cn } from "@/lib/utils";
+import { scrollToElement } from "@/lib/smooth-scroll";
 
 import { ApprovedStamp, CircleStamp } from "./brand-marks";
 import { PASSPORT_SELECT_EVENT, type Destination } from "./destinations";
@@ -26,11 +27,11 @@ function slotClass(slot: Slot): string {
   switch (slot) {
     // Central maior (~1.16x) e laterais encostando nele, como no layout de referência.
     case -1:
-      return "-translate-x-[75%] -rotate-[4deg] scale-[0.93] opacity-100 z-10";
+      return "-translate-x-[75%] -rotate-[4deg] scale-[0.93] opacity-100 z-10 max-md:-translate-x-[62%] max-md:scale-[0.88]";
     case 0:
       return "translate-x-0 rotate-0 scale-[1.08] opacity-100 z-30";
     case 1:
-      return "translate-x-[75%] rotate-[4deg] scale-[0.93] opacity-100 z-10";
+      return "translate-x-[75%] rotate-[4deg] scale-[0.93] opacity-100 z-10 max-md:translate-x-[62%] max-md:scale-[0.88]";
     default:
       return "translate-x-0 rotate-0 scale-75 opacity-0 z-0";
   }
@@ -46,14 +47,14 @@ function slotOfIndex(i: number, index: number, count: number): Slot {
 
 function selectDestination(id: string) {
   window.dispatchEvent(new CustomEvent(PASSPORT_SELECT_EVENT, { detail: id }));
-  document.getElementById("cardapio")?.scrollIntoView({ behavior: "smooth" });
+  scrollToElement(document.getElementById("cardapio"));
 }
 
 /** Artes prontas dos cartões, por id de destino. Adicione novas entradas aqui. */
 const CARD_IMAGES: Record<string, string> = {
-  "buenos-aires": "/cards/buenosaires-card.png",
-  tokyo: "/cards/tokyo-card.png",
-  mexico: "/cards/mexico-card.png",
+  "buenos-aires": "/cards/buenosaires-card.webp",
+  tokyo: "/cards/tokyo-card.webp",
+  mexico: "/cards/mexico-card.webp",
 };
 
 function PassportCard({ card, active }: { card: CarouselCard; active: boolean }) {
@@ -70,7 +71,7 @@ function PassportCard({ card, active }: { card: CarouselCard; active: boolean })
         height={801}
         draggable={false}
         className={cn(
-          "block h-auto w-full",
+          "block h-auto w-full max-md:h-full max-md:object-cover",
           active ? "drop-shadow-2xl" : "drop-shadow-xl",
         )}
       />
@@ -80,7 +81,7 @@ function PassportCard({ card, active }: { card: CarouselCard; active: boolean })
   return (
     <article
       className={cn(
-        "paper-grain relative flex aspect-[2/3] flex-col overflow-hidden rounded-2xl bg-paper transition-shadow",
+        "paper-grain relative flex aspect-[2/3] flex-col max-md:aspect-auto max-md:h-full overflow-hidden rounded-2xl bg-paper transition-shadow",
         active ? "shadow-2xl ring-1 ring-ink/10" : "shadow-xl",
       )}
     >
@@ -116,14 +117,15 @@ function PassportCard({ card, active }: { card: CarouselCard; active: boolean })
               stamp={destination.stamp}
               destinationId={destination.id}
               size={120}
-              className="-rotate-12 text-white opacity-15"
+              tone="white"
+              className="-rotate-12 opacity-15"
             />
           </div>
         )}
       </div>
 
       {/* Rodapé */}
-      <div className="shrink-0 px-3 pb-3">
+      <div className="shrink-0 px-3 pb-3 max-md:pb-2.5">
         <div
           className="border-t-2 border-dotted opacity-70"
           style={{ borderColor: destination.accent }}
@@ -175,7 +177,7 @@ export function PassportCarousel({ cards }: { cards: CarouselCard[] }) {
   return (
     <div>
       {/* Controles */}
-      <div className="mb-2 flex items-center justify-center gap-10">
+      <div className="mb-2 flex items-center justify-center gap-10 max-md:hidden">
         <button
           type="button"
           onClick={() => go(-1)}
@@ -202,7 +204,7 @@ export function PassportCarousel({ cards }: { cards: CarouselCard[] }) {
 
       {/* Palco */}
       <div
-        className="relative mx-auto w-full max-w-[520px] touch-pan-y select-none px-4 py-8"
+        className="relative mx-auto w-full max-w-[520px] touch-pan-y select-none px-4 py-8 max-md:py-3"
         onPointerDown={(e) => {
           pointerStart.current = e.clientX;
           swiped.current = false;
@@ -218,7 +220,7 @@ export function PassportCarousel({ cards }: { cards: CarouselCard[] }) {
         }}
       >
         {/* Espaçador invisível: dá altura natural ao palco */}
-        <div aria-hidden="true" className="invisible mx-auto w-[220px] sm:w-[235px]">
+        <div aria-hidden="true" className="invisible mx-auto w-[220px] max-md:h-[clamp(175px,27svh,240px)] max-md:w-[calc(clamp(175px,27svh,240px)*0.75)] sm:w-[235px] max-md:sm:w-[calc(clamp(175px,27svh,240px)*0.75)]">
           <PassportCard card={cards[index]} active={false} />
         </div>
 
@@ -251,7 +253,7 @@ export function PassportCarousel({ cards }: { cards: CarouselCard[] }) {
                   else setIndex(i);
                 }}
                 className={cn(
-                  "absolute w-[220px] cursor-pointer will-change-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold sm:w-[235px]",
+                  "absolute w-[220px] cursor-pointer will-change-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold max-md:h-[clamp(175px,27svh,240px)] max-md:w-[calc(clamp(175px,27svh,240px)*0.75)] max-md:overflow-hidden max-md:rounded-xl sm:w-[235px] max-md:sm:w-[calc(clamp(175px,27svh,240px)*0.75)]",
                   isWrapping
                     ? "animate-card-wrap-in transition-none"
                     : "transition-[transform,opacity] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
@@ -268,7 +270,7 @@ export function PassportCarousel({ cards }: { cards: CarouselCard[] }) {
 
       {/* Indicadores */}
       {count > 1 ? (
-        <div className="mt-3 flex items-center justify-center gap-1.5" aria-hidden="true">
+        <div className="mt-3 flex items-center justify-center gap-1.5 max-md:mt-1.5" aria-hidden="true">
           {cards.map((card, i) => (
             <span
               key={card.destination.id}

@@ -212,6 +212,14 @@ export const MENU: SeedCategory[] = [
           },
         ],
       },
+      {
+        name: "Gwangju",
+        description:
+          "Apaixonados por pimenta, preparem-se para conhecer o Gwangju! Dois smash blends bovinos de 90g, queijo prato, o tradicional Kimchi coreano com picância moderada, nossa deliciosa maionese verde e bacon crocante, tudo acompanhado de um pão brioche fofinho, selado na chapa. Uma combinação marcante para surpreender seu paladar!",
+        priceCents: 3960,
+        featured: true,
+        groups: [GIMME_THE_WORKS],
+      },
     ],
   },
 

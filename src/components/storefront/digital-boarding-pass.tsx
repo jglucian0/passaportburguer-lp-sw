@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import type { CatalogProduct } from "@/core/schemas/product";
 import { cn } from "@/lib/utils";
+import { scrollToElement } from "@/lib/smooth-scroll";
 
 import { useHeroSync } from "./hero-sync";
 import type { CarouselCard } from "./passport-carousel";
@@ -35,7 +36,7 @@ export function DigitalBoardingPass({
   const active = cards[index] ?? cards[0] ?? null;
 
   return (
-    <div className="relative w-full max-w-md rounded-2xl border border-[#D4A03E]/30 bg-[#0A162B] text-white shadow-[0_18px_40px_rgba(0,0,0,0.45)]">
+    <div className="relative mx-auto w-full max-w-[345px] max-md:w-[345px] max-md:max-w-full rounded-2xl md:mx-0 md:max-w-md border border-[#D4A03E]/30 bg-[#0A162B] text-white shadow-[0_18px_40px_rgba(0,0,0,0.45)]">
       {/* Costura interna tracejada, como a página de um passaporte */}
       <div
         aria-hidden="true"
@@ -43,10 +44,10 @@ export function DigitalBoardingPass({
       />
 
       {/* Parte superior: rota */}
-      <div className="relative flex items-center gap-4 border-b border-dashed border-slate-700 px-6 py-5">
+      <div className="relative flex items-center gap-4 border-b border-dashed border-slate-700 px-6 py-5 max-md:gap-3 max-md:px-3 max-md:py-1.5">
         <div>
-          <p className="font-display text-4xl font-bold leading-none tracking-wider">MGA</p>
-          <p className="mt-1.5 text-xs text-[#CBD5E1]">Cozinha</p>
+          <p className="font-display text-4xl font-bold leading-none tracking-wider max-md:text-2xl">MGA</p>
+          <p className="mt-1.5 text-xs text-[#CBD5E1] max-md:mt-1">Cozinha</p>
         </div>
 
         <div className="flex flex-1 items-center text-[#F59E0B]" aria-hidden="true">
@@ -58,13 +59,13 @@ export function DigitalBoardingPass({
         <div className="min-w-0 text-right" aria-live="polite">
           <p
             key={active?.destination.id}
-            className="animate-in fade-in slide-in-from-bottom-2 font-display text-4xl font-bold leading-none tracking-wider text-[#F59E0B] duration-300"
+            className="animate-in fade-in slide-in-from-bottom-2 font-display text-4xl font-bold leading-none tracking-wider text-[#F59E0B] duration-300 max-md:text-2xl"
           >
             {active?.destination.code ?? "---"}
           </p>
           <p
             key={`city-${active?.destination.id}`}
-            className="mt-1.5 animate-in truncate text-xs text-[#CBD5E1] duration-300 fade-in"
+            className="mt-1.5 animate-in truncate text-xs max-md:mt-1 text-[#CBD5E1] duration-300 fade-in"
           >
             {active?.destination.city ?? ""}
           </p>
@@ -72,8 +73,8 @@ export function DigitalBoardingPass({
       </div>
 
       {/* Parte inferior: modalidade + ações */}
-      <div className="relative space-y-4 px-6 py-5">
-        <div role="radiogroup" aria-label="Modalidade do pedido" className="flex gap-6">
+      <div className="relative space-y-4 px-6 py-5 max-md:flex max-md:items-center max-md:justify-between max-md:gap-2 max-md:space-y-0 max-md:p-3 max-md:pt-2">
+        <div role="radiogroup" aria-label="Modalidade do pedido" className="flex gap-6 max-md:shrink-0 max-md:gap-4">
           {MODES.map(({ id, label }) => (
             <button
               key={id}
@@ -93,13 +94,26 @@ export function DigitalBoardingPass({
           ))}
         </div>
 
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
+        {/* Mobile: botão direto na mesma linha do seletor */}
+        <button
+          type="button"
+          onClick={() =>
+            active?.product
+              ? setOrdering(active.product)
+              : scrollToElement(document.getElementById("cardapio"))
+          }
+          className="rounded-lg bg-[#F59E0B] min-w-0 truncate px-3.5 py-2 text-sm font-semibold text-[#0A162B] transition active:scale-[0.97] md:hidden"
+        >
+          {active?.product ? `Pedir ${active.destination.city}` : "Explorar Cardápio"}
+        </button>
+
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-3 max-md:hidden">
           <button
             type="button"
             onClick={() =>
-              document.getElementById("cardapio")?.scrollIntoView({ behavior: "smooth" })
+              scrollToElement(document.getElementById("cardapio"))
             }
-            className="rounded-lg bg-[#F59E0B] px-5 py-2.5 text-sm font-semibold text-[#0A162B] transition duration-200 hover:bg-[#e08f0a] hover:shadow-md active:scale-[0.97]"
+            className="rounded-lg bg-[#F59E0B] px-5 py-2.5 max-md:px-4 max-md:py-2 text-sm font-semibold text-[#0A162B] transition duration-200 hover:bg-[#e08f0a] hover:shadow-md active:scale-[0.97]"
           >
             Explorar Cardápio
           </button>
@@ -108,7 +122,7 @@ export function DigitalBoardingPass({
             <button
               type="button"
               onClick={() => setOrdering(active.product)}
-              className="text-sm font-medium text-[#CBD5E1] underline-offset-4 transition-colors duration-200 hover:text-white hover:underline active:opacity-70"
+              className="text-sm font-medium text-[#CBD5E1] max-md:w-full max-md:text-center max-md:text-xs underline-offset-4 transition-colors duration-200 hover:text-white hover:underline active:opacity-70"
             >
               Pedir este destino →
             </button>

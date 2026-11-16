@@ -68,37 +68,4 @@ body {
   }
 }
 
-/*
- * Antes havia aqui uma regra global que zerava TODAS as animações e transições
- * quando o sistema do usuário tinha "reduzir movimento" ativo (no Windows:
- * Configurações > Acessibilidade > Efeitos visuais > Efeitos de animação desligado).
- * Isso bloqueava tudo. Agora só o movimento contínuo (flutuação em loop) é pausado.
- */
-@media (prefers-reduced-motion: reduce) {
-  .animate-float {
-    animation: none !important;
-  }
-}
 
-/* Fade curto e suave (curva smoothstep, 24px) na borda direita do carrossel de carimbos. */
-.stamps-fade {
-  --fade: 30px;
-  -webkit-mask-image: linear-gradient(
-    to right,
-    #000 calc(100% - var(--fade)),
-    rgba(0, 0, 0, 0.9) calc(100% - var(--fade) * 0.8),
-    rgba(0, 0, 0, 0.65) calc(100% - var(--fade) * 0.6),
-    rgba(0, 0, 0, 0.35) calc(100% - var(--fade) * 0.4),
-    rgba(0, 0, 0, 0.1) calc(100% - var(--fade) * 0.2),
-    transparent 100%
-  );
-  mask-image: linear-gradient(
-    to right,
-    #000 calc(100% - var(--fade)),
-    rgba(0, 0, 0, 0.9) calc(100% - var(--fade) * 0.8),
-    rgba(0, 0, 0, 0.65) calc(100% - var(--fade) * 0.6),
-    rgba(0, 0, 0, 0.35) calc(100% - var(--fade) * 0.4),
-    rgba(0, 0, 0, 0.1) calc(100% - var(--fade) * 0.2),
-    transparent 100%
-  );
-}

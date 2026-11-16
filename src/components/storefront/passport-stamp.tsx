@@ -17,29 +17,39 @@ function arcFontSize(text: string): number {
   return 17;
 }
 
-/** Carimbos reais (PNG) por id de destino. Destinos ausentes usam o SVG. Adicione novos aqui. */
-const STAMP_IMAGES: Record<string, string> = {
-  "buenos-aires": "/stamps/buenosaires-stamp.png",
-  mexico: "/stamps/mexico-stamp.png",
-  "st-louis": "/stamps/stlouis-stamp.png",
-  tokyo: "/stamps/tokyo-stamp.png",
+/** Cor do carimbo: escolha a que contrasta com o fundo onde ele é aplicado. */
+export type StampTone = "white" | "blue" | "yellow";
+
+/** Nome-base do arquivo por destino: /stamps/<tom>/<nome>-stamp-<tom>.webp. Adicione novos aqui. */
+const STAMP_FILES: Record<string, string> = {
+  "st-louis": "stlouis",
+  mexico: "mexico",
+  tokyo: "tokyo",
+  "buenos-aires": "buenosaires",
+  milao: "gorgonzola",
+  cremona: "cremona",
+  corbin: "corbin",
+  gwangju: "gwangju",
 };
 
-/** Carimbo de passaporte: PNG real quando existe para o destino, senão SVG (cor via `currentColor`). */
+/** Carimbo de passaporte: imagem real (por tom) quando existe para o destino, senão SVG (cor via `currentColor`). */
 export function PassportStamp({
   stamp,
   destinationId,
   size = 120,
   className,
   distressed = true,
+  tone = "blue",
 }: {
   stamp: StampData;
   destinationId?: string;
   size?: number;
   className?: string;
   distressed?: boolean;
+  tone?: StampTone;
 }) {
-  const image = destinationId ? STAMP_IMAGES[destinationId] : undefined;
+  const file = destinationId ? STAMP_FILES[destinationId] : undefined;
+  const image = file ? `/stamps/${tone}/${file}-stamp-${tone}.webp` : undefined;
   const uid = useId().replace(/[^a-zA-Z0-9]/g, "");
   const topId = `st-top-${uid}`;
   const bottomId = `st-bot-${uid}`;
@@ -51,7 +61,7 @@ export function PassportStamp({
   if (image) {
     // Versão 256px para usos pequenos: reduzir 1700px -> 50px direto no navegador
     // causa serrilhado/embaçado, ainda mais quando a animação gira o carimbo.
-    const src = size <= 128 ? image.replace("/stamps/", "/stamps/256/") : image;
+    const src = size <= 128 ? image.replace(`/stamps/${tone}/`, `/stamps/${tone}/256/`) : image;
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img

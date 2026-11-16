@@ -14,6 +14,7 @@ import {
   getCustomerSession,
   setCustomerSessionCookie,
 } from "@/infra/auth/session";
+import { applyLocalImages } from "@/lib/local-images";
 import { db } from "@/infra/db";
 import {
   loadCatalog,
@@ -128,7 +129,7 @@ export async function getStorefrontData(): Promise<StorefrontData | null> {
     isManuallyClosed: cached.tenant.isManuallyClosed,
   });
 
-  return { ...cached, store };
+  return { ...cached, categories: applyLocalImages(cached.categories), store };
 }
 
 /* ------------------------------------------------------------------ */
