@@ -23,6 +23,18 @@ export function slugify(text: string): string {
     .replace(/gorngozola/g, "gorgonzola"); // grafia errada que existe no cardápio
 }
 
+/** Slug do produto de bebida -> nome do arquivo em public/bebidas (sem extensão). */
+function matchDrink(slug: string): string | null {
+  if (slug.includes("prats")) return "suco-prats-300";
+  if (slug.includes("heineken")) return "heineken-long-neck";
+  if (!/(^|-)350(-|$)/.test(slug)) return null; // só as latas de 350 ml têm foto
+  const isZero = /(^|-)(zero|sem-acucar)(-|$)/.test(slug);
+  if (slug.includes("coca")) return isZero ? "cocacola-350-zero" : "cocacola-350-normal";
+  if (slug.includes("kuat")) return "kuat-350-normal";
+  if (slug.includes("sprite")) return "sprite-350-normal";
+  return null;
+}
+
 function listWebp(dir: string): string[] {
   try {
     return readdirSync(path.join(PUBLIC_DIR, dir))
@@ -91,6 +103,14 @@ export function applyLocalImages<C extends CatalogCategory>(categories: C[]): C[
           used.add(url);
           return { ...product, imageUrl: url };
         }
+      }
+
+      /* 1b) Bebidas: o nome do arquivo é "<marca>-350-<normal|zero>"; o produto pode ter
+       *     nome diferente ("Coca-Cola Original 350 ml", "Refrigerante sem Açúcar..."). */
+      const drinkFile = matchDrink(slug);
+      if (drinkFile) {
+        const url = index.get("bebidas")?.get(drinkFile);
+        if (url) return { ...product, imageUrl: url };
       }
 
       /* 2) Na pasta do destino, arquivo curto contido no nome ("corbin.webp" para "Corbin, Frango").

@@ -81,13 +81,23 @@ export function Hero({
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 -z-10 bg-[radial-gradient(ellipse_at_50%_45%,rgba(1,10,40,0.15)_30%,rgba(1,10,40,0.6)_100%)]"
       />
+      {/* Desktop: gradiente direcional sutil só atrás da coluna de texto (mapa intacto no resto) */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-y-0 left-0 -z-10 hidden w-1/2 bg-gradient-to-r from-[#071329]/75 via-[#071329]/25 to-transparent md:block"
+      />
 
       {/* --------------------------- Conteúdo --------------------------- */}
       <HeroSyncProvider>
         <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 content-center items-center gap-10 px-4 py-10 max-md:flex max-md:min-h-[calc(100svh-116px)] max-md:flex-col max-md:justify-evenly max-md:gap-2 max-md:px-4 max-md:py-2.5 max-md:pb-16 lg:grid-cols-12 [@media(min-height:800px)]:max-md:gap-4">
           {/* Copy + cartão de embarque (no mobile os filhos são reordenados) */}
           <div className="max-md:contents lg:col-span-6">
-            <div className="max-md:order-1 max-md:pt-5">
+            <div className="relative max-md:order-1 max-md:pt-5">
+              {/* Mobile: gradiente radial suave só atrás do bloco de texto */}
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute -inset-x-6 -inset-y-4 -z-10 bg-[radial-gradient(ellipse_at_center,rgba(7,19,41,0.7)_0%,rgba(7,19,41,0.35)_45%,transparent_75%)] md:hidden"
+              />
               <h1 className="font-poppins text-5xl font-extrabold uppercase leading-[1.08] tracking-tight text-white max-md:text-center max-md:text-2xl max-md:leading-[1.1] sm:text-6xl max-md:sm:text-[28px]">
                 O <span className="text-[#F59E0B]">MUNDO</span> EM
                 <br />

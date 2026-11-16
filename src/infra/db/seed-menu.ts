@@ -419,7 +419,7 @@ export const MENU: SeedCategory[] = [
       },
       { name: "Sprite Original 350 ml", description: "Lata 350ml", priceCents: 750 },
       { name: "Kuat Guarana 350 ml", priceCents: 750 },
-      { name: "Heineken Long neck", priceCents: 1200 },
+      { name: "Heineken Long Neck", priceCents: 1200 },
       { name: "Suco Prats Laranja 300 ml", priceCents: 899 },
     ],
   },

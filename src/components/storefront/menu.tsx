@@ -202,7 +202,7 @@ export function Menu({
             aria-label="Filtrar por destino"
             className="no-scrollbar w-full overflow-x-auto"
           >
-            <ul className="flex items-end gap-2.5 px-4 py-3">
+            <ul className="flex w-max min-w-full items-end gap-2.5 px-4 py-3">
               <li>
                 <button
                   type="button"
@@ -310,7 +310,7 @@ export function Menu({
               >
                 <Search className="h-4 w-4" />
               </button>
-              <ul className="no-scrollbar flex min-w-0 flex-1 gap-2 overflow-x-auto">
+              <ul className="no-scrollbar flex min-w-0 flex-1 gap-2 overflow-x-auto after:block after:w-2 after:shrink-0 after:content-['']">
                 {visible.map((category) => {
                   const isCurrent = category.id === currentCat;
                   return (
