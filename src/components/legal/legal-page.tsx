@@ -15,7 +15,7 @@ export const LEGAL_CONTACT = {
 export type LegalSection = { id: string; title: string; body: ReactNode };
 
 function contactHref(): string {
-  const phone = process.env.NEXT_PUBLIC_STORE_WHATSAPP?.replace(/\D/g, "");
+  const phone = process.env.STORE_WHATSAPP?.replace(/\D/g, "");
   if (!phone) return LEGAL_CONTACT.instagram;
   return `https://wa.me/${phone}?text=${encodeURIComponent("Olá Passaporte Burguer! Tenho uma dúvida sobre privacidade/termos.")}`;
 }

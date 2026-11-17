@@ -21,7 +21,7 @@ export async function POST(request: Request) {
   const phone = `55${local}`;
 
   if (!buildWaUrl("PASS-0000")) {
-    console.error("[whatsapp] NEXT_PUBLIC_STORE_WHATSAPP não configurado.");
+    console.error("[whatsapp] STORE_WHATSAPP não configurado.");
     return fail("Login por WhatsApp indisponível no momento.", 503);
   }
 

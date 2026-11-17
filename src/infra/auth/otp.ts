@@ -56,7 +56,7 @@ export function normalizeCode(input: unknown): string | null {
 }
 
 export function buildWaUrl(code: string): string | null {
-  const store = process.env.NEXT_PUBLIC_STORE_WHATSAPP?.replace(/\D/g, "");
+  const store = process.env.STORE_WHATSAPP?.replace(/\D/g, "");
   if (!store) return null;
   const text = `Olá Passaporte Burguer! Meu código de embarque é: ${code}`;
   return `https://wa.me/${store}?text=${encodeURIComponent(text)}`;
