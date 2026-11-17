@@ -564,7 +564,7 @@ export async function deleteDeliveryZone(input: unknown): Promise<ActionResult> 
 /* Configurações da loja                                               */
 /* ------------------------------------------------------------------ */
 
-/** Somente OWNER. O WhatsApp é gravado com DDI 55 (ex: 5511999998888). */
+/** Somente OWNER. O WhatsApp é gravado com DDI 55 (ex: (44) 99833-3450). */
 export async function saveStoreSettings(input: unknown): Promise<ActionResult> {
   return guard(async (session) => {
     if (session.role !== "OWNER") return failure("Apenas o proprietário pode alterar as configurações.");

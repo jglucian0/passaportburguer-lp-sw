@@ -58,7 +58,7 @@ async function main() {
       name: "Passaporte Burguer",
       slug: TENANT_SLUG,
       customDomain: "passaportburguer.com.br",
-      phoneWhatsapp: "5544999999999",
+      phoneWhatsapp: "44998333450",
       primaryColor: "#f5a623",
       minOrderCents: 0,
       isManuallyClosed: false,

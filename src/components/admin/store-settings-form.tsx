@@ -108,7 +108,7 @@ export function StoreSettingsForm({
                   value={phone}
                   onChange={(e) => setPhone(formatPhone(e.target.value))}
                   inputMode="tel"
-                  placeholder="(11) 99999-8888"
+                  placeholder="(44) 99833-3450"
                 />
               </Field>
               <Field label="Pedido mínimo (R$)">

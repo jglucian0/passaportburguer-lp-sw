@@ -276,7 +276,7 @@ export function CheckoutForm({
 
       if (
         normalizeText(data.localidade ?? "") !==
-          normalizeText(SERVICE_CITY.name) ||
+        normalizeText(SERVICE_CITY.name) ||
         data.uf !== SERVICE_CITY.uf
       ) {
         setCepMsg({
@@ -458,14 +458,14 @@ export function CheckoutForm({
         reference:
           deliveryType === "DELIVERY"
             ? [
-                usingFallback && otherNeighborhood.trim()
-                  ? `Bairro: ${otherNeighborhood.trim().slice(0, 40)}`
-                  : "",
-                reference.trim(),
-              ]
-                .filter(Boolean)
-                .join(" | ")
-                .slice(0, 120) || null
+              usingFallback && otherNeighborhood.trim()
+                ? `Bairro: ${otherNeighborhood.trim().slice(0, 40)}`
+                : "",
+              reference.trim(),
+            ]
+              .filter(Boolean)
+              .join(" | ")
+              .slice(0, 120) || null
             : null,
         paymentMethod,
         changeForCents,
@@ -571,40 +571,40 @@ export function CheckoutForm({
             )}
           >
             <div className="min-h-0 overflow-hidden">
-            <ul
-              className={cn(
-                "space-y-2 p-4 text-sm",
-                summaryOpen && "border-t border-slate-200",
-                "md:border-t md:border-slate-200",
-              )}
-            >
-              {lines.map((l) => (
-                <li key={l.key} className="flex justify-between gap-3">
-                  <span>
-                    {l.quantity}x {l.name}
-                    {l.addons.length > 0 ? (
-                      <span className="block text-xs text-slate-500">
-                        {l.addons
-                          .map((a) =>
-                            a.quantity > 1
-                              ? `${a.quantity}x ${a.name}`
-                              : a.name,
-                          )
-                          .join(", ")}
-                      </span>
-                    ) : null}
-                    {l.note ? (
-                      <span className="block text-xs italic text-slate-500">
-                        Obs: {l.note}
-                      </span>
-                    ) : null}
-                  </span>
-                  <span className="shrink-0 font-semibold">
-                    {formatCents(lineTotal(l))}
-                  </span>
-                </li>
-              ))}
-            </ul>
+              <ul
+                className={cn(
+                  "space-y-2 p-4 text-sm",
+                  summaryOpen && "border-t border-slate-200",
+                  "md:border-t md:border-slate-200",
+                )}
+              >
+                {lines.map((l) => (
+                  <li key={l.key} className="flex justify-between gap-3">
+                    <span>
+                      {l.quantity}x {l.name}
+                      {l.addons.length > 0 ? (
+                        <span className="block text-xs text-slate-500">
+                          {l.addons
+                            .map((a) =>
+                              a.quantity > 1
+                                ? `${a.quantity}x ${a.name}`
+                                : a.name,
+                            )
+                            .join(", ")}
+                        </span>
+                      ) : null}
+                      {l.note ? (
+                        <span className="block text-xs italic text-slate-500">
+                          Obs: {l.note}
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="shrink-0 font-semibold">
+                      {formatCents(lineTotal(l))}
+                    </span>
+                  </li>
+                ))}
+              </ul>
             </div>
           </div>
         </section>
@@ -628,7 +628,7 @@ export function CheckoutForm({
               onChange={(e) => setPhone(formatPhone(e.target.value))}
               inputMode="tel"
               autoComplete="tel"
-              placeholder="(11) 99999-8888"
+              placeholder="(44) 99833-3450"
               required
             />
           </Field>
