@@ -205,6 +205,11 @@ export async function advanceOrder(input: unknown): Promise<ActionResult<{ statu
 
     if (updated.length === 0) return failure("O pedido foi alterado por outra pessoa. Atualize a tela.");
 
+    // Pagamento (PIX) confirmado pelo operador: só agora o pedido segue para o Saipos.
+    if (order.status === "AWAITING_PAYMENT") {
+      after(() => sendOrderToSaipos(order.id));
+    }
+
     return success({ status: next });
   });
 }
