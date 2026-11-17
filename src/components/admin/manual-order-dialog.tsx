@@ -8,7 +8,7 @@ import type { CatalogCategoryWithStatus } from "@/infra/db/queries";
 import { cn, formatCents, normalizeSearch } from "@/lib/utils";
 
 const field =
-  "h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#071329] focus:outline-none focus:ring-2 focus:ring-brand/60";
+  "h-10 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 placeholder:text-slate-400 focus:border-[#071329] focus:outline-none focus:ring-2 focus:ring-brand/60";
 
 type Channel = "COUNTER" | "WHATSAPP";
 type DeliveryType = "DELIVERY" | "PICKUP";
@@ -26,7 +26,7 @@ function Segmented<T extends string>({
   label: string;
 }) {
   return (
-    <div role="radiogroup" aria-label={label} className="flex rounded-lg border border-slate-200 bg-slate-100 p-1">
+    <div role="radiogroup" aria-label={label} className="flex w-full min-w-0 rounded-lg border border-slate-200 bg-slate-100 p-1">
       {options.map((o) => (
         <button
           key={o.value}
@@ -35,7 +35,7 @@ function Segmented<T extends string>({
           aria-checked={value === o.value}
           onClick={() => onChange(o.value)}
           className={cn(
-            "flex-1 rounded-md px-3 py-1.5 text-sm font-semibold transition",
+            "min-w-0 flex-1 rounded-md px-2 py-1.5 sm:px-3 text-sm font-semibold transition",
             value === o.value ? "bg-[#071329] text-white shadow-sm" : "text-slate-600 hover:text-slate-900",
           )}
         >
@@ -139,7 +139,7 @@ export function ManualOrderDialog({
         if (e.target === e.currentTarget && !isPending) onClose();
       }}
     >
-      <div className="flex max-h-[95dvh] w-full max-w-4xl flex-col overflow-hidden rounded-t-2xl bg-white text-slate-900 shadow-2xl sm:rounded-2xl">
+      <div className="flex max-h-[95dvh] w-full min-w-0 max-w-4xl flex-col overflow-x-hidden overflow-hidden rounded-t-2xl bg-white text-slate-900 shadow-2xl sm:rounded-2xl">
         <header className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
           <div>
             <h2 className="text-lg font-extrabold">Novo pedido</h2>
@@ -156,8 +156,8 @@ export function ManualOrderDialog({
           </button>
         </header>
 
-        <div className="grid flex-1 overflow-y-auto md:grid-cols-2 md:overflow-hidden">
-          <section className="flex min-h-0 flex-col border-b border-slate-200 p-5 md:border-b-0 md:border-r">
+        <div className="grid min-w-0 flex-1 grid-cols-1 overflow-y-auto overflow-x-hidden md:grid-cols-2 md:overflow-hidden">
+          <section className="flex min-h-0 min-w-0 flex-col border-b border-slate-200 p-4 sm:p-5 md:border-b-0 md:border-r">
             <div className="relative mb-3">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
               <input
@@ -214,7 +214,7 @@ export function ManualOrderDialog({
             </ul>
           </section>
 
-          <section className="space-y-4 p-5 md:overflow-y-auto">
+          <section className="min-w-0 space-y-4 p-4 sm:p-5 md:overflow-y-auto">
             <Segmented
               label="Origem"
               value={channel}
@@ -224,7 +224,7 @@ export function ManualOrderDialog({
                 { value: "WHATSAPP", label: "WhatsApp" },
               ]}
             />
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
               <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nome do cliente" className={field} aria-label="Nome do cliente" />
               <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="WhatsApp com DDD" inputMode="tel" className={field} aria-label="WhatsApp" />
             </div>
@@ -239,7 +239,7 @@ export function ManualOrderDialog({
               ]}
             />
             {deliveryType === "DELIVERY" ? (
-              <div className="grid grid-cols-6 gap-3">
+              <div className="grid min-w-0 grid-cols-6 gap-2.5 sm:gap-3">
                 <input value={street} onChange={(e) => setStreet(e.target.value)} placeholder="Rua" className={cn(field, "col-span-4")} aria-label="Rua" />
                 <input value={number} onChange={(e) => setNumber(e.target.value)} placeholder="Nº" className={cn(field, "col-span-2")} aria-label="Número" />
                 <input value={neighborhood} onChange={(e) => setNeighborhood(e.target.value)} placeholder="Bairro" className={cn(field, "col-span-3")} aria-label="Bairro" />
@@ -269,24 +269,24 @@ export function ManualOrderDialog({
           </section>
         </div>
 
-        <footer className="space-y-2 border-t border-slate-200 bg-slate-50 px-5 py-4">
+        <footer className="space-y-2 border-t border-slate-200 bg-slate-50 px-4 py-3 sm:px-5 sm:py-4">
           {error ? (
             <p role="alert" className="text-sm font-semibold text-red-700">
               {error}
             </p>
           ) : null}
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-sm">
+          <div className="flex items-center justify-between gap-2 sm:gap-3">
+            <div className="min-w-0 whitespace-nowrap text-xs sm:text-sm">
               <span className="text-slate-500">Total </span>
-              <span className="text-xl font-extrabold tabular-nums">{formatCents(subtotal + feeCents)}</span>
+              <span className="text-base font-extrabold tabular-nums sm:text-xl">{formatCents(subtotal + feeCents)}</span>
               {feeCents > 0 ? <span className="ml-2 text-xs text-slate-500">(frete {formatCents(feeCents)})</span> : null}
             </div>
-            <div className="flex gap-2">
+            <div className="flex shrink-0 gap-2">
               <button
                 type="button"
                 onClick={onClose}
                 disabled={isPending}
-                className="h-11 rounded-xl border border-slate-300 px-4 text-sm font-semibold hover:bg-slate-100"
+                className="h-11 whitespace-nowrap rounded-xl border border-slate-300 px-3 text-xs font-semibold hover:bg-slate-100 sm:px-4 sm:text-sm"
               >
                 Cancelar
               </button>
@@ -294,7 +294,7 @@ export function ManualOrderDialog({
                 type="button"
                 onClick={submit}
                 disabled={isPending}
-                className="inline-flex h-11 items-center gap-2 rounded-xl bg-brand px-5 text-sm font-extrabold text-[#071329] hover:brightness-105 disabled:opacity-60"
+                className="inline-flex h-11 items-center gap-2 whitespace-nowrap rounded-xl bg-brand px-3 text-xs font-extrabold sm:px-5 sm:text-sm text-[#071329] hover:brightness-105 disabled:opacity-60"
               >
                 {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
                 Lançar na cozinha
