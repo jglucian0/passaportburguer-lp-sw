@@ -31,6 +31,8 @@ export const metadata: Metadata = {
   },
   description:
     "Não precisa de visto, só de vontade de saborear! Embarque em uma viagem de sabores do mundo com lanches temáticos feitos com ingredientes típicos de cada região.",
+  // Verificação de domínio da Meta (Business Manager).
+  other: { "facebook-domain-verification": "0x1wg78yct78x4mc2qqaeqkqnfnfrf" },
 };
 
 export const viewport: Viewport = {
