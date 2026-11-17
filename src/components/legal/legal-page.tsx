@@ -104,7 +104,7 @@ export function LegalPage({
               href={wa}
               target="_blank"
               rel="noopener noreferrer"
-              className="mt-4 flex h-10 items-center justify-center gap-2 rounded-xl bg-[#25D366] text-sm font-bold text-white transition hover:brightness-105"
+              className="mt-4 flex h-10 items-center justify-center gap-2 rounded-xl bg-[#22bb5a] text-sm font-bold text-white transition hover:brightness-105"
             >
               <MessageCircle className="h-4 w-4" /> Chamar no WhatsApp
             </a>
@@ -154,7 +154,7 @@ export function LegalPage({
             href={wa}
             target="_blank"
             rel="noopener noreferrer"
-            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#25D366] text-base font-bold text-white transition hover:brightness-105 lg:hidden"
+            className="flex h-12 items-center justify-center gap-2 rounded-xl bg-[#22bb5a] text-base font-bold text-white transition hover:brightness-105 lg:hidden"
           >
             <MessageCircle className="h-5 w-5" /> Dúvidas? Chamar no WhatsApp
           </a>
