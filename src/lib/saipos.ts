@@ -1,29 +1,21 @@
 import { and, eq, inArray } from "drizzle-orm";
 
 import { db } from "@/infra/db";
-import { addons, customers, orderItems, orders, products, tenants } from "@/infra/db/schema";
+import { addons, customers, orderItems, orders, products } from "@/infra/db/schema";
 import { loadStoreSettings } from "@/infra/db/store-settings";
 
 /**
  * Integração com a Saipos Order API (https://order-api.saipos.com).
  *
- * ATENÇÃO: os nomes dos campos do payload e dos códigos de pagamento ficam concentrados em
- * `buildPayload` e `PAYMENT_CODES` abaixo. Valide-os contra a documentação do portal Saipos
- * Developer no ambiente de homologação (loja 99717) antes de ir para produção.
+ * Campos conforme saipos-docs-order-api.readme.io (criar-pedido, formas-de-pagamento).
+ * Auth: POST /auth {idPartner, secret}; o token vai cru no header Authorization e vale 2 dias.
  */
 
 const CHANNEL_NAME = "Passaporte Burguer";
 const REQUEST_TIMEOUT_MS = 8_000;
 const TOKEN_SAFETY_MARGIN_MS = 60_000;
 /** Caso a API não informe a validade do token. */
-const DEFAULT_TOKEN_TTL_MS = 55 * 60_000;
-
-/** Código de forma de pagamento aceito pela Saipos para cada método interno. */
-const PAYMENT_CODES = {
-  PIX: { code: "PIX", description: "PIX" },
-  CARD_ON_DELIVERY: { code: "CARD", description: "Cartão na entrega" },
-  CASH: { code: "MON", description: "Dinheiro" },
-} as const;
+const DEFAULT_TOKEN_TTL_MS = 24 * 60 * 60_000;
 
 type SaiposConfig = {
   baseUrl: string;
@@ -106,11 +98,6 @@ async function buildPayload(orderId: string, config: SaiposConfig) {
   if (!order) throw new Error("Pedido não encontrado.");
 
   const [customer] = await db.select().from(customers).where(eq(customers.id, order.customerId)).limit(1);
-  const [tenant] = await db
-    .select({ name: tenants.name })
-    .from(tenants)
-    .where(eq(tenants.id, order.tenantId))
-    .limit(1);
   const settings = await loadStoreSettings(order.tenantId);
   const items = await db.select().from(orderItems).where(eq(orderItems.orderId, order.id));
 
@@ -139,28 +126,34 @@ async function buildPayload(orderId: string, config: SaiposConfig) {
 
   const isDelivery = order.deliveryType === "DELIVERY";
   const address = order.addressSnapshot;
-  const payment = PAYMENT_CODES[order.paymentMethod];
+  const createdAt = order.createdAt.toISOString();
+  const notes = [`[${CHANNEL_NAME}]`, order.notes].filter(Boolean).join(" ");
 
   return {
-    id_store: config.storeId,
-    cod_store: config.storeId,
-    channel: CHANNEL_NAME,
-    store_name: tenant?.name,
     order_id: order.id,
     display_id: String(order.orderNumber),
-    created_at: order.createdAt.toISOString(),
-    notes: order.notes ?? "",
-    order_method: {
-      mode: isDelivery ? "DELIVERY" : "TAKEOUT",
-      scheduled: false,
-      delivery_date_time: order.createdAt.toISOString(),
-    },
+    cod_store: config.storeId,
+    created_at: createdAt,
+    notes,
+    total_discount: 0,
+    total_amount: toReais(order.totalCents),
     customer: {
       id: order.customerId,
       name: customer?.name ?? "Cliente",
       phone: customer?.phone ?? "",
-      ...(order.documentNumber ? { document: order.documentNumber } : {}),
+      ...(customer?.email ? { email: customer.email } : {}),
+      ...(order.documentNumber ? { document_number: order.documentNumber } : {}),
     },
+    order_method: isDelivery
+      ? {
+          mode: "DELIVERY",
+          // Entrega própria: o restaurante entrega (exige delivery_address).
+          delivery_by: "RESTAURANT",
+          delivery_fee: toReais(order.deliveryFeeCents),
+          scheduled: false,
+          delivery_date_time: createdAt,
+        }
+      : { mode: "TAKEOUT", scheduled: false, delivery_date_time: createdAt },
     ...(isDelivery && address
       ? {
           delivery_address: {
@@ -168,43 +161,48 @@ async function buildPayload(orderId: string, config: SaiposConfig) {
             state: process.env.SAIPOS_DEFAULT_STATE || "PR",
             city: settings?.deliveryRules.city ?? "",
             district: address.neighborhood,
-            street: address.street,
-            number: address.number,
+            street_name: address.street,
+            street_number: address.number,
+            // O checkout não guarda CEP; a Saipos o marca como obrigatório (ver SAIPOS_DEFAULT_POSTAL_CODE).
+            postal_code: process.env.SAIPOS_DEFAULT_POSTAL_CODE || "",
             complement: address.complement ?? "",
             reference: address.reference ?? "",
-            coordinates:
-              address.latitude != null && address.longitude != null
-                ? { latitude: address.latitude, longitude: address.longitude }
-                : undefined,
+            ...(address.latitude != null && address.longitude != null
+              ? { coordinates: { latitude: address.latitude, longitude: address.longitude } }
+              : {}),
           },
         }
       : {}),
-    delivery_fee: toReais(order.deliveryFeeCents),
-    total_discount: 0,
-    total_amount: toReais(order.totalCents),
     items: items.map((item) => ({
-      integration_code: (item.productId && productCodes.get(item.productId)) || undefined,
+      // integration_code é obrigatório na Saipos: sem saiposCode cadastrado, cai no id interno.
+      integration_code: (item.productId && productCodes.get(item.productId)) || item.productId || "SEM_CODIGO",
       desc_item: item.productNameSnapshot,
       quantity: item.quantity,
       unit_price: toReais(item.unitPriceCentsSnapshot),
-      total_price: toReais(item.totalItemCents),
-      choices: item.addonsSnapshot.map((a) => ({
-        integration_code: (a.addon_id && addonCodes.get(a.addon_id)) || undefined,
+      notes: "",
+      choice_items: item.addonsSnapshot.map((a) => ({
+        integration_code: (a.addon_id && addonCodes.get(a.addon_id)) || a.addon_id || "SEM_CODIGO",
         desc_item_choice: a.name,
-        quantity: a.quantity,
         aditional_price: toReais(a.price_cents),
+        quantity: a.quantity,
+        notes: "",
       })),
     })),
-    payment_types: [
-      {
-        code: payment.code,
-        description: payment.description,
-        value: toReais(order.totalCents),
-        change_for:
-          order.paymentMethod === "CASH" && order.changeForCents ? toReais(order.changeForCents) : undefined,
-      },
-    ],
+    payment_types: [buildPayment(order.paymentMethod, order.totalCents, order.changeForCents)],
   };
+}
+
+function buildPayment(method: "PIX" | "CARD_ON_DELIVERY" | "CASH", totalCents: number, changeForCents: number | null) {
+  const amount = toReais(totalCents);
+  switch (method) {
+    case "PIX":
+      // PIX é pago online no nosso site; só é enviado após a confirmação do pagamento.
+      return { code: "PARTNER_PAYMENT", amount, change_for: 0, complement: "pix", type: "ONLINE" };
+    case "CARD_ON_DELIVERY":
+      return { code: "CARD", amount, change_for: 0, type: "OFFLINE" };
+    case "CASH":
+      return { code: "DIN", amount, change_for: changeForCents ? toReais(changeForCents) : 0, type: "OFFLINE" };
+  }
 }
 
 /* ------------------------------------------------------------------ */

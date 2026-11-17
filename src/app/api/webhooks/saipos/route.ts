@@ -12,8 +12,10 @@ export const runtime = "nodejs";
 
 /**
  * Webhook de status do Saipos (cadastrar em "Configuração de Webhooks" no Saipos Developer).
- * Autenticação: header `x-webhook-secret` (ou `Authorization: Bearer`) igual a SAIPOS_WEBHOOK_SECRET.
- * Payload (tolerante): { order_id | id_order | id, status | event | order_status }.
+ * Eventos (docs Saipos): CONFIRMED, READY_TO_DELIVER, DISPATCHED, CONCLUDED, CANCELLED.
+ * Payload: { event, cod_store, order_id }.
+ * A Saipos não documenta assinatura: cadastre a URL com o segredo na query
+ * (/api/webhooks/saipos?secret=SAIPOS_WEBHOOK_SECRET). Também aceita x-webhook-secret / Bearer.
  */
 
 function secretMatches(received: string | null, expected: string): boolean {
@@ -53,26 +55,22 @@ type Mapped = { status: OrderStatus } | "IGNORE";
 /** Evento Saipos -> status interno (leva em conta o tipo de entrega). */
 function mapEvent(event: string, deliveryType: DeliveryType): Mapped {
   switch (event) {
+    case "CONFIRMED":
     case "ACEITO":
     case "EM_PREPARO":
-    case "ACCEPTED":
-    case "PREPARING":
       return { status: "PREPARING" };
+    case "READY_TO_DELIVER":
     case "PRONTO":
-    case "READY":
       // Entrega: pronto ainda não saiu; só a retirada tem status próprio.
       return deliveryType === "PICKUP" ? { status: "READY_FOR_PICKUP" } : "IGNORE";
+    case "DISPATCHED":
     case "SAIU_PARA_ENTREGA":
-    case "OUT_FOR_DELIVERY":
       return { status: deliveryType === "DELIVERY" ? "OUT_FOR_DELIVERY" : "READY_FOR_PICKUP" };
+    case "CONCLUDED":
     case "CONCLUIDO":
-    case "FINALIZADO":
-    case "DELIVERED":
-    case "FINISHED":
       return { status: "DELIVERED" };
-    case "CANCELADO":
-    case "CANCELED":
     case "CANCELLED":
+    case "CANCELADO":
       return { status: "CANCELED" };
     default:
       return "IGNORE";
@@ -97,7 +95,8 @@ export async function POST(request: NextRequest) {
   }
 
   const bearer = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? null;
-  const received = request.headers.get("x-webhook-secret") ?? bearer;
+  const received =
+    request.headers.get("x-webhook-secret") ?? bearer ?? request.nextUrl.searchParams.get("secret");
   if (!secretMatches(received, expectedSecret)) {
     return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
   }
@@ -112,6 +111,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Payload inválido." }, { status: 400 });
   }
   const payload = body as Record<string, unknown>;
+
+  const codStore = pick(payload, ["cod_store"]);
+  if (codStore && process.env.SAIPOS_STORE_ID && codStore !== process.env.SAIPOS_STORE_ID) {
+    return NextResponse.json({ ok: true, updated: 0, reason: "other_store" });
+  }
 
   const externalId = pick(payload, ["order_id", "id_order", "orderId", "external_id", "id"]);
   const event = normalize(pick(payload, ["status", "event", "order_status", "event_type"]));
