@@ -274,7 +274,7 @@ export function PhoneLookup({
                 autoComplete="tel-national"
                 value={phone}
                 onChange={(e) => setPhone(formatPhone(e.target.value))}
-                placeholder="(99) 99999-9999"
+                placeholder="(XX) XXXXX-XXXX"
                 required
                 className={inputClass}
               />,

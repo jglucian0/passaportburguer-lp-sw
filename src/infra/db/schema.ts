@@ -297,7 +297,7 @@ export const customers = pgTable(
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
-    /** Apenas dígitos (ex: 11999998888). */
+    /** Apenas dígitos. */
     phone: text("phone").notNull(),
     /** Preenchido quando o WhatsApp foi validado e o cadastro concluído (validação única). */
     phoneVerifiedAt: timestamp("phone_verified_at", { withTimezone: true }),
@@ -385,7 +385,7 @@ export const whatsappOtps = pgTable(
   "whatsapp_otps",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    /** Padrão internacional, apenas dígitos (ex: 5544999999999). */
+    /** Padrão internacional, apenas dígitos. */
     phone: text("phone").notNull(),
     /** Código de embarque único (ex: PASS-4829), enviado pelo cliente via wa.me. */
     code: text("code").notNull(),
