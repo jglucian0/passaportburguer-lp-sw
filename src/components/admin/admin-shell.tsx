@@ -38,8 +38,8 @@ export function AdminShell({
   return (
     <div className="admin-light min-h-dvh bg-slate-100 text-slate-900">
       <header className="admin-navy sticky top-0 z-40 border-b border-slate-800 bg-[#071329] text-white">
-        <div className="mx-auto flex h-16 max-w-[1600px] items-center justify-between gap-3 px-4">
-          <div className="flex min-w-0 items-center gap-4">
+        <div className="mx-auto flex h-16 max-w-[1600px] items-center justify-between gap-2 px-3 sm:gap-3 sm:px-4">
+          <div className="flex min-w-0 shrink-0 items-center gap-4">
             <Link href="/admin/pedidos" className="flex shrink-0 items-center gap-2" aria-label="Passaporte Burguer — painel">
               <Image
                 src="/logo_passaportburguer_nav.webp"
@@ -47,7 +47,7 @@ export function AdminShell({
                 width={126}
                 height={34}
                 priority
-                className="h-8 w-auto"
+                className="h-6 w-auto shrink-0 sm:h-8"
               />
             </Link>
             <nav className="hidden items-center gap-1 sm:flex">
@@ -73,7 +73,7 @@ export function AdminShell({
             </nav>
           </div>
 
-          <div className="flex shrink-0 items-center gap-3">
+          <div className="flex shrink-0 items-center gap-1.5 sm:gap-3">
             <StoreStatusSwitch />
             <span className="hidden text-xs text-slate-400 xl:block">
               {userName} • {role === "OWNER" ? "Proprietário" : "Cozinha"}
@@ -82,7 +82,7 @@ export function AdminShell({
               <button
                 type="submit"
                 aria-label="Sair"
-                className="inline-flex h-9 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold text-slate-300 hover:bg-white/10 hover:text-white"
+                className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg px-2 text-sm font-semibold text-slate-300 hover:bg-white/10 hover:text-white sm:px-3"
               >
                 <LogOut className="h-4 w-4" />
                 <span className="hidden md:inline">Sair</span>

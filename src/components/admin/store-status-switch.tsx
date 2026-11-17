@@ -64,10 +64,10 @@ export function StoreStatusSwitch() {
   const { isOpen } = status;
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex shrink-0 items-center gap-2">
       <div
         className={cn(
-          "flex items-center gap-2 rounded-full border px-3 py-1.5",
+          "flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 sm:gap-2 sm:px-3 sm:py-1.5",
           isOpen ? "border-emerald-500/40 bg-emerald-500/15" : "border-red-500/40 bg-red-500/15",
         )}
       >
@@ -76,7 +76,7 @@ export function StoreStatusSwitch() {
         ) : (
           <span className={cn("h-2.5 w-2.5 rounded-full", isOpen ? "bg-emerald-400" : "bg-red-400")} />
         )}
-        <span className={cn("text-sm font-extrabold", isOpen ? "text-emerald-300" : "text-red-300")}>
+        <span className={cn("whitespace-nowrap text-xs font-extrabold sm:text-sm", isOpen ? "text-emerald-300" : "text-red-300")}>
           {isOpen ? "Loja Aberta" : "Loja Fechada"}
         </span>
         <Switch
@@ -84,7 +84,10 @@ export function StoreStatusSwitch() {
           checked={isOpen}
           disabled={isPending}
           onCheckedChange={(checked) => apply(checked)}
-          className={cn(isOpen ? "data-[state=checked]:bg-emerald-500" : "bg-red-500/60")}
+          className={cn(
+            "origin-center scale-90 sm:scale-100",
+            isOpen ? "data-[state=checked]:bg-emerald-500" : "bg-red-500/60",
+          )}
         />
       </div>
       {status.hasOverride ? (

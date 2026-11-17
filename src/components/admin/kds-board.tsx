@@ -263,20 +263,20 @@ export function KdsBoard({
           <h1 className="text-2xl font-extrabold leading-none">Pedidos</h1>
           <p className="mt-1 text-[11px] text-muted">Atualiza sozinho a cada 8 segundos.</p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           {!online ? (
             <span className="inline-flex items-center gap-1 rounded-lg bg-amber-400 px-2.5 py-1.5 text-xs font-bold text-black">
               <WifiOff className="h-4 w-4" /> Sem conexão
             </span>
           ) : null}
-          <label className="relative block">
+          <label className="relative block w-full sm:w-auto">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Buscar #número ou nome..."
               aria-label="Buscar pedido"
-              className="h-10 w-56 rounded-xl border border-slate-200 bg-white pl-8 pr-3 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
+              className="h-10 w-full rounded-xl sm:w-56 border border-slate-200 bg-white pl-8 pr-3 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
             />
           </label>
           <div role="radiogroup" aria-label="Filtrar por tipo" className="flex rounded-xl border border-slate-200 bg-white p-1">
@@ -318,7 +318,7 @@ export function KdsBoard({
           <Button variant="outline" className="h-10" onClick={() => setHistoryOpen(true)}>
             <History className="h-4 w-4" /> Histórico Hoje ({history.length})
           </Button>
-          <Button className="h-10" onClick={() => setCreating(true)}>
+          <Button className="h-10 w-full sm:w-auto" onClick={() => setCreating(true)}>
             <Plus className="h-4 w-4" /> Novo Pedido
           </Button>
           {headerExtra}
