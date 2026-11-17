@@ -329,10 +329,10 @@ export function PhoneLookup({
               href={waUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#22bb5a] text-base font-bold text-white transition hover:brightness-105"
+              className="flex h-12 w-full items-center justify-center gap-2 cursor-pointer rounded-xl bg-[#22bb5a] text-base font-bold text-white shadow-lg shadow-green-600/30 transition hover:-translate-y-0.5 hover:brightness-105 active:translate-y-0 active:brightness-95"
             >
               <MessageCircle className="h-5 w-5" />
-              Abrir WhatsApp e Enviar Código
+              Clique aqui para abrir o WhatsApp
             </a>
 
             <p className="flex items-center justify-center gap-2 text-sm text-slate-500">

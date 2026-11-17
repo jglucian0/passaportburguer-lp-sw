@@ -35,10 +35,40 @@ function validSignature(raw: string, header: string | null): boolean {
 type MetaPayload = {
   entry?: Array<{
     changes?: Array<{
-      value?: { messages?: Array<{ from?: string; type?: string; text?: { body?: string } }> };
+      value?: {
+        metadata?: { phone_number_id?: string };
+        messages?: Array<{ from?: string; type?: string; text?: { body?: string } }>;
+      };
     }>;
   }>;
 };
+
+/** Resposta automática (best-effort): nunca lança erro nem atrasa o webhook por mais de 4s. */
+async function sendConfirmation(phoneNumberId: string | undefined, to: string) {
+  const token = process.env.WHATSAPP_ACCESS_TOKEN;
+  if (!token) return;
+  try {
+    const res = await fetch(
+      `https://graph.facebook.com/v21.0/${phoneNumberId || "1466936689833496"}/messages`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          to,
+          type: "text",
+          text: {
+            body: "✅ Código confirmado! Agora volte para a página do Passaporte Burguer no seu navegador para concluir seu cadastro.",
+          },
+        }),
+        signal: AbortSignal.timeout(4000),
+      },
+    );
+    if (!res.ok) console.warn("[whatsapp-webhook] resposta automática falhou:", res.status);
+  } catch (error) {
+    console.warn("[whatsapp-webhook] resposta automática falhou:", error);
+  }
+}
 
 /** POST: mensagens recebidas. Marca como verificado o PASS-XXXX enviado pelo próprio número. */
 export async function POST(request: Request) {
@@ -72,6 +102,7 @@ export async function POST(request: Request) {
           /* O remetente precisa ser o mesmo telefone que iniciou o fluxo. */
           if (otp && samePhone(otp.phone, from)) {
             await db.update(whatsappOtps).set({ verified: true }).where(eq(whatsappOtps.id, otp.id));
+            await sendConfirmation(change.value?.metadata?.phone_number_id, from);
           }
         }
       }
