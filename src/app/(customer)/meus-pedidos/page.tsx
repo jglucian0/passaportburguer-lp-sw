@@ -5,7 +5,7 @@ import { OrdersView } from "@/components/storefront/orders-view";
 import { PhoneLookup } from "@/components/storefront/phone-lookup";
 import { StorefrontShell } from "@/components/storefront/storefront-shell";
 
-export const metadata: Metadata = { title: "Meu Passaporte" };
+export const metadata: Metadata = { title: "Meu Passaporte", robots: { index: false, follow: false } };
 export const dynamic = "force-dynamic";
 
 export default async function MyOrdersPage() {

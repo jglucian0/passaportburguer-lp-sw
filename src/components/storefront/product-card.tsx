@@ -4,6 +4,7 @@ import { Minus, Plus, Stamp } from "lucide-react";
 
 import { getProductDisplayPrice } from "@/core/menu/pricing";
 import type { CatalogProduct } from "@/core/schemas/product";
+import { productImageAlt } from "@/lib/site";
 import { cn, formatCents } from "@/lib/utils";
 
 import { useCart } from "./cart-provider";
@@ -14,8 +15,11 @@ export function ProductCard({
   product,
   destination = null,
   bestSeller = false,
+  priority = false,
   onSelect,
 }: {
+  /** Imagem crítica (primeiros cards do cardápio): carrega já, sem lazy. */
+  priority?: boolean;
   product: CatalogProduct;
   destination?: Destination | null;
   bestSeller?: boolean;
@@ -81,8 +85,12 @@ export function ProductCard({
             // eslint-disable-next-line @next/next/no-img-element
             <img
               src={product.imageUrl}
-              alt={product.name}
-              loading="lazy"
+              alt={productImageAlt(product.name, product.description, destination !== null)}
+              width={128}
+              height={128}
+              loading={priority ? "eager" : "lazy"}
+              fetchPriority={priority ? "high" : "auto"}
+              decoding="async"
               className="h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-105"
             />
           ) : (

@@ -1,6 +1,6 @@
 "use client";
 
-import { ReceiptText, ShoppingBag, User, UtensilsCrossed, X } from "lucide-react";
+import { ShoppingBag, Ticket, UserCheck, UtensilsCrossed, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -121,7 +121,7 @@ function FloatingCartBar({ categories }: { categories: CatalogCategory[] }) {
 
 function BottomTabBar() {
   const pathname = usePathname();
-  const { isOpen } = useCart();
+  const { isOpen, count, hydrated, openCart } = useCart();
   const overlayOpen = useOverlayOpen();
   const [hasActiveOrder, setHasActiveOrder] = useState(false);
   const firstName = useCustomerFirstName();
@@ -158,43 +158,64 @@ function BottomTabBar() {
     window.history.replaceState(null, "", "/#cardapio");
   }
 
-  const items = [
-    { key: "menu", href: "/#cardapio", label: "Cardápio", Icon: UtensilsCrossed, active: onMenu, onClick: goToMenu },
-    { key: "orders", href: "/meus-pedidos", label: "Passaporte", Icon: ReceiptText, active: onOrders, dot: hasActiveOrder },
-    { key: "profile", href: "/meus-pedidos", label: firstName ?? "Entrar", Icon: User, active: false },
-  ];
+  const itemClass = (active: boolean) =>
+    cn(
+      "relative flex h-full flex-col items-center justify-center gap-0.5 text-[11px] transition active:scale-95",
+      active ? "font-semibold text-amber-500" : "font-medium text-slate-500",
+    );
+  const indicator = (active: boolean) =>
+    active ? <span aria-hidden="true" className="absolute inset-x-6 top-0 h-0.5 rounded-b bg-amber-500" /> : null;
 
   return (
     <nav
       aria-label="Navegação principal"
-      className="fixed inset-x-0 bottom-0 z-30 box-content flex h-14 items-center justify-around border-t border-slate-200 bg-white/95 px-2 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden"
+      className="fixed inset-x-0 bottom-0 z-30 box-content grid h-14 grid-cols-3 items-center border-t border-slate-200/80 bg-white/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-4px_20px_rgba(0,0,0,0.06)] backdrop-blur-md md:hidden"
     >
-      {items.map(({ key, href, label, Icon, active, onClick, dot }) => (
-        <Link
-          key={key}
-          href={href}
-          onClick={onClick}
-          aria-current={active ? "page" : undefined}
-          className={cn(
-            "relative flex h-full flex-1 flex-col items-center justify-center gap-0.5 text-[11px] transition active:scale-95",
-            active ? "font-semibold text-[#0A2540]" : "font-medium text-slate-500",
-          )}
-        >
-          {active ? (
-            <span aria-hidden="true" className="absolute inset-x-6 top-0 h-0.5 rounded-b bg-[#F59E0B]" />
+      <Link
+        href="/#cardapio"
+        onClick={goToMenu}
+        aria-current={onMenu ? "page" : undefined}
+        className={itemClass(onMenu)}
+      >
+        {indicator(onMenu)}
+        <UtensilsCrossed size={20} strokeWidth={1.75} />
+        <span className="max-w-full truncate px-1">Cardápio</span>
+      </Link>
+
+      <Link
+        href="/meus-pedidos"
+        aria-current={onOrders ? "page" : undefined}
+        className={itemClass(onOrders)}
+      >
+        {indicator(onOrders)}
+        <span className="relative">
+          {firstName ? <UserCheck size={20} strokeWidth={1.75} /> : <Ticket size={20} strokeWidth={1.75} />}
+          {hasActiveOrder ? (
+            <span className="absolute -right-1 -top-0.5 flex h-2 w-2" aria-label="Pedido em andamento">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
+            </span>
           ) : null}
-          <span className="relative">
-            <Icon size={20} strokeWidth={1.75} />
-            {dot ? (
-              <span className="absolute -right-1 -top-0.5 flex h-2 w-2" aria-label="Pedido em andamento">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-400 opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
-              </span>
-            ) : null}
-          </span>
-          <span className="max-w-full truncate px-1">{label}</span>
-        </Link>
-      ))}
+        </span>
+        <span className="max-w-full truncate px-1">{firstName ?? "Passaporte"}</span>
+      </Link>
+
+      <button
+        type="button"
+        onClick={openCart}
+        aria-label={`Abrir sacola${hydrated && count > 0 ? ` com ${count} item(ns)` : ""}`}
+        className={itemClass(false)}
+      >
+        <span className="relative">
+          <ShoppingBag size={20} strokeWidth={1.75} />
+          {hydrated && count > 0 ? (
+            <span className="absolute -right-2 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-bold text-slate-950">
+              {count}
+            </span>
+          ) : null}
+        </span>
+        <span>Sacola</span>
+      </button>
     </nav>
   );
 }

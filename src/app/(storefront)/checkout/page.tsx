@@ -6,7 +6,7 @@ import { effectiveMinOrderCents } from "@/core/store/min-order";
 import { PhoneLookup } from "@/components/storefront/phone-lookup";
 import { StorefrontShell } from "@/components/storefront/storefront-shell";
 
-export const metadata: Metadata = { title: "Finalizar pedido" };
+export const metadata: Metadata = { title: "Finalizar pedido", robots: { index: false, follow: false } };
 
 export const dynamic = "force-dynamic";
 

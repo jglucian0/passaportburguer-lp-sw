@@ -49,7 +49,7 @@ export function Footer({ tenant }: { tenant: PublicTenant }) {
 
         {/* Coluna 2 — Horário & Retirada */}
         <div>
-          <h3 className={columnTitle}>Horário &amp; Retirada</h3>
+          <h2 className={columnTitle}>Horário &amp; Retirada</h2>
           <ul className="space-y-1.5 text-sm">
             <li className="flex items-start gap-2">
               <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
@@ -70,7 +70,7 @@ export function Footer({ tenant }: { tenant: PublicTenant }) {
 
         {/* Coluna 3 — Navegação & Pagamento */}
         <div>
-          <h3 className={columnTitle}>Acesso Rápido</h3>
+          <h2 className={columnTitle}>Acesso Rápido</h2>
           <nav aria-label="Links do rodapé" className="flex flex-col gap-2">
             <Link href="/#cardapio" className={navLink}>
               Cardápio

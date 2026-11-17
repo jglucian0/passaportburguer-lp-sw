@@ -124,6 +124,12 @@ export function Menu({
       .filter((category) => category.products.length > 0);
   }, [categories, active, destinationByProduct, query]);
 
+  /* Os dois primeiros itens do cardápio carregam já; o resto fica lazy. */
+  const [firstProductId, secondProductId] = visible
+    .flatMap((c) => c.products)
+    .slice(0, 2)
+    .map((p) => p.id);
+
   const visibleKey = visible.map((c) => c.id).join("|");
   const currentCat =
     activeCat && visible.some((c) => c.id === activeCat) ? activeCat : (visible[0]?.id ?? null);
@@ -431,6 +437,7 @@ export function Menu({
                   {products.map((product) => (
                     <ProductCard
                       key={product.id}
+                      priority={product.id === firstProductId || product.id === secondProductId}
                       product={product}
                       destination={destinationByProduct.get(product.id) ?? null}
                       bestSeller={bestSellers.has(product.id)}

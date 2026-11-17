@@ -73,9 +73,11 @@ function PassportCard({ card, active }: { card: CarouselCard; active: boolean })
       // eslint-disable-next-line @next/next/no-img-element
       <img
         src={artwork}
-        alt={destination.cardTitle}
+        alt={`Cartão de embarque ${destination.cardTitle}: hambúrguer artesanal ${card.dish} do Passaporte Burguer`}
         width={509}
         height={801}
+        fetchPriority={active ? "high" : "auto"}
+        decoding="async"
         draggable={false}
         className={cn(
           "block h-auto w-full max-md:h-full max-md:object-contain",

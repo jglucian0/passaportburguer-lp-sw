@@ -2,6 +2,8 @@ import type { Metadata, Viewport } from "next";
 import { Oswald, Plus_Jakarta_Sans, Poppins } from "next/font/google";
 import type { ReactNode } from "react";
 
+import { OG_IMAGE, SITE_DESCRIPTION, SITE_KEYWORDS, SITE_NAME, SITE_TITLE, SITE_URL } from "@/lib/site";
+
 import "./globals.css";
 
 const jakarta = Plus_Jakarta_Sans({
@@ -25,12 +27,28 @@ const poppins = Poppins({
 });
 
 export const metadata: Metadata = {
-  title: {
-    default: "Passaporte Burguer | Hamburgueria Artesanal",
-    template: "%s | Passaporte Burguer",
+  metadataBase: new URL(SITE_URL),
+  title: { default: SITE_TITLE, template: `%s | ${SITE_NAME}` },
+  description: SITE_DESCRIPTION,
+  keywords: SITE_KEYWORDS,
+  applicationName: SITE_NAME,
+  alternates: { canonical: "/" },
+  robots: { index: true, follow: true },
+  openGraph: {
+    type: "website",
+    locale: "pt_BR",
+    url: "/",
+    siteName: SITE_NAME,
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    images: [OG_IMAGE],
   },
-  description:
-    "Não precisa de visto, só de vontade de saborear! Embarque em uma viagem de sabores do mundo com lanches temáticos feitos com ingredientes típicos de cada região.",
+  twitter: {
+    card: "summary_large_image",
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    images: [OG_IMAGE.url],
+  },
   // Verificação de domínio da Meta (Business Manager).
   other: { "facebook-domain-verification": "0x1wg78yct78x4mc2qqaeqkqnfnfrf" },
 };
