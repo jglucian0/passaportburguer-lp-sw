@@ -18,6 +18,7 @@ export const checkoutSchema = z
     lat: z.number().finite().min(-90).max(90).nullish(),
     lon: z.number().finite().min(-180).max(180).nullish(),
     city: z.string().trim().max(80).nullish(),
+    postalCode: z.string().trim().max(12).nullish(),
     neighborhood: z.string().trim().max(80).nullish(),
     street: z.string().trim().max(120).nullish(),
     number: z.string().trim().max(20).nullish(),

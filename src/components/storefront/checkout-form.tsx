@@ -233,6 +233,7 @@ export function CheckoutForm({
         complement: addr?.complement || null,
         neighborhood: addr?.neighborhood || null,
         city: addr?.city ?? null,
+        postalCode: addr?.postalCode ?? null,
         lat: addr?.lat ?? null,
         lon: addr?.lon ?? null,
         reference:

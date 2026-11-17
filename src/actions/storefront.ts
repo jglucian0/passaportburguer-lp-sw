@@ -252,6 +252,9 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
       deliveryZoneId: zone.id,
       latitude: data.lat ?? null,
       longitude: data.lon ?? null,
+      city: data.city ?? null,
+      district: data.neighborhood ?? null,
+      postalCode: data.postalCode ? onlyDigits(data.postalCode).slice(0, 8) : null,
     };
 
     const existingAddresses = await db

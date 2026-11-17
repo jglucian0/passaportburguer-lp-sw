@@ -50,6 +50,10 @@ export type AddressSnapshot = {
   /** Pino confirmado pelo cliente no mapa (ausente em pedidos antigos/manuais). */
   latitude?: number | null;
   longitude?: number | null;
+  /** Dados reais do endereço geocodificado (o campo neighborhood guarda o nome da zona de frete). */
+  city?: string | null;
+  district?: string | null;
+  postalCode?: string | null;
 };
 
 export type SaiposSyncStatus = "PENDING" | "SYNCED" | "FAILED" | "DISABLED";

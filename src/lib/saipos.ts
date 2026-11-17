@@ -147,8 +147,9 @@ async function buildPayload(orderId: string, config: SaiposConfig) {
     order_method: isDelivery
       ? {
           mode: "DELIVERY",
-          // Entrega própria: o restaurante entrega (exige delivery_address).
-          delivery_by: "RESTAURANT",
+          // O parceiro (este app, com a própria equipe de entrega) faz a entrega. Com "RESTAURANT" o Saipos
+          // exige o bairro cadastrado nas áreas de entrega da loja e rejeita (erro 929 "Bairro com subdivisões").
+          delivery_by: "PARTNER",
           delivery_fee: toReais(order.deliveryFeeCents),
           scheduled: false,
           delivery_date_time: createdAt,
@@ -159,12 +160,12 @@ async function buildPayload(orderId: string, config: SaiposConfig) {
           delivery_address: {
             country: "BR",
             state: process.env.SAIPOS_DEFAULT_STATE || "PR",
-            city: settings?.deliveryRules.city ?? "",
-            district: address.neighborhood,
+            city: address.city || settings?.deliveryRules.city || "Maringá",
+            district: address.district || address.neighborhood,
             street_name: address.street,
             street_number: address.number,
             // O checkout não guarda CEP; a Saipos o marca como obrigatório (ver SAIPOS_DEFAULT_POSTAL_CODE).
-            postal_code: process.env.SAIPOS_DEFAULT_POSTAL_CODE || "",
+            postal_code: address.postalCode || process.env.SAIPOS_DEFAULT_POSTAL_CODE || "",
             complement: address.complement ?? "",
             reference: address.reference ?? "",
             ...(address.latitude != null && address.longitude != null
