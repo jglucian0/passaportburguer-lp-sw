@@ -279,6 +279,9 @@ export function PhoneLookup({
                 className={inputClass}
               />,
             )}
+            <p className="-mt-2 text-xs text-slate-500">
+              Use o WhatsApp deste aparelho — você enviará um código por ele para confirmar.
+            </p>
             <button type="submit" disabled={busy} className={submitClass}>
               {submitLabel("Continuar")}
             </button>
@@ -334,6 +337,9 @@ export function PhoneLookup({
 
             <p className="flex items-center justify-center gap-2 text-sm text-slate-500">
               <Loader2 className="h-4 w-4 animate-spin" /> Aguardando sua mensagem…
+            </p>
+            <p className="-mt-2 text-center text-xs text-slate-500">
+              Envie a mensagem usando o número {phone}.
             </p>
 
             {sandbox ? (
