@@ -238,12 +238,82 @@ export const customers = pgTable(
     name: text("name").notNull(),
     /** Apenas dígitos (ex: 11999998888). */
     phone: text("phone").notNull(),
+    /** Preenchido quando o WhatsApp foi validado e o cadastro concluído (validação única). */
+    phoneVerifiedAt: timestamp("phone_verified_at", { withTimezone: true }),
+    /** E-mail de recuperação de senha (minúsculo). */
+    email: text("email"),
+    /** Hash bcrypt da senha; nulo enquanto o cadastro não foi concluído. */
+    passwordHash: text("password_hash"),
+    /** Senhas erradas consecutivas; zera ao acertar ou ao bloquear. */
+    failedLoginAttempts: integer("failed_login_attempts").notNull().default(0),
+    /** Login bloqueado até este instante (anti-brute force). */
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index("customers_tenant_idx").on(t.tenantId),
     uniqueIndex("customers_tenant_phone_uq").on(t.tenantId, t.phone),
+    uniqueIndex("customers_tenant_email_uq").on(t.tenantId, t.email),
   ],
+);
+
+/* ------------------------------------------------------------------ */
+/* 8-s. sessions (sessões revogáveis; só o hash SHA-256 do token)       */
+/* ------------------------------------------------------------------ */
+
+export const sessions = pgTable(
+  "sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    userAgent: text("user_agent"),
+    ipAddress: text("ip_address"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("sessions_token_hash_uq").on(t.tokenHash),
+    index("sessions_user_idx").on(t.userId),
+  ],
+);
+
+/* ------------------------------------------------------------------ */
+/* 8-r. rate_limits (janela fixa por chave "rota:ip")                   */
+/* ------------------------------------------------------------------ */
+
+export const rateLimits = pgTable(
+  "rate_limits",
+  {
+    key: text("key").primaryKey(),
+    count: integer("count").notNull(),
+    resetAt: timestamp("reset_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [index("rate_limits_reset_idx").on(t.resetAt)],
+);
+
+/* ------------------------------------------------------------------ */
+/* 8a. password_resets (código de 6 dígitos por e-mail, 15 min)        */
+/* ------------------------------------------------------------------ */
+
+export const passwordResets = pgTable(
+  "password_resets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    customerId: uuid("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    /** HMAC-SHA256 do código (nunca o código em claro). */
+    tokenHash: text("token_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    /** Tentativas erradas; o código é descartado ao atingir o limite. */
+    attempts: integer("attempts").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("password_resets_customer_idx").on(t.customerId, t.createdAt)],
 );
 
 /* ------------------------------------------------------------------ */
@@ -322,6 +392,8 @@ export const orders = pgTable(
     deliveryFeeCents: integer("delivery_fee_cents").notNull().default(0),
     totalCents: integer("total_cents").notNull(),
     notes: text("notes"),
+    /** CPF (11) ou CNPJ (14) na nota fiscal, só dígitos. Opcional. */
+    documentNumber: text("document_number"),
     cancelReason: text("cancel_reason"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true })

@@ -60,7 +60,7 @@ async function main() {
       customDomain: "passaportburguer.com.br",
       phoneWhatsapp: "44998333450",
       primaryColor: "#f5a623",
-      minOrderCents: 0,
+      minOrderCents: 3300,
       isManuallyClosed: false,
       openingHours,
     })

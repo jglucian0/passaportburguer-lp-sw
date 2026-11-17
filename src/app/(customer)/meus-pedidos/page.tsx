@@ -35,8 +35,8 @@ export default async function MyOrdersPage() {
 
       <div className="min-h-[calc(100dvh-64px)] bg-[#F4F6F9] px-4 pb-24 pt-6 text-[#0A2540]">
         <div className="mx-auto max-w-4xl">
-          {customerData && customerData.customerName.trim() === "" ? (
-            <PhoneLookup startAtName initialPhone={customerData.customerPhone} />
+          {customerData && customerData.needsRegistration ? (
+            <PhoneLookup startAtRegister initialPhone={customerData.customerPhone} />
           ) : customerData ? (
             <OrdersView
               tenantId={tenant.id}

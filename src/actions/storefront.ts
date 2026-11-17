@@ -2,18 +2,20 @@
 
 import { and, desc, eq, inArray, max } from "drizzle-orm";
 import { unstable_cache } from "next/cache";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { calculateCart } from "@/core/cart/calculate-cart";
+import { calculateDeliveryQuote, resolveDeliveryZone, withQuotedFee } from "@/core/delivery/quote";
+import { effectiveMinOrderCents } from "@/core/store/min-order";
+import { onlyDigits } from "@/core/validation/document";
+import { OTHER_ZONE_NAME } from "@/core/store/maringa-zones";
 import type { DeliveryType, OrderStatus, PaymentMethod } from "@/core/schemas/common";
-import { checkoutSchema, customerNameSchema } from "@/core/schemas/checkout";
+import { checkoutSchema } from "@/core/schemas/checkout";
 import type { CatalogDeliveryZone } from "@/core/schemas/product";
 import { getStoreStatus, type OpeningHours, type StoreStatus } from "@/core/store/opening-hours";
-import {
-  clearCustomerSessionCookie,
-  getCustomerSession,
-  setCustomerSessionCookie,
-} from "@/infra/auth/session";
+import { getAuthSession } from "@/infra/auth/customer-session";
+import { checkRateLimit, getClientIp } from "@/infra/security/rate-limit";
 import { applyLocalImages } from "@/lib/local-images";
 import { db } from "@/infra/db";
 import {
@@ -84,6 +86,8 @@ export type CustomerOrderView = {
 
 export type CustomerOrdersData = {
   customerName: string;
+  /** Sem senha definida: ainda precisa concluir o cadastro (nome, e-mail, senha). */
+  needsRegistration: boolean;
   /** Apenas dígitos; exibido no card de dados do Meu Passaporte. */
   customerPhone: string;
   orders: CustomerOrderView[];
@@ -146,8 +150,23 @@ function isUniqueViolation(error: unknown): boolean {
 }
 
 export async function createOrder(input: unknown): Promise<ActionFailure> {
+  const limit = await checkRateLimit({
+    identifier: getClientIp(await headers()),
+    route: "orders",
+    limit: 6,
+    windowSeconds: 600,
+  });
+  if (!limit.allowed) {
+    const minutes = Math.max(1, Math.ceil(limit.retryAfterSeconds / 60));
+    return failure(`Muitos pedidos em pouco tempo. Tente novamente em ${minutes} min.`);
+  }
+
   const ref = await getTenantRef();
   if (!ref) return failure("Loja não encontrada.");
+
+  /* Checkout autenticado: o cliente vem da sessão, nunca do que o formulário diz. */
+  const session = await getAuthSession();
+  if (!session || session.tenantId !== ref.id) return failure("Sessão expirada. Entre novamente.");
 
   const parsed = checkoutSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
@@ -171,10 +190,16 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
 
   const catalog = (await loadCatalog(tenant.id)).flatMap((c) => c.products);
 
+  /* Frete por distância (vale o valor do servidor) + zona para tempo estimado e vínculo. */
   let zone: CatalogDeliveryZone | null = null;
-  if (data.deliveryType === "DELIVERY" && data.deliveryZoneId) {
+  if (data.deliveryType === "DELIVERY") {
+    const quote = calculateDeliveryQuote(data.lat ?? NaN, data.lon ?? NaN, data.city ?? "");
+    if (!quote.deliverable) return failure(quote.message);
+
     const zones = await loadDeliveryZones(tenant.id, { includeInactive: true });
-    zone = zones.find((z) => z.id === data.deliveryZoneId) ?? null;
+    const base = resolveDeliveryZone(zones, data.neighborhood, OTHER_ZONE_NAME);
+    if (!base) return failure("Não foi possível atender este endereço no momento.");
+    zone = withQuotedFee(base, quote.feeCents);
   }
 
   const calc = calculateCart({
@@ -182,22 +207,22 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
     catalog,
     deliveryType: data.deliveryType,
     deliveryZone: zone,
-    minOrderCents: tenant.minOrderCents,
+    minOrderCents: effectiveMinOrderCents(tenant.minOrderCents),
     paymentMethod: data.paymentMethod,
     changeForCents: data.changeForCents,
   });
 
   if (!calc.ok) return failure(calc.errors.map((e) => e.message).join(" "));
 
-  /* Cliente (upsert pelo telefone). */
+  /* Cliente da sessão (sem upsert por telefone: ninguém cria pedidos na conta de outra pessoa). */
   const [customer] = await db
-    .insert(customers)
-    .values({ tenantId: tenant.id, name: data.customerName, phone: data.customerPhone })
-    .onConflictDoUpdate({
-      target: [customers.tenantId, customers.phone],
-      set: { name: data.customerName },
-    })
-    .returning();
+    .select()
+    .from(customers)
+    .where(and(eq(customers.id, session.customerId), eq(customers.tenantId, tenant.id)))
+    .limit(1);
+  if (!customer || customer.passwordHash === null) {
+    return failure("Conclua seu cadastro no Meu Passaporte antes de pedir.");
+  }
 
   /* Endereço (snapshot imutável + reaproveitamento no cadastro do cliente). */
   let addressSnapshot: AddressSnapshot | null = null;
@@ -269,6 +294,7 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
           deliveryFeeCents: calc.deliveryFeeCents,
           totalCents: calc.totalCents,
           notes: data.notes ?? null,
+          documentNumber: data.documentNumber ? onlyDigits(data.documentNumber) : null,
         }),
         db.insert(orderItems).values(
           calc.lines.map((line) => ({
@@ -294,12 +320,6 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
   }
 
   if (!created) return failure("Não foi possível registrar o pedido. Tente novamente.");
-
-  await setCustomerSessionCookie({
-    customerId: customer.id,
-    tenantId: tenant.id,
-    phone: customer.phone,
-  });
 
   redirect("/meus-pedidos");
 }
@@ -362,15 +382,39 @@ async function loadCustomerOrders(tenantId: string, customerId: string): Promise
 }
 
 /** Pedidos do cliente identificado pelo cookie `customer_token`. Retorna null se não houver sessão. */
+/** Cliente da sessão para o checkout (null = precisa entrar). */
+export async function getCheckoutCustomer(): Promise<{
+  name: string;
+  phone: string;
+  needsRegistration: boolean;
+} | null> {
+  const ref = await getTenantRef();
+  if (!ref) return null;
+  const session = await getAuthSession();
+  if (!session || session.tenantId !== ref.id) return null;
+  const [customer] = await db
+    .select({ name: customers.name, phone: customers.phone, passwordHash: customers.passwordHash })
+    .from(customers)
+    .where(and(eq(customers.id, session.customerId), eq(customers.tenantId, ref.id)))
+    .limit(1);
+  if (!customer) return null;
+  return { name: customer.name, phone: customer.phone, needsRegistration: customer.passwordHash === null };
+}
+
 export async function getCustomerOrders(): Promise<CustomerOrdersData | null> {
   const ref = await getTenantRef();
   if (!ref) return null;
 
-  const session = await getCustomerSession();
+  const session = await getAuthSession();
   if (!session || session.tenantId !== ref.id) return null;
 
   const [customer] = await db
-    .select({ id: customers.id, name: customers.name, phone: customers.phone })
+    .select({
+      id: customers.id,
+      name: customers.name,
+      phone: customers.phone,
+      passwordHash: customers.passwordHash,
+    })
     .from(customers)
     .where(and(eq(customers.id, session.customerId), eq(customers.tenantId, ref.id)))
     .limit(1);
@@ -379,33 +423,8 @@ export async function getCustomerOrders(): Promise<CustomerOrdersData | null> {
 
   return {
     customerName: customer.name,
+    needsRegistration: customer.passwordHash === null,
     customerPhone: customer.phone,
     orders: await loadCustomerOrders(ref.id, customer.id),
   };
-}
-
-/** Primeiro acesso: define o nome do cliente já autenticado via OTP (exige sessão). */
-export async function saveCustomerName(input: unknown): Promise<ActionResult<{ name: string }>> {
-  const ref = await getTenantRef();
-  if (!ref) return failure("Loja não encontrada.");
-
-  const session = await getCustomerSession();
-  if (!session || session.tenantId !== ref.id) return failure("Sessão expirada. Entre novamente.");
-
-  const parsed = customerNameSchema.safeParse(input);
-  if (!parsed.success) return fromZod(parsed.error);
-
-  const updated = await db
-    .update(customers)
-    .set({ name: parsed.data.name })
-    .where(and(eq(customers.id, session.customerId), eq(customers.tenantId, ref.id)))
-    .returning({ name: customers.name });
-
-  if (updated.length === 0) return failure("Cliente não encontrado.");
-  return success({ name: updated[0].name });
-}
-
-/** "Trocar número": encerra a sessão do cliente (apaga o cookie `customer_token`). */
-export async function clearCustomerSession(): Promise<void> {
-  await clearCustomerSessionCookie();
 }

@@ -12,8 +12,40 @@ function isAdminPage(pathname: string): boolean {
   return pathname === "/admin" || pathname.startsWith("/admin/");
 }
 
+const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/** Webhooks são servidor-a-servidor (sem Origin) e se autenticam por assinatura/segredo. */
+function skipsCsrfCheck(pathname: string): boolean {
+  return pathname.startsWith("/api/webhooks/");
+}
+
+/** CSRF: em métodos que alteram estado, o Origin tem de ser o próprio host. */
+function isSameOrigin(request: NextRequest): boolean {
+  const host = (request.headers.get("x-forwarded-host") ?? request.headers.get("host") ?? "").toLowerCase();
+  const origin = request.headers.get("origin");
+  if (origin) {
+    try {
+      return new URL(origin).host.toLowerCase() === host;
+    } catch {
+      return false;
+    }
+  }
+  /* Sem Origin: só vale se o navegador declara requisição do mesmo site. */
+  const site = request.headers.get("sec-fetch-site");
+  return site === "same-origin" || site === "none";
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  if (
+    pathname.startsWith("/api/") &&
+    UNSAFE_METHODS.has(request.method) &&
+    !skipsCsrfCheck(pathname) &&
+    !isSameOrigin(request)
+  ) {
+    return NextResponse.json({ error: "Origem não permitida." }, { status: 403 });
+  }
 
   /* Resolução de tenant: host (domínio customizado) + slug padrão do ambiente.
      A consulta ao banco ocorre nas camadas seguintes (cache), nunca no edge. */

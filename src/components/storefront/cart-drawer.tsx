@@ -5,6 +5,7 @@ import { Minus, Plus, ShoppingBag, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
+import { minOrderMessage } from "@/core/store/min-order";
 import type { CatalogCategory, CatalogProduct } from "@/core/schemas/product";
 import { cn, formatCents } from "@/lib/utils";
 
@@ -212,17 +213,14 @@ export function CartDrawer({
                   </div>
                   {missing > 0 ? (
                     <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                      Faltam {formatCents(missing)} para atingir o pedido mínimo de{" "}
-                      {formatCents(minOrderCents)}.
+                      {minOrderMessage(minOrderCents, missing)}. Na retirada não há pedido mínimo.
                     </p>
                   ) : null}
                   <Link
                     href="/checkout"
                     onClick={closeCart}
-                    aria-disabled={missing > 0}
                     className={cn(
                       "flex h-12 w-full items-center justify-center rounded-xl bg-[#F59E0B] text-base font-bold text-[#0A2540] transition hover:brightness-105",
-                      missing > 0 && "pointer-events-none opacity-50",
                     )}
                   >
                     Finalizar pedido

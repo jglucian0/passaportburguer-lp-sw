@@ -1,13 +1,22 @@
 "use client";
 
-import { ArrowLeft, Bike, ChevronDown, Loader2, LocateFixed, MapPin, Store } from "lucide-react";
+import { ArrowLeft, Bike, ChevronDown, Loader2, Store } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
 
 import { createOrder } from "@/actions/storefront";
 import { Input, Textarea } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { calculateCart } from "@/core/cart/calculate-cart";
-import { OTHER_ZONE_NAME, SERVICE_CITY } from "@/core/store/maringa-zones";
+import {
+  calculateDeliveryQuote,
+  normalizeCity,
+  resolveDeliveryZone,
+  withQuotedFee,
+} from "@/core/delivery/quote";
+import { OTHER_ZONE_NAME } from "@/core/store/maringa-zones";
+import { minOrderMessage } from "@/core/store/min-order";
+import { documentError, formatDocument, onlyDigits } from "@/core/validation/document";
 import type { DeliveryType, PaymentMethod } from "@/core/schemas/common";
 import type {
   CatalogDeliveryZone,
@@ -16,17 +25,12 @@ import type {
 import { cn, formatCents, formatPhone } from "@/lib/utils";
 
 import { useCart } from "./cart-provider";
-import { loadSavedAddress, type SavedAddress } from "./use-customer";
-import {
-  StreetAutocomplete,
-  type StreetSuggestion,
-} from "./street-autocomplete";
-import { ZoneCombobox, normalizeText } from "./zone-combobox";
+import type { ConfirmedAddress } from "./address-book";
+import { AddressPicker } from "./address-picker";
 import {
   CUSTOMER_PREFILL_KEY,
   lineTotal,
   ORDER_PLACED_FLAG,
-  ZONE_PREFILL_KEY,
 } from "./cart-storage";
 
 const PAYMENT_LABELS: Record<PaymentMethod, string> = {
@@ -56,24 +60,6 @@ function Field({
   );
 }
 
-function formatCep(value: string): string {
-  const d = value.replace(/\D/g, "").slice(0, 8);
-  return d.length > 5 ? `${d.slice(0, 5)}-${d.slice(5)}` : d;
-}
-
-type ViaCepResponse = {
-  erro?: boolean | string;
-  logradouro?: string;
-  bairro?: string;
-  localidade?: string;
-  uf?: string;
-};
-
-type ReverseGeocode = {
-  street: string | null;
-  number: string | null;
-  neighborhood: string | null;
-};
 
 function parseReaisToCents(value: string): number | null {
   const normalized = value.replace(/\./g, "").replace(",", ".").trim();
@@ -89,81 +75,47 @@ export function CheckoutForm({
   zones,
   minOrderCents,
   storeOpen,
+  customer,
 }: {
   catalog: CatalogProduct[];
   zones: CatalogDeliveryZone[];
   minOrderCents: number;
   storeOpen: boolean;
+  /** Dados da conta logada: o servidor usa a sessão; aqui só exibimos. */
+  customer: { name: string; phone: string };
 }) {
   const { tenantId, lines, hydrated } = useCart();
   const [isPending, startTransition] = useTransition();
 
-  const [name, setName] = useState("");
-  const [phone, setPhone] = useState("");
+  const [name] = useState(customer.name);
+  const [phone] = useState(formatPhone(customer.phone));
   const [deliveryType, setDeliveryType] = useState<DeliveryType>("DELIVERY");
-  const [zoneId, setZoneId] = useState("");
-  const [street, setStreet] = useState("");
-  const [number, setNumber] = useState("");
-  const [complement, setComplement] = useState("");
-  const [reference, setReference] = useState("");
-  const [otherNeighborhood, setOtherNeighborhood] = useState("");
+  const [address, setAddress] = useState<ConfirmedAddress | null>(null);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("PIX");
   const [changeFor, setChangeFor] = useState("");
   const [noChange, setNoChange] = useState(true);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [cep, setCep] = useState("");
-  const [cepLoading, setCepLoading] = useState(false);
-  const [cepMsg, setCepMsg] = useState<{
-    tone: "ok" | "warn";
-    text: string;
-  } | null>(null);
-  const lastCep = useRef("");
-  const [locating, setLocating] = useState(false);
-  const [locationMsg, setLocationMsg] = useState<{
-    tone: "ok" | "warn";
-    text: string;
-  } | null>(null);
+  const [includeDocument, setIncludeDocument] = useState(false);
+  const [documentValue, setDocumentValue] = useState("");
+  const [documentTouched, setDocumentTouched] = useState(false);
 
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(CUSTOMER_PREFILL_KEY);
-      if (!raw) return;
-      const saved = JSON.parse(raw) as { name?: string; phone?: string };
-      if (saved.name) setName(saved.name);
-      if (saved.phone) setPhone(formatPhone(saved.phone));
-    } catch {
-      /* ignorar */
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
-      const savedZone = window.localStorage.getItem(ZONE_PREFILL_KEY);
-      if (savedZone && zones.some((z) => z.id === savedZone))
-        setZoneId(savedZone);
-    } catch {
-      /* ignorar */
-    }
-  }, [zones]);
-
-  /* Endereço salvo no Meu Passaporte: só é aplicado quando o cliente toca em "Usar meu endereço salvo". */
-  const [savedAddress, setSavedAddress] = useState<SavedAddress | null>(null);
-  useEffect(() => setSavedAddress(loadSavedAddress()), []);
-
-  function applySavedAddress() {
-    if (!savedAddress) return;
-    setStreet(savedAddress.street);
-    setNumber(savedAddress.number);
-    setComplement(savedAddress.complement);
-    setReference(savedAddress.reference);
-    if (savedAddress.zoneId && zones.some((z) => z.id === savedAddress.zoneId)) {
-      setZoneId(savedAddress.zoneId);
-    }
-  }
-
-  const zone = zones.find((z) => z.id === zoneId) ?? null;
+  /* Frete por distância: o servidor recalcula o mesmo valor ao criar o pedido. */
+  const quote = useMemo(
+    () => (address ? calculateDeliveryQuote(address.lat, address.lon, address.city) : null),
+    [address],
+  );
+  const baseZone = useMemo(
+    () => resolveDeliveryZone(zones, address?.neighborhood, OTHER_ZONE_NAME),
+    [zones, address],
+  );
+  const zone = useMemo(
+    () => (baseZone && quote?.deliverable ? withQuotedFee(baseZone, quote.feeCents) : null),
+    [baseZone, quote],
+  );
+  const usingFallback =
+    !!baseZone && normalizeCity(baseZone.neighborhood) === normalizeCity(OTHER_ZONE_NAME);
   const changeForCents =
     paymentMethod === "CASH" && !noChange ? parseReaisToCents(changeFor) : null;
 
@@ -217,219 +169,42 @@ export function CheckoutForm({
   const fee = deliveryType === "DELIVERY" && zone ? zone.feeCents : 0;
   const total = calc.ok ? calc.totalCents : subtotal + fee;
 
-  /* Zona de taxa padrão (qualquer outro endereço de Maringá). */
-  const fallbackZone =
-    zones.find(
-      (z) => normalizeText(z.neighborhood) === normalizeText(OTHER_ZONE_NAME),
-    ) ?? null;
-  const usingFallback = !!fallbackZone && zoneId === fallbackZone.id;
+  /* Pedido mínimo: só entrega, sobre o subtotal dos produtos (sem a taxa). */
+  const missingMinCents =
+    deliveryType === "DELIVERY" ? Math.max(0, minOrderCents - subtotal) : 0;
+  const belowMin = missingMinCents > 0;
 
-  /* Zona cujo nome bate (normalizado) com o bairro informado. */
-  function findZoneByName(name: string): CatalogDeliveryZone | undefined {
-    const wanted = normalizeText(name);
-    if (!wanted) return undefined;
-    const regular = zones.filter((z) => z.id !== fallbackZone?.id);
-    return (
-      regular.find((z) => normalizeText(z.neighborhood) === wanted) ??
-      regular.find((z) => {
-        const n = normalizeText(z.neighborhood);
-        return n.includes(wanted) || wanted.includes(n);
-      })
-    );
-  }
+  /* CPF/CNPJ na nota. */
+  const docDigits = onlyDigits(documentValue);
+  const docError = includeDocument ? documentError(documentValue) : null;
+  const showDocError = !!docError && (documentTouched || docDigits.length >= 11);
 
-  /** Bairro conhecido -> sua zona; senão, a taxa padrão (se cadastrada). */
-  function resolveZone(neighborhood: string | null | undefined) {
-    const matched = neighborhood ? findZoneByName(neighborhood) : undefined;
-    if (matched) return { zone: matched, fallback: false };
-    if (fallbackZone) return { zone: fallbackZone, fallback: true };
-    return null;
-  }
-
-  function fallbackNotice(neighborhood: string | null | undefined): string {
-    const fee = fallbackZone
-      ? `${formatCents(fallbackZone.feeCents)} • ~${fallbackZone.estimatedMinutes} min`
-      : "";
-    return neighborhood
-      ? `Entregamos em "${neighborhood}" pela taxa padrão (${fee}).`
-      : `Entregamos neste endereço pela taxa padrão (${fee}).`;
-  }
-
-  /* CEP completo: consulta o ViaCEP, valida a cidade e preenche rua e bairro. */
-  async function lookupCep(digits: string) {
-    lastCep.current = digits;
-    setCepLoading(true);
-    setCepMsg(null);
-    try {
-      const response = await fetch(`https://viacep.com.br/ws/${digits}/json/`);
-      if (!response.ok) throw new Error("viacep");
-      const data = (await response.json()) as ViaCepResponse;
-      if (lastCep.current !== digits) return; // o cliente já digitou outro CEP
-
-      if (data.erro) {
-        setCepMsg({
-          tone: "warn",
-          text: "CEP não encontrado. Confira os números ou preencha manualmente.",
-        });
-        return;
-      }
-
-      if (
-        normalizeText(data.localidade ?? "") !==
-        normalizeText(SERVICE_CITY.name) ||
-        data.uf !== SERVICE_CITY.uf
-      ) {
-        setCepMsg({
-          tone: "warn",
-          text: `Entregamos apenas em ${SERVICE_CITY.name}-${SERVICE_CITY.uf}. Este CEP é de ${data.localidade ?? "outra cidade"}${data.uf ? `-${data.uf}` : ""}. Você pode escolher a retirada.`,
-        });
-        return;
-      }
-
-      if (data.logradouro) setStreet(data.logradouro);
-      const resolved = resolveZone(data.bairro);
-      if (resolved) {
-        setZoneId(resolved.zone.id);
-        if (resolved.fallback) setOtherNeighborhood(data.bairro ?? "");
-        setCepMsg({
-          tone: "ok",
-          text: resolved.fallback
-            ? fallbackNotice(data.bairro)
-            : "Endereço encontrado. Confira o número e o complemento.",
-        });
-      } else {
-        setCepMsg({
-          tone: "warn",
-          text: "Preenchemos a rua. Escolha o bairro na lista abaixo.",
-        });
-      }
-    } catch {
-      if (lastCep.current === digits) {
-        setCepMsg({
-          tone: "warn",
-          text: "Não foi possível consultar o CEP agora. Escolha o bairro abaixo.",
-        });
-      }
-    } finally {
-      if (lastCep.current === digits) setCepLoading(false);
-    }
-  }
-
-  /* Rua escolhida na lista: preenche também CEP e bairro. */
-  function handleStreetPick(item: StreetSuggestion) {
-    setStreet(item.street);
-    const formatted = formatCep(item.cep);
-    setCep(formatted);
-    lastCep.current = formatted.replace(/\D/g, ""); // evita nova consulta do mesmo CEP
-    setCepLoading(false);
-
-    const resolved = resolveZone(item.neighborhood);
-    if (resolved) {
-      setZoneId(resolved.zone.id);
-      if (resolved.fallback) setOtherNeighborhood(item.neighborhood);
-      setCepMsg({
-        tone: "ok",
-        text: resolved.fallback
-          ? fallbackNotice(item.neighborhood)
-          : "Endereço encontrado. Informe o número.",
-      });
-    } else {
-      setCepMsg({
-        tone: "warn",
-        text: "Preenchemos a rua. Escolha o bairro na lista abaixo.",
-      });
-    }
-  }
-
-  function handleCepChange(value: string) {
-    const formatted = formatCep(value);
-    setCep(formatted);
-    const digits = formatted.replace(/\D/g, "");
-    if (digits.length === 8) {
-      if (digits !== lastCep.current) void lookupCep(digits);
-    } else {
-      lastCep.current = "";
-      setCepLoading(false);
-      setCepMsg(null);
-    }
-  }
-
-  /* Usa o GPS do aparelho para preencher rua, número e bairro (o cliente confere antes de enviar). */
-  function fillFromLocation() {
-    setLocationMsg(null);
-    if (!("geolocation" in navigator)) {
-      setLocationMsg({
-        tone: "warn",
-        text: "Seu aparelho não permite usar a localização.",
-      });
-      return;
-    }
-
-    setLocating(true);
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        try {
-          const { latitude, longitude } = position.coords;
-          const response = await fetch(
-            `/api/geocode/reverse?lat=${latitude}&lon=${longitude}`,
-          );
-          if (!response.ok) throw new Error("geocode");
-          const found = (await response.json()) as ReverseGeocode;
-
-          if (found.street) setStreet(found.street);
-          if (found.number) setNumber(found.number);
-
-          const resolved = resolveZone(found.neighborhood);
-          if (resolved) {
-            setZoneId(resolved.zone.id);
-            if (resolved.fallback)
-              setOtherNeighborhood(found.neighborhood ?? "");
-          }
-
-          if (!found.street) {
-            setLocationMsg({
-              tone: "warn",
-              text: "Não encontramos a rua neste ponto. Preencha manualmente.",
-            });
-          } else if (!resolved) {
-            setLocationMsg({
-              tone: "warn",
-              text: "Preenchemos a rua. Escolha o bairro na lista.",
-            });
-          } else {
-            setLocationMsg({
-              tone: "ok",
-              text: resolved.fallback
-                ? fallbackNotice(found.neighborhood)
-                : "Endereço preenchido. Confira o número e o complemento.",
-            });
-          }
-        } catch {
-          setLocationMsg({
-            tone: "warn",
-            text: "Não foi possível identificar o endereço. Preencha manualmente.",
-          });
-        } finally {
-          setLocating(false);
-        }
-      },
-      (geoError) => {
-        setLocating(false);
-        setLocationMsg({
-          tone: "warn",
-          text:
-            geoError.code === geoError.PERMISSION_DENIED
-              ? "Permissão de localização negada. Libere nas configurações do navegador ou preencha manualmente."
-              : "Não conseguimos obter sua localização. Preencha manualmente.",
-        });
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 },
-    );
-  }
 
   function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
+
+    if (deliveryType === "DELIVERY") {
+      if (!address) {
+        setError("Escolha um endereço de entrega.");
+        return;
+      }
+      if (quote && !quote.deliverable) {
+        setError(quote.message);
+        return;
+      }
+    }
+
+    if (belowMin) {
+      setError(minOrderMessage(minOrderCents, missingMinCents));
+      return;
+    }
+
+    if (docError) {
+      setDocumentTouched(true);
+      setError(docError);
+      return;
+    }
 
     if (!calc.ok) {
       setError(calc.errors.map((e) => e.message).join(" "));
@@ -446,30 +221,28 @@ export function CheckoutForm({
       /* ignorar */
     }
 
+    const addr = deliveryType === "DELIVERY" ? address : null;
+
     startTransition(async () => {
       const result = await createOrder({
         customerName: name,
         customerPhone: phone,
         deliveryType,
-        deliveryZoneId: deliveryType === "DELIVERY" ? zoneId || null : null,
-        street: deliveryType === "DELIVERY" ? street : null,
-        number: deliveryType === "DELIVERY" ? number : null,
-        complement: deliveryType === "DELIVERY" ? complement || null : null,
+        street: addr?.street ?? null,
+        number: addr?.number ?? null,
+        complement: addr?.complement || null,
+        neighborhood: addr?.neighborhood || null,
+        city: addr?.city ?? null,
+        lat: addr?.lat ?? null,
+        lon: addr?.lon ?? null,
         reference:
-          deliveryType === "DELIVERY"
-            ? [
-              usingFallback && otherNeighborhood.trim()
-                ? `Bairro: ${otherNeighborhood.trim().slice(0, 40)}`
-                : "",
-              reference.trim(),
-            ]
-              .filter(Boolean)
-              .join(" | ")
-              .slice(0, 120) || null
+          addr && usingFallback && addr.neighborhood
+            ? `Bairro: ${addr.neighborhood.slice(0, 40)}`
             : null,
         paymentMethod,
         changeForCents,
         notes: combinedNotes || null,
+        documentNumber: includeDocument ? docDigits : null,
         items,
       });
 
@@ -616,7 +389,7 @@ export function CheckoutForm({
             <Input
               className={inputClass}
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              readOnly
               autoComplete="name"
               required
             />
@@ -625,7 +398,7 @@ export function CheckoutForm({
             <Input
               className={inputClass}
               value={phone}
-              onChange={(e) => setPhone(formatPhone(e.target.value))}
+              readOnly
               inputMode="tel"
               autoComplete="tel"
               placeholder="(44) 99833-3450"
@@ -655,169 +428,11 @@ export function CheckoutForm({
           </div>
 
           {deliveryType === "DELIVERY" ? (
-            <div className="space-y-4">
-              <div className="space-y-2">
-                {savedAddress ? (
-                  <button
-                    type="button"
-                    onClick={applySavedAddress}
-                    className="flex w-full items-center gap-3 rounded-xl border border-[#F59E0B]/60 bg-amber-50 px-4 py-3 text-left transition hover:bg-amber-100"
-                  >
-                    <MapPin className="h-4 w-4 shrink-0 text-[#0A2540]" strokeWidth={1.75} />
-                    <span className="min-w-0 text-sm">
-                      <span className="block font-semibold text-[#0A2540]">Usar meu endereço salvo</span>
-                      <span className="block truncate text-xs text-slate-600">
-                        {savedAddress.street}, {savedAddress.number}
-                      </span>
-                    </span>
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={fillFromLocation}
-                  disabled={locating}
-                  className="flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white text-sm font-semibold text-[#0A2540] transition hover:bg-slate-50 disabled:opacity-60"
-                >
-                  {locating ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <LocateFixed className="h-4 w-4" strokeWidth={1.75} />
-                  )}
-                  {locating
-                    ? "Buscando sua localização..."
-                    : "Usar minha localização atual"}
-                </button>
-                {locationMsg ? (
-                  <p
-                    role="status"
-                    className={cn(
-                      "rounded-lg border px-3 py-2 text-xs",
-                      locationMsg.tone === "ok"
-                        ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                        : "border-amber-200 bg-amber-50 text-amber-900",
-                    )}
-                  >
-                    {locationMsg.text}
-                  </p>
-                ) : null}
-              </div>
-              <div className="space-y-1.5">
-                <div className="flex items-baseline justify-between gap-3">
-                  <label
-                    htmlFor="checkout-cep"
-                    className="text-sm font-medium text-slate-700"
-                  >
-                    CEP
-                  </label>
-                  <a
-                    href="https://buscacepinter.correios.com.br/app/endereco/index.php"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-slate-500 underline underline-offset-2 hover:text-[#0A2540]"
-                  >
-                    Não sei meu CEP
-                  </a>
-                </div>
-                <div className="relative">
-                  <Input
-                    id="checkout-cep"
-                    type="tel"
-                    inputMode="numeric"
-                    autoComplete="postal-code"
-                    placeholder="00000-000"
-                    value={cep}
-                    onChange={(e) => handleCepChange(e.target.value)}
-                    className={cn(inputClass, "pr-10")}
-                  />
-                  {cepLoading ? (
-                    <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-slate-400" />
-                  ) : null}
-                </div>
-                {cepMsg ? (
-                  <p
-                    role="status"
-                    className={cn(
-                      "rounded-lg border px-3 py-2 text-xs",
-                      cepMsg.tone === "ok"
-                        ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-                        : "border-amber-200 bg-amber-50 text-amber-900",
-                    )}
-                  >
-                    {cepMsg.text}
-                  </p>
-                ) : null}
-              </div>
-
-              <div className="space-y-1.5">
-                <span className="text-sm font-medium text-slate-700">
-                  Bairro
-                </span>
-                <ZoneCombobox
-                  zones={zones}
-                  value={zoneId}
-                  onChange={setZoneId}
-                  fallbackId={fallbackZone?.id}
-                />
-                {zone ? (
-                  <p className="text-xs text-slate-500">
-                    Entrega: {formatCents(zone.feeCents)} • ~
-                    {zone.estimatedMinutes} min
-                  </p>
-                ) : null}
-              </div>
-              {usingFallback ? (
-                <Field label="Qual é o seu bairro?">
-                  <Input
-                    className={inputClass}
-                    value={otherNeighborhood}
-                    onChange={(e) => setOtherNeighborhood(e.target.value)}
-                    placeholder="Ex: Parque Industrial 200"
-                    required
-                  />
-                </Field>
-              ) : null}
-              <div className="grid grid-cols-3 gap-3">
-                <div className="col-span-2">
-                  <div className="space-y-1.5">
-                    <label
-                      htmlFor="checkout-street"
-                      className="text-sm font-medium text-slate-700"
-                    >
-                      Rua
-                    </label>
-                    <StreetAutocomplete
-                      id="checkout-street"
-                      value={street}
-                      onChange={setStreet}
-                      onPick={handleStreetPick}
-                    />
-                  </div>
-                </div>
-                <Field label="Número">
-                  <Input
-                    className={inputClass}
-                    value={number}
-                    onChange={(e) => setNumber(e.target.value)}
-                    inputMode="numeric"
-                    required
-                  />
-                </Field>
-              </div>
-              <Field label="Complemento (opcional)">
-                <Input
-                  className={inputClass}
-                  value={complement}
-                  onChange={(e) => setComplement(e.target.value)}
-                />
-              </Field>
-              <Field label="Ponto de referência (opcional)">
-                <Input
-                  className={inputClass}
-                  value={reference}
-                  onChange={(e) => setReference(e.target.value)}
-                />
-              </Field>
-            </div>
+            <AddressPicker
+              value={address}
+              onChange={setAddress}
+              estimatedMinutes={zone?.estimatedMinutes ?? null}
+            />
           ) : (
             <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
               Você retira o pedido diretamente na hamburgueria. Avisaremos pelo
@@ -886,6 +501,47 @@ export function CheckoutForm({
             </p>
           ) : null}
 
+          <div className="space-y-3 rounded-xl bg-slate-50 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <label htmlFor="checkout-doc-switch" className="text-sm font-medium text-slate-700">
+                Incluir CPF/CNPJ na nota
+              </label>
+              <Switch
+                id="checkout-doc-switch"
+                checked={includeDocument}
+                onCheckedChange={(on) => {
+                  setIncludeDocument(on);
+                  if (!on) {
+                    setDocumentValue("");
+                    setDocumentTouched(false);
+                  }
+                }}
+                className="bg-slate-300 focus-visible:ring-[#F59E0B] data-[state=checked]:bg-[#F59E0B]"
+              />
+            </div>
+            {includeDocument ? (
+              <div className="space-y-1.5">
+                <Input
+                  className={inputClass}
+                  value={documentValue}
+                  onChange={(e) => setDocumentValue(formatDocument(e.target.value))}
+                  onBlur={() => setDocumentTouched(true)}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  placeholder="CPF ou CNPJ"
+                  aria-label="CPF ou CNPJ na nota"
+                  aria-invalid={showDocError}
+                  maxLength={18}
+                />
+                {showDocError ? (
+                  <p role="alert" className="text-xs font-medium text-red-700">
+                    {docError}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+
           <Field label="Observações (opcional)">
             <Textarea
               className={cn(inputClass, "h-auto min-h-24 py-3")}
@@ -905,7 +561,7 @@ export function CheckoutForm({
           {deliveryType === "DELIVERY" ? (
             <div className="flex justify-between">
               <span className="text-slate-500">Taxa de entrega</span>
-              <span>{zone ? formatCents(fee) : "Selecione o bairro"}</span>
+              <span>{zone ? formatCents(fee) : "Escolha o endereço"}</span>
             </div>
           ) : null}
           <div className="flex justify-between border-t border-slate-200 pt-2 text-base font-extrabold">
@@ -914,9 +570,11 @@ export function CheckoutForm({
           </div>
         </section>
 
-        {!calc.ok && storeOpen ? (
+        {!calc.ok && storeOpen && calc.errors.some((e) => e.code !== "MIN_ORDER_NOT_REACHED") ? (
           <ul className="space-y-1 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
-            {calc.errors.map((e, i) => (
+            {calc.errors
+              .filter((e) => e.code !== "MIN_ORDER_NOT_REACHED")
+              .map((e, i) => (
               <li key={`${e.code}-${i}`}>{e.message}</li>
             ))}
           </ul>
@@ -930,6 +588,14 @@ export function CheckoutForm({
 
         {/* CTA: fixo na base no mobile */}
         <div className="fixed inset-x-0 bottom-0 z-40 space-y-2 border-t border-slate-200 bg-white p-3 shadow-[0_-4px_16px_rgba(0,0,0,0.08)] md:static md:z-auto md:border-0 md:bg-transparent md:p-0 md:shadow-none">
+          {storeOpen && belowMin ? (
+            <p
+              role="status"
+              className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs font-medium text-amber-900"
+            >
+              {minOrderMessage(minOrderCents, missingMinCents)}
+            </p>
+          ) : null}
           {!storeOpen ? (
             <p className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-xs font-medium text-amber-900">
               A loja está fechada no momento. Não é possível finalizar o pedido
@@ -938,7 +604,7 @@ export function CheckoutForm({
           ) : null}
           <button
             type="submit"
-            disabled={isPending || !storeOpen || !calc.ok}
+            disabled={isPending || !storeOpen || !calc.ok || belowMin || !!docError}
             className="mx-auto flex h-14 w-full max-w-xl items-center justify-center gap-2 rounded-xl bg-[#F59E0B] text-base font-bold text-[#0A2540] transition hover:brightness-105 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
           >
             {isPending ? <Loader2 className="h-5 w-5 animate-spin" /> : null}

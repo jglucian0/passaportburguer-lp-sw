@@ -91,6 +91,7 @@ export type AdminOrderView = {
   deliveryFeeCents: number;
   totalCents: number;
   notes: string | null;
+  documentNumber: string | null;
   cancelReason: string | null;
   addressSnapshot: AddressSnapshot | null;
   customerName: string;
@@ -161,6 +162,7 @@ export async function getAdminOrders(): Promise<AdminOrderView[]> {
     deliveryFeeCents: o.deliveryFeeCents,
     totalCents: o.totalCents,
     notes: o.notes,
+    documentNumber: o.documentNumber,
     cancelReason: o.cancelReason,
     addressSnapshot: o.addressSnapshot,
     customerName,

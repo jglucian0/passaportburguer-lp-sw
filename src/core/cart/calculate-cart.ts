@@ -1,3 +1,4 @@
+import { minOrderMessage } from "../store/min-order";
 import type { CartItemInput } from "../schemas/cart";
 import type { DeliveryType, PaymentMethod } from "../schemas/common";
 import type { CatalogDeliveryZone, CatalogProduct } from "../schemas/product";
@@ -191,7 +192,7 @@ export function calculateCart(params: CalculateCartParams): CalculateCartResult 
   let deliveryFeeCents = 0;
   if (deliveryType === "DELIVERY") {
     if (!deliveryZone) {
-      errors.push({ code: "ZONE_REQUIRED", message: "Selecione o bairro de entrega." });
+      errors.push({ code: "ZONE_REQUIRED", message: "Escolha um endereço de entrega válido." });
     } else if (!deliveryZone.isActive) {
       errors.push({ code: "ZONE_INACTIVE", message: "Não entregamos mais neste bairro." });
     } else {
@@ -202,10 +203,11 @@ export function calculateCart(params: CalculateCartParams): CalculateCartResult 
   const subtotalCents = lines.reduce((sum, l) => sum + l.totalItemCents, 0);
   const totalCents = subtotalCents + deliveryFeeCents;
 
-  if (errors.length === 0 && subtotalCents < minOrderCents) {
+  /* Mínimo vale só para ENTREGA e incide sobre o subtotal dos produtos (sem a taxa). */
+  if (errors.length === 0 && deliveryType === "DELIVERY" && subtotalCents < minOrderCents) {
     errors.push({
       code: "MIN_ORDER_NOT_REACHED",
-      message: `Pedido mínimo de ${formatCents(minOrderCents)}.`,
+      message: minOrderMessage(minOrderCents, minOrderCents - subtotalCents),
     });
   }
 

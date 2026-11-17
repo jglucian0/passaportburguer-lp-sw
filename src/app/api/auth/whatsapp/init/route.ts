@@ -1,27 +1,36 @@
 import { eq, lt } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
-import {
-  buildWaUrl,
-  generateEmbarkCode,
-  getWhatsappAuthMode,
-  normalizeBrPhone,
-  OTP_TTL_MS,
-} from "@/infra/auth/otp";
+import { whatsappInitBody } from "@/core/schemas/auth";
+import { fail, findCustomerByPhone, isRegistered, parseBody } from "@/infra/auth/account";
+import { buildWaUrl, generateEmbarkCode, getWhatsappAuthMode, OTP_TTL_MS } from "@/infra/auth/otp";
 import { db } from "@/infra/db";
 import { whatsappOtps } from "@/infra/db/schema";
+import { enforceRateLimit } from "@/infra/security/rate-limit";
+import { getTenantRef } from "@/infra/tenant/resolve";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
-  const body = (await request.json().catch(() => null)) as { phone?: unknown } | null;
-  const phone = typeof body?.phone === "string" ? normalizeBrPhone(body.phone) : null;
-  if (!phone) {
-    return NextResponse.json({ error: "Informe um WhatsApp válido com DDD." }, { status: 400 });
-  }
+  const limited = await enforceRateLimit(request, "auth:whatsapp-init", 5, 300);
+  if (limited) return limited;
+
+  const body = await parseBody(request, whatsappInitBody);
+  if (body.error) return body.error;
+  const local = body.data.phone;
+  const phone = `55${local}`;
+
   if (!buildWaUrl("PASS-0000")) {
     console.error("[whatsapp] NEXT_PUBLIC_STORE_WHATSAPP não configurado.");
-    return NextResponse.json({ error: "Login por WhatsApp indisponível no momento." }, { status: 503 });
+    return fail("Login por WhatsApp indisponível no momento.", 503);
+  }
+
+  /* Conta já verificada com senha: entra só por senha (nada de reverificar via WhatsApp). */
+  const ref = await getTenantRef();
+  if (!ref) return fail("Loja não encontrada.", 404);
+  const existing = await findCustomerByPhone(ref.id, local);
+  if (existing && isRegistered(existing)) {
+    return fail("Esta conta já foi verificada. Entre com sua senha.", 409);
   }
 
   const now = new Date();
@@ -38,13 +47,16 @@ export async function POST(request: Request) {
       .onConflictDoNothing({ target: whatsappOtps.code })
       .returning({ id: whatsappOtps.id });
     if (inserted.length > 0) {
-      return NextResponse.json({
-        code,
-        waUrl: buildWaUrl(code),
-        mode: getWhatsappAuthMode(),
-        expiresIn: OTP_TTL_MS / 1000,
-      });
+      return NextResponse.json(
+        {
+          code,
+          waUrl: buildWaUrl(code),
+          mode: getWhatsappAuthMode(),
+          expiresIn: OTP_TTL_MS / 1000,
+        },
+        { headers: { "Cache-Control": "no-store" } },
+      );
     }
   }
-  return NextResponse.json({ error: "Não foi possível gerar o código. Tente novamente." }, { status: 503 });
+  return fail("Não foi possível gerar o código. Tente novamente.", 503);
 }

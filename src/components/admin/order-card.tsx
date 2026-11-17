@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ORDER_STATUS_LABELS, canCancel, getNextStatus } from "@/core/orders/state-machine";
 import type { OrderStatus, PaymentMethod } from "@/core/schemas/common";
+import { formatDocument } from "@/core/validation/document";
 import { cn, formatCents, formatDateTime, formatPhone, whatsappLink } from "@/lib/utils";
 
 import { useRunAction } from "./use-run-action";
@@ -112,6 +113,12 @@ export function OrderCard({ order }: { order: AdminOrderView }) {
           </li>
         ))}
       </ul>
+
+      {order.documentNumber ? (
+        <p className="text-xs text-slate-300">
+          {order.documentNumber.length === 14 ? "CNPJ" : "CPF"} na nota: {formatDocument(order.documentNumber)}
+        </p>
+      ) : null}
 
       {order.notes ? (
         <p className="rounded-lg bg-amber-500/10 p-2 text-xs text-amber-400">Obs: {order.notes}</p>

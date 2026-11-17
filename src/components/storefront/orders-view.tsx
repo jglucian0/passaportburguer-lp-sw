@@ -17,7 +17,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, useTransition } from "react";
 
-import { clearCustomerSession, type CustomerOrderView } from "@/actions/storefront";
+import { type CustomerOrderView } from "@/actions/storefront";
 import { isTerminalStatus } from "@/core/orders/state-machine";
 import type { OrderStatus } from "@/core/schemas/common";
 import type { CatalogCategory, CatalogDeliveryZone } from "@/core/schemas/product";
@@ -713,7 +713,7 @@ export function OrdersView({
       } catch {
         /* ignorar */
       }
-      await clearCustomerSession();
+      await fetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
       router.refresh();
     });
   }

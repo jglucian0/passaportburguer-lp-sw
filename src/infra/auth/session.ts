@@ -2,10 +2,8 @@ import { jwtVerify, SignJWT } from "jose";
 import { cookies } from "next/headers";
 
 export const ADMIN_COOKIE = "admin_token";
-export const CUSTOMER_COOKIE = "customer_token";
 
 const ADMIN_TTL_SECONDS = 60 * 60 * 12; // 12h
-const CUSTOMER_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 dias
 
 export type AdminSession = {
   userId: string;
@@ -14,13 +12,8 @@ export type AdminSession = {
   role: "OWNER" | "STAFF";
 };
 
-export type CustomerSession = {
-  customerId: string;
-  tenantId: string;
-  phone: string;
-};
 
-type TokenKind = "admin" | "customer";
+type TokenKind = "admin";
 
 function getSecret(): Uint8Array {
   const secret = process.env.AUTH_SECRET;
@@ -84,30 +77,6 @@ export async function verifyAdminToken(token: string | undefined): Promise<Admin
   };
 }
 
-/* ----------------------------- Customer ---------------------------- */
-
-export function signCustomerToken(session: CustomerSession): Promise<string> {
-  return sign(
-    "customer",
-    session.customerId,
-    { tenantId: session.tenantId, phone: session.phone },
-    CUSTOMER_TTL_SECONDS,
-  );
-}
-
-export async function verifyCustomerToken(
-  token: string | undefined,
-): Promise<CustomerSession | null> {
-  const payload = await verify("customer", token);
-  if (!payload) return null;
-  if (typeof payload.tenantId !== "string" || typeof payload.phone !== "string") return null;
-  return {
-    customerId: payload.sub as string,
-    tenantId: payload.tenantId,
-    phone: payload.phone,
-  };
-}
-
 /* ------------------------- Cookies (server) ------------------------ */
 
 function cookieOptions(maxAge: number) {
@@ -133,15 +102,5 @@ export async function getAdminSession(): Promise<AdminSession | null> {
   return verifyAdminToken((await cookies()).get(ADMIN_COOKIE)?.value);
 }
 
-export async function setCustomerSessionCookie(session: CustomerSession): Promise<void> {
-  const token = await signCustomerToken(session);
-  (await cookies()).set(CUSTOMER_COOKIE, token, cookieOptions(CUSTOMER_TTL_SECONDS));
-}
 
-export async function clearCustomerSessionCookie(): Promise<void> {
-  (await cookies()).set(CUSTOMER_COOKIE, "", cookieOptions(0));
-}
 
-export async function getCustomerSession(): Promise<CustomerSession | null> {
-  return verifyCustomerToken((await cookies()).get(CUSTOMER_COOKIE)?.value);
-}

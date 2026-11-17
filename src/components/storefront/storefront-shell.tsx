@@ -17,6 +17,8 @@ import { ACTIVE_ORDER_KEY } from "./cart-storage";
 import { useCustomerFirstName } from "./use-customer";
 import { PASSPORT_SELECT_EVENT } from "./destinations";
 import { Footer } from "./footer";
+import { effectiveMinOrderCents } from "@/core/store/min-order";
+
 import { Header } from "./header";
 import { OverlayProvider, useOverlayOpen } from "./overlay-context";
 import { DRINK_CATEGORY, MAIN_CATEGORY } from "./upsell";
@@ -220,7 +222,7 @@ export function StorefrontShell({
         <Footer tenant={tenant} />
         {showCartBar ? <FloatingCartBar categories={categories} /> : null}
         <BottomTabBar />
-        <CartDrawer minOrderCents={tenant.minOrderCents} storeOpen={store.isOpen} categories={categories} />
+        <CartDrawer minOrderCents={effectiveMinOrderCents(tenant.minOrderCents)} storeOpen={store.isOpen} categories={categories} />
       </div>
       </OverlayProvider>
     </CartProvider>
