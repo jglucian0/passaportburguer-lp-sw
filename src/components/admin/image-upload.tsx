@@ -94,7 +94,7 @@ export function ImageUpload({
           }}
         />
       </div>
-      {error ? <p className="text-xs text-red-400">{error}</p> : null}
+      {error ? <p className="text-xs text-red-600">{error}</p> : null}
     </div>
   );
 }

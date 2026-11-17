@@ -25,6 +25,21 @@ export type DayOpeningHours = {
 /** Chaves "0" (domingo) a "6" (sábado). */
 export type OpeningHours = Record<"0" | "1" | "2" | "3" | "4" | "5" | "6", DayOpeningHours>;
 
+/** Faixa de frete por distância: vale até `maxKm` (a faixa começa onde a anterior termina). */
+export type DeliveryBand = {
+  maxKm: number;
+  feeCents: number;
+};
+
+/** Regras de cobertura por raio a partir do endereço base da loja. */
+export type DeliveryRules = {
+  restrictToCity: boolean;
+  city: string;
+  maxRadiusKm: number;
+  baseAddress: string;
+  bands: DeliveryBand[];
+};
+
 export type AddressSnapshot = {
   neighborhood: string;
   street: string;
@@ -32,9 +47,16 @@ export type AddressSnapshot = {
   complement: string | null;
   reference: string | null;
   deliveryZoneId: string | null;
+  /** Pino confirmado pelo cliente no mapa (ausente em pedidos antigos/manuais). */
+  latitude?: number | null;
+  longitude?: number | null;
 };
 
+export type SaiposSyncStatus = "PENDING" | "SYNCED" | "FAILED" | "DISABLED";
+
 export type OrderItemAddonSnapshot = {
+  /** Id do adicional no cardápio (usado para resolver o saiposCode). Ausente em pedidos antigos. */
+  addon_id?: string;
   name: string;
   price_cents: number;
   quantity: number;
@@ -44,13 +66,14 @@ export type OrderItemAddonSnapshot = {
 /* Enums                                                               */
 /* ------------------------------------------------------------------ */
 
-export const adminRoleEnum = pgEnum("admin_role", ["OWNER", "STAFF"]);
+export const adminRoleEnum = pgEnum("admin_role", ["OWNER", "KITCHEN"]);
 
 export const orderStatusEnum = pgEnum("order_status", [
   "AWAITING_PAYMENT",
   "RECEIVED",
   "PREPARING",
   "OUT_FOR_DELIVERY",
+  "READY_FOR_PICKUP",
   "DELIVERED",
   "CANCELED",
 ]);
@@ -85,6 +108,34 @@ export const tenants = pgTable(
 );
 
 /* ------------------------------------------------------------------ */
+/* 1b. store_settings (1 registro por tenant)                          */
+/* ------------------------------------------------------------------ */
+
+export const storeSettings = pgTable(
+  "store_settings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    /** true = aberta à força; false = fechada à força; null = segue o horário. */
+    isOpenOverride: boolean("is_open_override"),
+    autoAcceptOrders: boolean("auto_accept_orders").notNull().default(false),
+    estimatedDeliveryMinutes: integer("estimated_delivery_minutes").notNull().default(40),
+    openingHours: jsonb("opening_hours").$type<OpeningHours>().notNull(),
+    /** Endereço físico da loja (exibição). */
+    address: text("address"),
+    /** Cobertura/faixas de frete por raio; nulo = padrão de `DEFAULT_DELIVERY_RULES`. */
+    deliveryRules: jsonb("delivery_rules").$type<DeliveryRules>(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [uniqueIndex("store_settings_tenant_uq").on(t.tenantId)],
+);
+
+/* ------------------------------------------------------------------ */
 /* 2. admin_users                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -98,7 +149,9 @@ export const adminUsers = pgTable(
     name: text("name").notNull(),
     email: text("email").notNull(),
     passwordHash: text("password_hash").notNull(),
-    role: adminRoleEnum("role").notNull().default("STAFF"),
+    role: adminRoleEnum("role").notNull().default("KITCHEN"),
+    /** Acesso desativado = não entra nem opera (sessões existentes caem). */
+    isActive: boolean("is_active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -147,6 +200,8 @@ export const products = pgTable(
     isAvailable: boolean("is_available").notNull().default(true),
     isFeatured: boolean("is_featured").notNull().default(false),
     sortOrder: integer("sort_order").notNull().default(0),
+    /** Código PDV do produto no Saipos (opcional). */
+    saiposCode: text("saipos_code"),
   },
   (t) => [
     index("products_tenant_idx").on(t.tenantId),
@@ -198,6 +253,8 @@ export const addons = pgTable(
     /** Quantidade máxima deste adicional por item (o grupo ainda limita o total). */
     maxQuantity: integer("max_quantity").notNull().default(1),
     isAvailable: boolean("is_available").notNull().default(true),
+    /** Código PDV do adicional no Saipos (opcional). */
+    saiposCode: text("saipos_code"),
   },
   (t) => [
     index("addons_tenant_idx").on(t.tenantId),
@@ -395,6 +452,14 @@ export const orders = pgTable(
     /** CPF (11) ou CNPJ (14) na nota fiscal, só dígitos. Opcional. */
     documentNumber: text("document_number"),
     cancelReason: text("cancel_reason"),
+    /** Integração Saipos: id do pedido no Saipos, estado do envio e último erro. */
+    saiposOrderId: text("saipos_order_id"),
+    saiposSyncStatus: text("saipos_sync_status")
+      .$type<SaiposSyncStatus>()
+      .notNull()
+      .default("PENDING"),
+    saiposLastError: text("saipos_last_error"),
+    saiposSyncedAt: timestamp("saipos_synced_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
@@ -406,6 +471,7 @@ export const orders = pgTable(
     uniqueIndex("orders_tenant_number_uq").on(t.tenantId, t.orderNumber),
     index("orders_tenant_status_idx").on(t.tenantId, t.status),
     index("orders_tenant_updated_idx").on(t.tenantId, t.updatedAt),
+    index("orders_saipos_order_idx").on(t.saiposOrderId),
     index("orders_customer_idx").on(t.customerId, t.createdAt),
   ],
 );
@@ -531,6 +597,35 @@ export type Customer = typeof customers.$inferSelect;
 export type NewCustomer = typeof customers.$inferInsert;
 export type CustomerAddress = typeof customerAddresses.$inferSelect;
 export type NewCustomerAddress = typeof customerAddresses.$inferInsert;
+/* ------------------------------------------------------------------ */
+/* coupons (cupons promocionais)                                       */
+/* ------------------------------------------------------------------ */
+
+export const couponTypeEnum = pgEnum("coupon_type", ["PERCENT", "FIXED"]);
+
+export const coupons = pgTable(
+  "coupons",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    code: text("code").notNull(),
+    type: couponTypeEnum("type").notNull(),
+    /** PERCENT: 1–100. FIXED: centavos. */
+    value: integer("value").notNull(),
+    minOrderCents: integer("min_order_cents").notNull().default(0),
+    /** null = ilimitado. */
+    maxUses: integer("max_uses"),
+    usedCount: integer("used_count").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("coupons_tenant_code_uq").on(t.tenantId, t.code)],
+);
+
+export type Coupon = typeof coupons.$inferSelect;
+
 export type Order = typeof orders.$inferSelect;
 export type NewOrder = typeof orders.$inferInsert;
 export type OrderItem = typeof orderItems.$inferSelect;

@@ -1,7 +1,7 @@
 import { count, eq, max } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
-import { getAdminSession } from "@/infra/auth/session";
+import { getActiveAdminSession as getAdminSession } from "@/infra/auth/active-session";
 import { db } from "@/infra/db";
 import { orders } from "@/infra/db/schema";
 

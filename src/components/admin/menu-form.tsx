@@ -58,7 +58,7 @@ export function CategoryForm({
         Categoria ativa (visível no cardápio)
         <Switch checked={isActive} onCheckedChange={setIsActive} />
       </label>
-      {error ? <p className="text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="text-sm text-red-600">{error}</p> : null}
       <div className="flex gap-2">
         <Button type="submit" className="flex-1" disabled={isPending}>
           {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
@@ -174,7 +174,7 @@ export function ProductForm({
         <Switch checked={isFeatured} onCheckedChange={setIsFeatured} />
       </label>
 
-      {error ? <p className="text-sm text-red-400">{error}</p> : null}
+      {error ? <p className="text-sm text-red-600">{error}</p> : null}
 
       <div className="flex gap-2">
         <Button type="submit" className="flex-1" disabled={isPending}>

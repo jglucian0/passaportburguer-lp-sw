@@ -26,7 +26,7 @@ export function Field({
     <label className="block space-y-1.5">
       <span className="text-sm font-medium text-foreground">{label}</span>
       {children}
-      {error ? <span className="block text-xs text-red-400">{error}</span> : null}
+      {error ? <span className="block text-xs text-red-600">{error}</span> : null}
     </label>
   );
 }

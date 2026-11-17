@@ -24,13 +24,15 @@ export const ORDER_STATUSES = [
   "RECEIVED",
   "PREPARING",
   "OUT_FOR_DELIVERY",
+  "READY_FOR_PICKUP",
   "DELIVERED",
   "CANCELED",
 ] as const;
 
 export const DELIVERY_TYPES = ["DELIVERY", "PICKUP"] as const;
 export const PAYMENT_METHODS = ["PIX", "CARD_ON_DELIVERY", "CASH"] as const;
-export const ADMIN_ROLES = ["OWNER", "STAFF"] as const;
+export const ADMIN_ROLES = ["OWNER", "KITCHEN"] as const;
+export type AdminRole = (typeof ADMIN_ROLES)[number];
 
 export const orderStatusSchema = z.enum(ORDER_STATUSES);
 export const deliveryTypeSchema = z.enum(DELIVERY_TYPES);

@@ -15,6 +15,12 @@
     "db:seed": "tsx --env-file=.env.local src/infra/db/seed.ts",
     "db:add-item": "tsx --env-file=.env.local src/infra/db/add-menu-item.ts",
     "db:sync-descriptions": "tsx --env-file=.env.local src/infra/db/sync-descriptions.ts",
+    "db:migrate-settings": "tsx --env-file=.env.local src/infra/db/migrate-store-settings.ts",
+    "db:migrate-kds": "tsx --env-file=.env.local src/infra/db/migrate-kds.ts",
+    "db:migrate-delivery": "tsx --env-file=.env.local src/infra/db/migrate-delivery-team.ts",
+    "db:migrate-coupons": "tsx --env-file=.env.local src/infra/db/migrate-coupons.ts",
+    "db:migrate-saipos": "tsx --env-file=.env.local src/infra/db/migrate-saipos.ts",
+    "db:sync-images": "tsx --env-file=.env.local src/infra/db/sync-images.ts",
     "db:seed-zones": "tsx --env-file=.env.local src/infra/db/seed-zones.ts"
   },
   "dependencies": {

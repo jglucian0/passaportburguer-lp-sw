@@ -1,0 +1,160 @@
+import { timingSafeEqual } from "node:crypto";
+
+import { and, eq, or } from "drizzle-orm";
+import { NextResponse, type NextRequest } from "next/server";
+
+import type { DeliveryType, OrderStatus } from "@/core/schemas/common";
+import { db } from "@/infra/db";
+import { orders } from "@/infra/db/schema";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+/**
+ * Webhook de status do Saipos (cadastrar em "Configuração de Webhooks" no Saipos Developer).
+ * Autenticação: header `x-webhook-secret` (ou `Authorization: Bearer`) igual a SAIPOS_WEBHOOK_SECRET.
+ * Payload (tolerante): { order_id | id_order | id, status | event | order_status }.
+ */
+
+function secretMatches(received: string | null, expected: string): boolean {
+  if (!received) return false;
+  const a = Buffer.from(received);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+function normalize(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  return value
+    .trim()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toUpperCase()
+    .replace(/[\s-]+/g, "_");
+}
+
+function pick(body: Record<string, unknown>, keys: string[]): string | null {
+  const nested = (body.data && typeof body.data === "object" ? (body.data as Record<string, unknown>) : {}) as Record<
+    string,
+    unknown
+  >;
+  for (const source of [body, nested]) {
+    for (const key of keys) {
+      const value = source[key];
+      if (typeof value === "string" && value) return value;
+      if (typeof value === "number") return String(value);
+    }
+  }
+  return null;
+}
+
+type Mapped = { status: OrderStatus } | "IGNORE";
+
+/** Evento Saipos -> status interno (leva em conta o tipo de entrega). */
+function mapEvent(event: string, deliveryType: DeliveryType): Mapped {
+  switch (event) {
+    case "ACEITO":
+    case "EM_PREPARO":
+    case "ACCEPTED":
+    case "PREPARING":
+      return { status: "PREPARING" };
+    case "PRONTO":
+    case "READY":
+      // Entrega: pronto ainda não saiu; só a retirada tem status próprio.
+      return deliveryType === "PICKUP" ? { status: "READY_FOR_PICKUP" } : "IGNORE";
+    case "SAIU_PARA_ENTREGA":
+    case "OUT_FOR_DELIVERY":
+      return { status: deliveryType === "DELIVERY" ? "OUT_FOR_DELIVERY" : "READY_FOR_PICKUP" };
+    case "CONCLUIDO":
+    case "FINALIZADO":
+    case "DELIVERED":
+    case "FINISHED":
+      return { status: "DELIVERED" };
+    case "CANCELADO":
+    case "CANCELED":
+    case "CANCELLED":
+      return { status: "CANCELED" };
+    default:
+      return "IGNORE";
+  }
+}
+
+/** Ordem do fluxo: o webhook só avança (eventos atrasados/duplicados não regridem o pedido). */
+const RANK: Record<OrderStatus, number> = {
+  AWAITING_PAYMENT: 0,
+  RECEIVED: 1,
+  PREPARING: 2,
+  OUT_FOR_DELIVERY: 3,
+  READY_FOR_PICKUP: 3,
+  DELIVERED: 4,
+  CANCELED: 5,
+};
+
+export async function POST(request: NextRequest) {
+  const expectedSecret = process.env.SAIPOS_WEBHOOK_SECRET;
+  if (!expectedSecret) {
+    return NextResponse.json({ error: "Webhook não configurado." }, { status: 503 });
+  }
+
+  const bearer = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? null;
+  const received = request.headers.get("x-webhook-secret") ?? bearer;
+  if (!secretMatches(received, expectedSecret)) {
+    return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
+  }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: "JSON inválido." }, { status: 400 });
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return NextResponse.json({ error: "Payload inválido." }, { status: 400 });
+  }
+  const payload = body as Record<string, unknown>;
+
+  const externalId = pick(payload, ["order_id", "id_order", "orderId", "external_id", "id"]);
+  const event = normalize(pick(payload, ["status", "event", "order_status", "event_type"]));
+  if (!externalId || !event) {
+    return NextResponse.json({ error: "Payload inválido." }, { status: 400 });
+  }
+
+  // O order_id enviado ao Saipos é o UUID do pedido; saiposOrderId cobre ids próprios devolvidos por ele.
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(externalId);
+  const [order] = await db
+    .select({
+      id: orders.id,
+      status: orders.status,
+      deliveryType: orders.deliveryType,
+    })
+    .from(orders)
+    .where(uuid ? or(eq(orders.id, externalId), eq(orders.saiposOrderId, externalId)) : eq(orders.saiposOrderId, externalId))
+    .limit(1);
+
+  // 200 mesmo sem achar: evita retentativas infinitas do Saipos para pedidos que não são nossos.
+  if (!order) return NextResponse.json({ ok: true, updated: 0, reason: "order_not_found" });
+
+  const mapped = mapEvent(event, order.deliveryType);
+  if (mapped === "IGNORE") return NextResponse.json({ ok: true, updated: 0, reason: "event_ignored" });
+
+  const target = mapped.status;
+  if (order.status === "DELIVERED" || order.status === "CANCELED" || order.status === "AWAITING_PAYMENT") {
+    return NextResponse.json({ ok: true, updated: 0, reason: "status_locked" });
+  }
+  if (target !== "CANCELED" && RANK[target] <= RANK[order.status]) {
+    return NextResponse.json({ ok: true, updated: 0, reason: "not_forward" });
+  }
+
+  // Condicional ao status lido: protege contra corrida com o operador do /admin.
+  const updated = await db
+    .update(orders)
+    .set({
+      status: target,
+      ...(target === "CANCELED" ? { cancelReason: "Cancelado pelo Saipos" } : {}),
+      updatedAt: new Date(),
+    })
+    .where(and(eq(orders.id, order.id), eq(orders.status, order.status)))
+    .returning({ id: orders.id });
+
+  return NextResponse.json({ ok: true, updated: updated.length });
+}

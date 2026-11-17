@@ -68,7 +68,7 @@ function GroupForm({
           <Input type="number" min={0} value={sortOrder} onChange={(e) => setSortOrder(e.target.value)} />
         </Field>
       </div>
-      {error ? <p className="text-xs text-red-400">{error}</p> : null}
+      {error ? <p className="text-xs text-red-600">{error}</p> : null}
       <div className="flex gap-2">
         <Button type="submit" size="sm" disabled={isPending}>
           {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
@@ -139,7 +139,7 @@ function AddonForm({
         />
       </div>
       <p className="text-[11px] text-muted">Nome • preço • máximo por item (o grupo limita o total).</p>
-      {error ? <p className="text-xs text-red-400">{error}</p> : null}
+      {error ? <p className="text-xs text-red-600">{error}</p> : null}
       <div className="flex gap-2">
         <Button type="submit" size="sm" disabled={isPending}>
           {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
@@ -179,7 +179,7 @@ function AddonRow({ addon, onEdit }: { addon: CatalogAddon; onEdit: () => void }
           <Button
             variant="ghost"
             size="icon"
-            className="h-8 w-8 text-red-400"
+            className="h-8 w-8 text-red-600"
             aria-label="Excluir adicional"
             disabled={isPending}
             onClick={() => {
@@ -190,7 +190,7 @@ function AddonRow({ addon, onEdit }: { addon: CatalogAddon; onEdit: () => void }
           </Button>
         </div>
       </div>
-      {error ? <p className="text-xs text-red-400">{error}</p> : null}
+      {error ? <p className="text-xs text-red-600">{error}</p> : null}
     </li>
   );
 }
@@ -213,7 +213,7 @@ export function AddonManager({ product }: { product: CatalogProduct }) {
         </Button>
       </div>
 
-      {error ? <p className="text-xs text-red-400">{error}</p> : null}
+      {error ? <p className="text-xs text-red-600">{error}</p> : null}
 
       {editingGroup === "new" ? (
         <GroupForm productId={product.id} group={null} onDone={() => setEditingGroup(null)} />
@@ -242,7 +242,7 @@ export function AddonManager({ product }: { product: CatalogProduct }) {
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-8 w-8 text-red-400"
+                  className="h-8 w-8 text-red-600"
                   aria-label="Excluir grupo"
                   disabled={isPending}
                   onClick={() => {

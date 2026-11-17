@@ -2,6 +2,7 @@
 
 import {
   Check,
+  ChevronDown,
   ChevronRight,
   LogOut,
   MapPin,
@@ -36,14 +37,15 @@ import { PassportStamp } from "./passport-stamp";
 import { loadSavedAddress, saveAddress, type SavedAddress } from "./use-customer";
 
 const POLL_INTERVAL_MS = 15_000;
-const HISTORY_LIMIT = 5;
+/** Pedidos entregues visíveis no histórico antes de "Ver mais". */
+const HISTORY_PREVIEW = 3;
 /** Marco de milhas usado na barra de progresso (resgates ainda não existem). */
 const MILES_MILESTONE = 500;
 /** Previsão de fallback (min) quando a zona de entrega não informa estimativa. */
 const FALLBACK_DELIVERY_MINUTES = 50;
 const PICKUP_MINUTES = 30;
 
-/** Os 7 destinos do passaporte, na ordem de exibição, com o nome mostrado ao cliente. */
+/** Os destinos do passaporte, na ordem de exibição, com o nome mostrado ao cliente. */
 const PASSPORT_DESTINATIONS: Array<{ id: string; label: string }> = [
   { id: "st-louis", label: "St. Louis" },
   { id: "mexico", label: "México" },
@@ -52,6 +54,7 @@ const PASSPORT_DESTINATIONS: Array<{ id: string; label: string }> = [
   { id: "milao", label: "Milão" },
   { id: "cremona", label: "Cremona" },
   { id: "corbin", label: "Corbin" },
+  { id: "gwangju", label: "Gwangju" },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -63,21 +66,22 @@ type Step = { label: string; reached: (s: OrderStatus) => boolean };
 function getSteps(deliveryType: CustomerOrderView["deliveryType"]): Step[] {
   const steps: Step[] = [
     { label: "Pedido Recebido", reached: () => true },
-    { label: "Na Chapa", reached: (s) => ["PREPARING", "OUT_FOR_DELIVERY", "DELIVERED"].includes(s) },
+    { label: "Na Chapa", reached: (s) => ["PREPARING", "OUT_FOR_DELIVERY", "READY_FOR_PICKUP", "DELIVERED"].includes(s) },
   ];
-  // Retirada não passa por "saiu para entrega".
   if (deliveryType === "DELIVERY") {
     steps.push({ label: "Saiu para Entrega", reached: (s) => ["OUT_FOR_DELIVERY", "DELIVERED"].includes(s) });
+  } else {
+    steps.push({ label: "Pronto p/ Retirada", reached: (s) => ["READY_FOR_PICKUP", "DELIVERED"].includes(s) });
   }
   steps.push({ label: "Entregue", reached: (s) => s === "DELIVERED" });
   return steps;
 }
 
-function estimateLabel(order: CustomerOrderView, zones: CatalogDeliveryZone[]): string {
+function estimateLabel(order: CustomerOrderView, zones: CatalogDeliveryZone[], fallbackMinutes: number): string {
   if (order.status === "AWAITING_PAYMENT") return "Após a confirmação do PIX";
   const zone = zones.find((z) => z.id === order.address?.deliveryZoneId);
   const minutes =
-    order.deliveryType === "PICKUP" ? PICKUP_MINUTES : (zone?.estimatedMinutes ?? FALLBACK_DELIVERY_MINUTES);
+    order.deliveryType === "PICKUP" ? PICKUP_MINUTES : (zone?.estimatedMinutes ?? fallbackMinutes);
   const at = new Date(new Date(order.createdAt).getTime() + minutes * 60_000);
   return `até ${at.toLocaleTimeString("pt-BR", {
     hour: "2-digit",
@@ -89,10 +93,12 @@ function estimateLabel(order: CustomerOrderView, zones: CatalogDeliveryZone[]): 
 function ActiveOrderBanner({
   order,
   zones,
+  fallbackMinutes,
   whatsapp,
 }: {
   order: CustomerOrderView;
   zones: CatalogDeliveryZone[];
+  fallbackMinutes: number;
   whatsapp: string | null;
 }) {
   const steps = getSteps(order.deliveryType);
@@ -120,7 +126,7 @@ function ActiveOrderBanner({
         </div>
         <div className="text-right">
           <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">Previsão</p>
-          <p className="text-sm font-bold">{estimateLabel(order, zones)}</p>
+          <p className="text-sm font-bold">{estimateLabel(order, zones, fallbackMinutes)}</p>
         </div>
       </div>
 
@@ -525,7 +531,9 @@ export function OrdersView({
   categories,
   zones,
   whatsapp,
+  fallbackMinutes = FALLBACK_DELIVERY_MINUTES,
 }: {
+  fallbackMinutes?: number;
   tenantId: string;
   customerName: string;
   customerPhone: string;
@@ -544,7 +552,9 @@ export function OrdersView({
   const catalog = useMemo(() => categories.flatMap((c) => c.products), [categories]);
   const active = orders.filter((o) => !isTerminalStatus(o.status));
   const delivered = orders.filter((o) => o.status === "DELIVERED");
-  const history = delivered.slice(0, HISTORY_LIMIT);
+  const [showAllHistory, setShowAllHistory] = useState(false);
+  const history = showAllHistory ? delivered : delivered.slice(0, HISTORY_PREVIEW);
+  const hiddenHistoryCount = delivered.length - HISTORY_PREVIEW;
   const hasActive = active.length > 0;
 
   /* Destino de cada produto (categoria + nome); itens de produtos removidos caem no nome do snapshot. */
@@ -731,7 +741,7 @@ export function OrdersView({
       ) : null}
 
       {active.map((order) => (
-        <ActiveOrderBanner key={order.id} order={order} zones={zones} whatsapp={whatsapp} />
+        <ActiveOrderBanner key={order.id} order={order} zones={zones} fallbackMinutes={fallbackMinutes} whatsapp={whatsapp} />
       ))}
 
       <div className="grid gap-6 md:grid-cols-2">
@@ -754,6 +764,19 @@ export function OrdersView({
             {history.map((order) => (
               <HistoryCard key={order.id} order={order} onReorder={handleReorder} justAdded={reorderedId === order.id} />
             ))}
+            {hiddenHistoryCount > 0 ? (
+              <li>
+                <button
+                  type="button"
+                  onClick={() => setShowAllHistory((v) => !v)}
+                  aria-expanded={showAllHistory}
+                  className="flex h-11 w-full items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white text-sm font-semibold text-slate-600 transition hover:border-slate-300 hover:text-[#0A2540]"
+                >
+                  {showAllHistory ? "Ver menos" : `Ver mais ${hiddenHistoryCount} pedido${hiddenHistoryCount > 1 ? "s" : ""}`}
+                  <ChevronDown className={`h-4 w-4 transition ${showAllHistory ? "rotate-180" : ""}`} />
+                </button>
+              </li>
+            ) : null}
           </ul>
         ) : (
           <div className="flex flex-col items-center gap-3 rounded-xl border border-dashed border-slate-300 bg-white px-4 py-8 text-center">

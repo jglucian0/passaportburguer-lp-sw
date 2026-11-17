@@ -45,6 +45,7 @@ export default async function MyOrdersPage() {
               orders={customerData.orders}
               categories={categories}
               zones={zones}
+              fallbackMinutes={tenant.estimatedDeliveryMinutes}
               whatsapp={tenant.phoneWhatsapp}
             />
           ) : (

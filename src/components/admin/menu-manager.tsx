@@ -49,7 +49,7 @@ function ProductRow({ product, onEdit }: { product: CatalogProduct; onEdit: () =
           </Button>
         </div>
       </div>
-      {error ? <p className="text-xs text-red-400">{error}</p> : null}
+      {error ? <p className="text-xs text-red-600">{error}</p> : null}
     </li>
   );
 }
@@ -89,7 +89,7 @@ export function MenuManager({ categories }: { categories: CatalogCategoryWithSta
             <div className="flex min-w-0 items-center gap-2">
               <h2 className="truncate font-extrabold">{category.name}</h2>
               {!category.isActive ? (
-                <span className="rounded-full bg-red-500/15 px-2 py-0.5 text-xs font-semibold text-red-400">Oculta</span>
+                <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-600">Oculta</span>
               ) : null}
             </div>
             <div className="flex shrink-0 gap-2">
@@ -153,7 +153,7 @@ export function MenuManager({ categories }: { categories: CatalogCategoryWithSta
         {editing?.kind === "product" ? (
           <div className="flex-1 overflow-y-auto">
             <ProductForm
-              key={editing.productId ?? "new"}
+              key={`product-${editing.productId ?? "new"}`}
               product={editingProduct}
               defaultCategoryId={editing.categoryId}
               categories={categories.map((c) => ({ id: c.id, name: c.name }))}
@@ -168,7 +168,7 @@ export function MenuManager({ categories }: { categories: CatalogCategoryWithSta
               onDeleted={close}
             />
             {editingProduct ? (
-              <AddonManager key={editingProduct.id} product={editingProduct} />
+              <AddonManager key={`addons-${editingProduct.id}`} product={editingProduct} />
             ) : (
               <p className="border-t border-border p-4 text-xs text-muted">
                 Salve o produto para cadastrar grupos de adicionais.

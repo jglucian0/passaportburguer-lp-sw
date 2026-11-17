@@ -7,6 +7,7 @@ export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
   RECEIVED: "Recebido",
   PREPARING: "Em preparo",
   OUT_FOR_DELIVERY: "Saiu para entrega",
+  READY_FOR_PICKUP: "Pronto para retirada",
   DELIVERED: "Entregue",
   CANCELED: "Cancelado",
 };
@@ -15,7 +16,7 @@ export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
 export function getProgressSteps(deliveryType: DeliveryType): OrderStatus[] {
   return deliveryType === "DELIVERY"
     ? ["RECEIVED", "PREPARING", "OUT_FOR_DELIVERY", "DELIVERED"]
-    : ["RECEIVED", "PREPARING", "DELIVERED"];
+    : ["RECEIVED", "PREPARING", "READY_FOR_PICKUP", "DELIVERED"];
 }
 
 export function isTerminalStatus(status: OrderStatus): boolean {
@@ -30,8 +31,9 @@ export function getNextStatus(status: OrderStatus, deliveryType: DeliveryType): 
     case "RECEIVED":
       return "PREPARING";
     case "PREPARING":
-      return deliveryType === "DELIVERY" ? "OUT_FOR_DELIVERY" : "DELIVERED";
+      return deliveryType === "DELIVERY" ? "OUT_FOR_DELIVERY" : "READY_FOR_PICKUP";
     case "OUT_FOR_DELIVERY":
+    case "READY_FOR_PICKUP":
       return "DELIVERED";
     default:
       return null;

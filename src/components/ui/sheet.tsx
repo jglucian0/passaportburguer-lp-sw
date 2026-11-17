@@ -19,11 +19,11 @@ export function Sheet({ open, onOpenChange, title, side = "bottom", className, c
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/70 data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-slate-900/50 data-[state=closed]:animate-out data-[state=open]:animate-in data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
         <Dialog.Content
           aria-describedby={undefined}
           className={cn(
-            "fixed z-50 flex flex-col border-border bg-surface shadow-2xl focus:outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
+            "admin-light fixed z-50 flex flex-col border-slate-200 bg-white text-slate-900 shadow-2xl focus:outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
             side === "bottom" &&
               "inset-x-0 bottom-0 mx-auto max-h-[92dvh] w-full max-w-lg rounded-t-3xl border-t data-[state=closed]:slide-out-to-bottom data-[state=open]:slide-in-from-bottom",
             side === "right" &&
@@ -34,7 +34,7 @@ export function Sheet({ open, onOpenChange, title, side = "bottom", className, c
           <Dialog.Title className="sr-only">{title}</Dialog.Title>
           <Dialog.Close
             aria-label="Fechar"
-            className="absolute right-3 top-3 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-black/60 text-foreground hover:bg-black/80"
+            className="absolute right-3 top-3 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200"
           >
             <X className="h-5 w-5" />
           </Dialog.Close>

@@ -8,13 +8,13 @@ const config: Config = {
     extend: {
       colors: {
         /* Fundo principal fixo da marca */
-        background: "#03257a",
+        background: "rgb(var(--c-background) / <alpha-value>)",
         navbar: "#021a5c",
-        surface: "#042068",
-        "surface-2": "#0a3294",
-        border: "#1b44a8",
-        foreground: "#ffffff",
-        muted: "#cbd5e1",
+        surface: "rgb(var(--c-surface) / <alpha-value>)",
+        "surface-2": "rgb(var(--c-surface-2) / <alpha-value>)",
+        border: "rgb(var(--c-border) / <alpha-value>)",
+        foreground: "rgb(var(--c-foreground) / <alpha-value>)",
+        muted: "rgb(var(--c-muted) / <alpha-value>)",
         navy: "#03257a",
         ink: "#0b162c",
         "ink-soft": "#475569",

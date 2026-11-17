@@ -39,6 +39,7 @@ export async function loginAdmin(
 
   const passwordOk = await bcrypt.compare(parsed.data.password, user?.passwordHash ?? DUMMY_HASH);
   if (!user || !passwordOk) return failure(INVALID_CREDENTIALS);
+  if (!user.isActive) return failure("Acesso desativado. Fale com o proprietário da loja.");
 
   await setAdminSessionCookie({
     userId: user.id,

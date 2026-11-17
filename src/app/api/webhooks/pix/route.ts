@@ -1,11 +1,13 @@
 import { timingSafeEqual } from "node:crypto";
 
 import { and, eq } from "drizzle-orm";
-import { NextResponse, type NextRequest } from "next/server";
+import { after, NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
 import { db } from "@/infra/db";
 import { orders } from "@/infra/db/schema";
+import { sendOrderToSaipos } from "@/lib/saipos";
+import { loadStoreSettings } from "@/infra/db/store-settings";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -50,9 +52,16 @@ export async function POST(request: NextRequest) {
   }
 
   // Idempotente: só confirma pedidos PIX ainda aguardando pagamento.
+  const [target] = await db
+    .select({ tenantId: orders.tenantId })
+    .from(orders)
+    .where(eq(orders.id, parsed.data.orderId))
+    .limit(1);
+  const settings = target ? await loadStoreSettings(target.tenantId) : null;
+
   const updated = await db
     .update(orders)
-    .set({ status: "RECEIVED", updatedAt: new Date() })
+    .set({ status: settings?.autoAcceptOrders ? "PREPARING" : "RECEIVED", updatedAt: new Date() })
     .where(
       and(
         eq(orders.id, parsed.data.orderId),
@@ -61,6 +70,11 @@ export async function POST(request: NextRequest) {
       ),
     )
     .returning({ id: orders.id });
+
+  // Pagamento confirmado: agora o pedido PIX pode ir para o Saipos (falhas ficam registradas no pedido).
+  if (updated.length > 0) {
+    after(() => sendOrderToSaipos(parsed.data.orderId));
+  }
 
   return NextResponse.json({ ok: true, updated: updated.length });
 }

@@ -1,6 +1,8 @@
 import { jwtVerify, SignJWT } from "jose";
 import { cookies } from "next/headers";
 
+import type { AdminRole } from "@/core/schemas/common";
+
 export const ADMIN_COOKIE = "admin_token";
 
 const ADMIN_TTL_SECONDS = 60 * 60 * 12; // 12h
@@ -9,9 +11,13 @@ export type AdminSession = {
   userId: string;
   tenantId: string;
   name: string;
-  role: "OWNER" | "STAFF";
+  role: AdminRole;
 };
 
+/** Papéis operacionais autorizados a entrar em /admin e /api/admin. */
+export function isOperationalRole(role: unknown): role is AdminRole {
+  return role === "OWNER" || role === "KITCHEN";
+}
 
 type TokenKind = "admin";
 
@@ -65,7 +71,7 @@ export async function verifyAdminToken(token: string | undefined): Promise<Admin
   if (
     typeof payload.tenantId !== "string" ||
     typeof payload.name !== "string" ||
-    (payload.role !== "OWNER" && payload.role !== "STAFF")
+    !isOperationalRole(payload.role)
   ) {
     return null;
   }

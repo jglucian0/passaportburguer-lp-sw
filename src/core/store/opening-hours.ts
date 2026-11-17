@@ -6,7 +6,7 @@ export type DayOpeningHours = {
 
 export type OpeningHours = Record<"0" | "1" | "2" | "3" | "4" | "5" | "6", DayOpeningHours>;
 
-export type StoreStatusReason = "OPEN" | "MANUALLY_CLOSED" | "OUTSIDE_HOURS";
+export type StoreStatusReason = "OPEN" | "MANUALLY_OPEN" | "MANUALLY_CLOSED" | "OUTSIDE_HOURS";
 
 export type StoreStatus = {
   isOpen: boolean;
@@ -56,13 +56,15 @@ function dayKey(day: number): keyof OpeningHours {
  */
 export function getStoreStatus(params: {
   openingHours: OpeningHours;
-  isManuallyClosed: boolean;
+  /** true = aberta à força, false = fechada à força, null = segue o horário. */
+  isOpenOverride: boolean | null;
   now?: Date;
   timeZone?: string;
 }): StoreStatus {
-  const { openingHours, isManuallyClosed, now = new Date(), timeZone = DEFAULT_TIME_ZONE } = params;
+  const { openingHours, isOpenOverride, now = new Date(), timeZone = DEFAULT_TIME_ZONE } = params;
 
-  if (isManuallyClosed) return { isOpen: false, reason: "MANUALLY_CLOSED" };
+  if (isOpenOverride === false) return { isOpen: false, reason: "MANUALLY_CLOSED" };
+  if (isOpenOverride === true) return { isOpen: true, reason: "MANUALLY_OPEN" };
 
   const { day, minutes } = getLocalClock(now, timeZone);
 
@@ -86,7 +88,7 @@ export function getStoreStatus(params: {
 
 export function isStoreOpen(params: {
   openingHours: OpeningHours;
-  isManuallyClosed: boolean;
+  isOpenOverride: boolean | null;
   now?: Date;
   timeZone?: string;
 }): boolean {

@@ -71,7 +71,7 @@ function ZoneRow({ zone, onCreated }: { zone: CatalogDeliveryZone | null; onCrea
             <Button
               variant="ghost"
               size="icon"
-              className="text-red-400"
+              className="text-red-600"
               aria-label={`Excluir ${zone.neighborhood}`}
               disabled={isPending}
               onClick={() => {
@@ -83,7 +83,7 @@ function ZoneRow({ zone, onCreated }: { zone: CatalogDeliveryZone | null; onCrea
           ) : null}
         </div>
       </div>
-      {error ? <p className="text-xs text-red-400">{error}</p> : null}
+      {error ? <p className="text-xs text-red-600">{error}</p> : null}
     </li>
   );
 }

@@ -1,23 +1,25 @@
 import type { Metadata } from "next";
-import { redirect } from "next/navigation";
 
-import { getAdminDeliveryZones } from "@/actions/admin";
+import { getAdminDeliveryRules } from "@/actions/admin";
 import { AdminShell } from "@/components/admin/admin-shell";
-import { ZonesManager } from "@/components/admin/zones-manager";
-import { getAdminSession } from "@/infra/auth/session";
+import { DeliveryRulesForm } from "@/components/admin/delivery-rules-form";
+import { requireOwner } from "@/infra/auth/admin-guard";
 
 export const metadata: Metadata = { title: "Entregas | Admin", robots: { index: false, follow: false } };
 export const dynamic = "force-dynamic";
 
 export default async function AdminDeliveryPage() {
-  const session = await getAdminSession();
-  if (!session) redirect("/admin/login");
+  const session = await requireOwner();
 
-  const zones = await getAdminDeliveryZones();
+  const rules = await getAdminDeliveryRules();
 
   return (
     <AdminShell userName={session.name} role={session.role}>
-      <ZonesManager zones={zones} />
+      {rules ? (
+        <DeliveryRulesForm rules={rules} />
+      ) : (
+        <p className="py-16 text-center text-sm text-slate-500">Loja não encontrada.</p>
+      )}
     </AdminShell>
   );
 }

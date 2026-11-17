@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { presignedUploadRequestSchema } from "@/core/schemas/admin";
-import { getAdminSession } from "@/infra/auth/session";
+import { getActiveAdminSession as getAdminSession } from "@/infra/auth/active-session";
 import { createPresignedUpload } from "@/infra/storage/r2";
 
 export const dynamic = "force-dynamic";

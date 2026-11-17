@@ -3,6 +3,7 @@
 import { and, desc, eq, inArray, max } from "drizzle-orm";
 import { unstable_cache } from "next/cache";
 import { headers } from "next/headers";
+import { after } from "next/server";
 import { redirect } from "next/navigation";
 
 import { calculateCart } from "@/core/cart/calculate-cart";
@@ -16,6 +17,7 @@ import type { CatalogDeliveryZone } from "@/core/schemas/product";
 import { getStoreStatus, type OpeningHours, type StoreStatus } from "@/core/store/opening-hours";
 import { getAuthSession } from "@/infra/auth/customer-session";
 import { checkRateLimit, getClientIp } from "@/infra/security/rate-limit";
+import { sendOrderToSaipos } from "@/lib/saipos";
 import { applyLocalImages } from "@/lib/local-images";
 import { db } from "@/infra/db";
 import {
@@ -32,6 +34,7 @@ import {
   type AddressSnapshot,
   type OrderItemAddonSnapshot,
 } from "@/infra/db/schema";
+import { loadStoreSettings } from "@/infra/db/store-settings";
 import { getTenantRef } from "@/infra/tenant/resolve";
 
 import { failure, fromZod, success, type ActionFailure, type ActionResult } from "./result";
@@ -48,8 +51,8 @@ export type PublicTenant = {
   logoUrl: string | null;
   primaryColor: string;
   minOrderCents: number;
-  isManuallyClosed: boolean;
   openingHours: OpeningHours;
+  estimatedDeliveryMinutes: number;
 };
 
 export type StorefrontData = {
@@ -107,8 +110,6 @@ async function loadStorefront(tenantId: string) {
       logoUrl: tenants.logoUrl,
       primaryColor: tenants.primaryColor,
       minOrderCents: tenants.minOrderCents,
-      isManuallyClosed: tenants.isManuallyClosed,
-      openingHours: tenants.openingHours,
     })
     .from(tenants)
     .where(eq(tenants.id, tenantId))
@@ -131,13 +132,25 @@ export async function getStorefrontData(): Promise<StorefrontData | null> {
 
   if (!cached) return null;
 
-  // O status (aberto/fechado) é calculado a cada requisição a partir dos dados em cache.
+  // Configurações da loja são lidas frescas (1 linha): o switch do admin reflete na hora.
+  const settings = await loadStoreSettings(ref.id);
+  if (!settings) return null;
+
   const store = getStoreStatus({
-    openingHours: cached.tenant.openingHours,
-    isManuallyClosed: cached.tenant.isManuallyClosed,
+    openingHours: settings.openingHours,
+    isOpenOverride: settings.isOpenOverride,
   });
 
-  return { ...cached, categories: applyLocalImages(cached.categories), store };
+  return {
+    ...cached,
+    tenant: {
+      ...cached.tenant,
+      openingHours: settings.openingHours,
+      estimatedDeliveryMinutes: settings.estimatedDeliveryMinutes,
+    },
+    categories: applyLocalImages(cached.categories),
+    store,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -176,9 +189,12 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, ref.id)).limit(1);
   if (!tenant) return failure("Loja não encontrada.");
 
+  const settings = await loadStoreSettings(tenant.id);
+  if (!settings) return failure("Loja não encontrada.");
+
   const status = getStoreStatus({
-    openingHours: tenant.openingHours,
-    isManuallyClosed: tenant.isManuallyClosed,
+    openingHours: settings.openingHours,
+    isOpenOverride: settings.isOpenOverride,
   });
   if (!status.isOpen) {
     return failure(
@@ -234,6 +250,8 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
       complement: data.complement ?? null,
       reference: data.reference ?? null,
       deliveryZoneId: zone.id,
+      latitude: data.lat ?? null,
+      longitude: data.lon ?? null,
     };
 
     const existingAddresses = await db
@@ -266,7 +284,8 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
   }
 
   /* Pedido + itens em lote atômico, com retry em conflito do order_number. */
-  const initialStatus: OrderStatus = data.paymentMethod === "PIX" ? "AWAITING_PAYMENT" : "RECEIVED";
+  const initialStatus: OrderStatus =
+    data.paymentMethod === "PIX" ? "AWAITING_PAYMENT" : settings.autoAcceptOrders ? "PREPARING" : "RECEIVED";
   let created: { orderId: string; orderNumber: number } | null = null;
 
   for (let attempt = 0; attempt < 5 && !created; attempt++) {
@@ -305,6 +324,7 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
             unitPriceCentsSnapshot: line.unitPriceCents,
             quantity: line.quantity,
             addonsSnapshot: line.addons.map((a) => ({
+              addon_id: a.addonId,
               name: a.name,
               price_cents: a.price_cents,
               quantity: a.quantity,
@@ -320,6 +340,12 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
   }
 
   if (!created) return failure("Não foi possível registrar o pedido. Tente novamente.");
+
+  /* Saipos: nunca bloqueia nem falha a compra. PIX só é enviado após a confirmação do pagamento. */
+  if (initialStatus !== "AWAITING_PAYMENT") {
+    const orderIdToSync = created.orderId;
+    after(() => sendOrderToSaipos(orderIdToSync));
+  }
 
   redirect("/meus-pedidos");
 }

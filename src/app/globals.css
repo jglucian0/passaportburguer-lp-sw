@@ -4,6 +4,35 @@
 
 :root {
   --brand-rgb: 245 166 35;
+  /* Tokens da vitrine (azul royal). O painel /admin sobrescreve nos escopos abaixo. */
+  --c-background: 3 37 122;
+  --c-surface: 4 32 104;
+  --c-surface-2: 10 50 148;
+  --c-border: 27 68 168;
+  --c-foreground: 255 255 255;
+  --c-muted: 203 213 225;
+  color-scheme: dark;
+}
+
+/* Painel admin: área de trabalho clara de alto contraste. */
+.admin-light {
+  --c-background: 241 245 249; /* slate-100 */
+  --c-surface: 255 255 255;
+  --c-surface-2: 241 245 249;
+  --c-border: 226 232 240; /* slate-200 */
+  --c-foreground: 15 23 42; /* slate-900 */
+  --c-muted: 100 116 139; /* slate-500 */
+  color-scheme: light;
+}
+
+/* Navbar e superfícies escuras do admin: Azul Noturno profundo. */
+.admin-navy {
+  --c-background: 7 19 41; /* #071329 */
+  --c-surface: 15 30 58;
+  --c-surface-2: 30 41 69;
+  --c-border: 30 41 59; /* slate-800 */
+  --c-foreground: 255 255 255;
+  --c-muted: 148 163 184; /* slate-400 */
   color-scheme: dark;
 }
 
@@ -69,3 +98,33 @@ body {
 }
 
 
+
+/* Impressão da comanda térmica: só o ticket aparece (sem menus nem fundos escuros). */
+@media print {
+  html,
+  body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+  body > *:not(.ticket-print-root) {
+    display: none !important;
+  }
+  .ticket-print-root {
+    position: static !important;
+    display: block !important;
+    background: transparent !important;
+    padding: 0 !important;
+  }
+  .ticket-print-root > div {
+    overflow: visible !important;
+    padding: 0 !important;
+  }
+  .ticket-no-print {
+    display: none !important;
+  }
+  .ticket-paper {
+    margin: 0 !important;
+    box-shadow: none !important;
+    break-inside: avoid;
+  }
+}

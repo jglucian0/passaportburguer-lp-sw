@@ -110,6 +110,9 @@ export function Footer({ tenant }: { tenant: PublicTenant }) {
           <Link href="/privacidade" className="transition hover:text-amber-400">
             Privacidade
           </Link>
+          <Link href="/admin" rel="nofollow" className="transition hover:text-amber-400">
+            Painel Admin
+          </Link>
         </p>
         <p className="font-mono text-[11px] text-slate-500">OPERAÇÃO MGA • MARINGÁ - PR</p>
       </div>
