@@ -46,7 +46,10 @@ type MetaPayload = {
 /** Resposta automática (best-effort): nunca lança erro nem atrasa o webhook por mais de 4s. */
 async function sendConfirmation(phoneNumberId: string | undefined, to: string) {
   const token = process.env.WHATSAPP_ACCESS_TOKEN;
-  if (!token) return;
+  if (!token) {
+    console.warn("[WhatsApp Reply] WHATSAPP_ACCESS_TOKEN ausente; resposta automática não enviada");
+    return;
+  }
   try {
     const res = await fetch(
       `https://graph.facebook.com/v21.0/${phoneNumberId || "1466936689833496"}/messages`,
@@ -64,9 +67,10 @@ async function sendConfirmation(phoneNumberId: string | undefined, to: string) {
         signal: AbortSignal.timeout(4000),
       },
     );
-    if (!res.ok) console.warn("[whatsapp-webhook] resposta automática falhou:", res.status);
+    const resText = await res.text();
+    console.log("[WhatsApp Reply]", res.status, resText);
   } catch (error) {
-    console.warn("[whatsapp-webhook] resposta automática falhou:", error);
+    console.warn("[WhatsApp Reply] erro ao enviar:", error);
   }
 }
 
