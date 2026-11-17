@@ -59,10 +59,10 @@ function mapEvent(event: string, deliveryType: DeliveryType): Mapped {
     case "ACEITO":
     case "EM_PREPARO":
       return { status: "PREPARING" };
+    // "Aguardando entrega" do Saipos (pronto) e "saiu" (DISPATCHED) são o mesmo estágio para nós:
+    // não dá para saber se já saiu, então os dois viram OUT_FOR_DELIVERY (rótulo "Aguardando entrega").
     case "READY_TO_DELIVER":
     case "PRONTO":
-      // Entrega: pronto ainda não saiu; só a retirada tem status próprio.
-      return deliveryType === "PICKUP" ? { status: "READY_FOR_PICKUP" } : "IGNORE";
     case "DISPATCHED":
     case "SAIU_PARA_ENTREGA":
       return { status: deliveryType === "DELIVERY" ? "OUT_FOR_DELIVERY" : "READY_FOR_PICKUP" };
@@ -142,11 +142,18 @@ export async function POST(request: NextRequest) {
   if (mapped === "IGNORE") return NextResponse.json({ ok: true, updated: 0, reason: "event_ignored" });
 
   const target = mapped.status;
-  if (order.status === "DELIVERED" || order.status === "CANCELED" || order.status === "AWAITING_PAYMENT") {
-    return NextResponse.json({ ok: true, updated: 0, reason: "status_locked" });
+  if (order.status === "CANCELED") {
+    return NextResponse.json({ ok: true, updated: 0, reason: "already_canceled" });
   }
-  if (target !== "CANCELED" && RANK[target] <= RANK[order.status]) {
-    return NextResponse.json({ ok: true, updated: 0, reason: "not_forward" });
+  // O Saipos permite cancelar mesmo depois de concluído: o cancelamento vale a partir de qualquer status
+  // (inclusive DELIVERED) para os sistemas não ficarem divergentes. Os demais eventos só avançam.
+  if (target !== "CANCELED") {
+    if (order.status === "DELIVERED" || order.status === "AWAITING_PAYMENT") {
+      return NextResponse.json({ ok: true, updated: 0, reason: "status_locked" });
+    }
+    if (RANK[target] <= RANK[order.status]) {
+      return NextResponse.json({ ok: true, updated: 0, reason: "not_forward" });
+    }
   }
 
   // Condicional ao status lido: protege contra corrida com o operador do /admin.

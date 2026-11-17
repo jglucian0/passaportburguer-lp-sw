@@ -6,7 +6,7 @@ export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
   AWAITING_PAYMENT: "Aguardando pagamento",
   RECEIVED: "Recebido",
   PREPARING: "Em preparo",
-  OUT_FOR_DELIVERY: "Saiu para entrega",
+  OUT_FOR_DELIVERY: "Aguardando entrega",
   READY_FOR_PICKUP: "Pronto para retirada",
   DELIVERED: "Entregue",
   CANCELED: "Cancelado",

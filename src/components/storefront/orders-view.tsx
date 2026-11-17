@@ -69,7 +69,7 @@ function getSteps(deliveryType: CustomerOrderView["deliveryType"]): Step[] {
     { label: "Na Chapa", reached: (s) => ["PREPARING", "OUT_FOR_DELIVERY", "READY_FOR_PICKUP", "DELIVERED"].includes(s) },
   ];
   if (deliveryType === "DELIVERY") {
-    steps.push({ label: "Saiu para Entrega", reached: (s) => ["OUT_FOR_DELIVERY", "DELIVERED"].includes(s) });
+    steps.push({ label: "Aguardando Entrega", reached: (s) => ["OUT_FOR_DELIVERY", "DELIVERED"].includes(s) });
   } else {
     steps.push({ label: "Pronto p/ Retirada", reached: (s) => ["READY_FOR_PICKUP", "DELIVERED"].includes(s) });
   }
