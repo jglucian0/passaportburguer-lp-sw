@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Bike, ChevronDown, Loader2, LocateFixed, Store } from "lucide-react";
+import { ArrowLeft, Bike, ChevronDown, Loader2, LocateFixed, MapPin, Store } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 
@@ -16,6 +16,7 @@ import type {
 import { cn, formatCents, formatPhone } from "@/lib/utils";
 
 import { useCart } from "./cart-provider";
+import { loadSavedAddress, type SavedAddress } from "./use-customer";
 import {
   StreetAutocomplete,
   type StreetSuggestion,
@@ -146,6 +147,21 @@ export function CheckoutForm({
       /* ignorar */
     }
   }, [zones]);
+
+  /* Endereço salvo no Meu Passaporte: só é aplicado quando o cliente toca em "Usar meu endereço salvo". */
+  const [savedAddress, setSavedAddress] = useState<SavedAddress | null>(null);
+  useEffect(() => setSavedAddress(loadSavedAddress()), []);
+
+  function applySavedAddress() {
+    if (!savedAddress) return;
+    setStreet(savedAddress.street);
+    setNumber(savedAddress.number);
+    setComplement(savedAddress.complement);
+    setReference(savedAddress.reference);
+    if (savedAddress.zoneId && zones.some((z) => z.id === savedAddress.zoneId)) {
+      setZoneId(savedAddress.zoneId);
+    }
+  }
 
   const zone = zones.find((z) => z.id === zoneId) ?? null;
   const changeForCents =
@@ -641,6 +657,21 @@ export function CheckoutForm({
           {deliveryType === "DELIVERY" ? (
             <div className="space-y-4">
               <div className="space-y-2">
+                {savedAddress ? (
+                  <button
+                    type="button"
+                    onClick={applySavedAddress}
+                    className="flex w-full items-center gap-3 rounded-xl border border-[#F59E0B]/60 bg-amber-50 px-4 py-3 text-left transition hover:bg-amber-100"
+                  >
+                    <MapPin className="h-4 w-4 shrink-0 text-[#0A2540]" strokeWidth={1.75} />
+                    <span className="min-w-0 text-sm">
+                      <span className="block font-semibold text-[#0A2540]">Usar meu endereço salvo</span>
+                      <span className="block truncate text-xs text-slate-600">
+                        {savedAddress.street}, {savedAddress.number}
+                      </span>
+                    </span>
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={fillFromLocation}

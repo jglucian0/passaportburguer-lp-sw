@@ -13,8 +13,10 @@ import { scrollToElement } from "@/lib/smooth-scroll";
 
 import { CartDrawer } from "./cart-drawer";
 import { CartProvider, useCart } from "./cart-provider";
-import { ACTIVE_ORDER_KEY, CUSTOMER_PREFILL_KEY } from "./cart-storage";
+import { ACTIVE_ORDER_KEY } from "./cart-storage";
+import { useCustomerFirstName } from "./use-customer";
 import { PASSPORT_SELECT_EVENT } from "./destinations";
+import { Footer } from "./footer";
 import { Header } from "./header";
 import { OverlayProvider, useOverlayOpen } from "./overlay-context";
 import { DRINK_CATEGORY, MAIN_CATEGORY } from "./upsell";
@@ -120,15 +122,12 @@ function BottomTabBar() {
   const { isOpen } = useCart();
   const overlayOpen = useOverlayOpen();
   const [hasActiveOrder, setHasActiveOrder] = useState(false);
-  const [firstName, setFirstName] = useState<string | null>(null);
+  const firstName = useCustomerFirstName();
 
   useEffect(() => {
     function read() {
       try {
         setHasActiveOrder(window.localStorage.getItem(ACTIVE_ORDER_KEY) === "1");
-        const raw = window.localStorage.getItem(CUSTOMER_PREFILL_KEY);
-        const name = raw ? (JSON.parse(raw) as { name?: string }).name?.trim() : "";
-        setFirstName(name ? name.split(/\s+/)[0] : null);
       } catch {
         /* armazenamento indisponível: sem indicador/nome */
       }
@@ -159,7 +158,7 @@ function BottomTabBar() {
 
   const items = [
     { key: "menu", href: "/#cardapio", label: "Cardápio", Icon: UtensilsCrossed, active: onMenu, onClick: goToMenu },
-    { key: "orders", href: "/meus-pedidos", label: "Meus Pedidos", Icon: ReceiptText, active: onOrders, dot: hasActiveOrder },
+    { key: "orders", href: "/meus-pedidos", label: "Passaporte", Icon: ReceiptText, active: onOrders, dot: hasActiveOrder },
     { key: "profile", href: "/meus-pedidos", label: firstName ?? "Entrar", Icon: User, active: false },
   ];
 
@@ -215,20 +214,10 @@ export function StorefrontShell({
   return (
     <CartProvider tenantId={tenant.id}>
       <OverlayProvider>
-      <div style={brandStyle(tenant.primaryColor)} className="min-h-dvh bg-[#071329] pb-32 md:pb-12">
+      <div style={brandStyle(tenant.primaryColor)} className="min-h-dvh bg-[#071329]">
         <Header tenant={tenant} store={store} />
         <main>{children}</main>
-        <footer className="border-t border-white/10 bg-[#071329] px-4 py-8 text-center text-xs text-muted">
-          <p className="mb-3 font-bold text-gold">Não precisa de visto, só de vontade de saborear!</p>
-          <p>
-            © {new Date().getFullYear()} {tenant.name}. Todos os direitos reservados.
-          </p>
-          <p className="mt-1">
-            <Link href="/meus-pedidos" className="underline hover:text-foreground">
-              Acompanhar meus pedidos
-            </Link>
-          </p>
-        </footer>
+        <Footer tenant={tenant} />
         {showCartBar ? <FloatingCartBar categories={categories} /> : null}
         <BottomTabBar />
         <CartDrawer minOrderCents={tenant.minOrderCents} storeOpen={store.isOpen} categories={categories} />

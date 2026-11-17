@@ -1,6 +1,6 @@
 "use client";
 
-import { ShoppingBag } from "lucide-react";
+import { BookUser, ShoppingBag } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -10,16 +10,18 @@ import { cn } from "@/lib/utils";
 import { scrollToElement } from "@/lib/smooth-scroll";
 
 import { useCart } from "./cart-provider";
+import { useCustomerFirstName } from "./use-customer";
 
 const LINKS = [
   { href: "/#cardapio", label: "Cardápio", ready: true },
   { href: "/#cardapio", label: "Fidelidade", ready: false },
-  { href: "/meus-pedidos", label: "Meus Pedidos", ready: true },
+  { href: "/meus-pedidos", label: "Meu Passaporte", ready: true },
 ] as const;
 
 export function Header({ tenant, store }: { tenant: PublicTenant; store: StoreStatus }) {
   const { count, hydrated, openCart } = useCart();
   const pathname = usePathname();
+  const firstName = useCustomerFirstName();
 
   /* Já na home: rola direto até o cardápio, sem nova navegação ao servidor. */
   function onNavClick(event: React.MouseEvent, href: string) {
@@ -84,7 +86,14 @@ export function Header({ tenant, store }: { tenant: PublicTenant; store: StoreSt
             href="/meus-pedidos"
             className="hidden rounded-lg border border-white/80 px-4 md:block py-2 text-sm font-medium text-white transition hover:bg-white/10"
           >
-            Fazer Login
+            {firstName ? (
+              <span className="flex items-center gap-2">
+                <BookUser className="h-4 w-4 text-gold" strokeWidth={1.75} />
+                Olá, {firstName}
+              </span>
+            ) : (
+              "Fazer Login"
+            )}
           </Link>
 
           <button

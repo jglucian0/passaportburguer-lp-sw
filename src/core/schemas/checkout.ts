@@ -45,9 +45,8 @@ export const checkoutSchema = z
     }
   });
 
-export const customerLookupSchema = z.object({
-  phone: phoneSchema,
+export const customerNameSchema = z.object({
+  name: z.string().trim().min(2, "Informe como podemos te chamar.").max(80),
 });
 
 export type CheckoutInput = z.infer<typeof checkoutSchema>;
-export type CustomerLookupInput = z.infer<typeof customerLookupSchema>;

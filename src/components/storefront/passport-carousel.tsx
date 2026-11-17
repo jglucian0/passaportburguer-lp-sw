@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowLeft, ArrowRight } from "lucide-react";
-import { useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { CatalogProduct } from "@/core/schemas/product";
 import { cn } from "@/lib/utils";
@@ -20,6 +20,8 @@ export type CarouselCard = {
   /** Produto exibido no cartão; permite pedir direto pelo cartão de embarque. */
   product: CatalogProduct | null;
 };
+
+const AUTOPLAY_MS = 4500;
 
 type Slot = -1 | 0 | 1 | 2;
 
@@ -55,6 +57,11 @@ const CARD_IMAGES: Record<string, string> = {
   "buenos-aires": "/cards/buenosaires-card.webp",
   tokyo: "/cards/tokyo-card.webp",
   mexico: "/cards/mexico-card.webp",
+  "st-louis": "/cards/st-louis-desktop-card.webp",
+  milao: "/cards/gorgonzola-milao-desktop-card.webp",
+  cremona: "/cards/cremona-desktop-card.webp",
+  corbin: "/cards/corbin-desktop-card.webp",
+  gwangju: "/cards/gwangju-desktop-card.webp",
 };
 
 function PassportCard({ card, active }: { card: CarouselCard; active: boolean }) {
@@ -71,7 +78,7 @@ function PassportCard({ card, active }: { card: CarouselCard; active: boolean })
         height={801}
         draggable={false}
         className={cn(
-          "block h-auto w-full max-md:h-full max-md:object-cover",
+          "block h-auto w-full max-md:h-full max-md:object-contain",
           active ? "drop-shadow-2xl" : "drop-shadow-xl",
         )}
       />
@@ -156,6 +163,16 @@ export function PassportCarousel({ cards }: { cards: CarouselCard[] }) {
     );
   });
 
+  /* Avanço automático: troca de cartão a cada AUTOPLAY_MS sem interação. Qualquer troca
+   * manual muda `index` e reinicia o relógio; hover/foco/toque pausam. */
+  const [paused, setPaused] = useState(false);
+  useEffect(() => {
+    if (count < 2 || paused) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const id = window.setTimeout(() => setIndex((i) => (i + 1) % count), AUTOPLAY_MS);
+    return () => window.clearTimeout(id);
+  }, [index, count, paused, setIndex]);
+
   if (count === 0) return null;
 
   // Cartão que pularia de -1 para +1 (ou o inverso) atravessaria o palco por
@@ -175,7 +192,13 @@ export function PassportCarousel({ cards }: { cards: CarouselCard[] }) {
   const slotOf = (i: number): Slot => slotOfIndex(i, index, count);
 
   return (
-    <div>
+    <div
+      className="mb-[10px]"
+      onPointerEnter={(e) => e.pointerType === "mouse" && setPaused(true)}
+      onPointerLeave={(e) => e.pointerType === "mouse" && setPaused(false)}
+      onFocus={() => setPaused(true)}
+      onBlur={() => setPaused(false)}
+    >
       {/* Controles */}
       <div className="mb-2 flex items-center justify-center gap-10 max-md:hidden">
         <button
@@ -220,7 +243,7 @@ export function PassportCarousel({ cards }: { cards: CarouselCard[] }) {
         }}
       >
         {/* Espaçador invisível: dá altura natural ao palco */}
-        <div aria-hidden="true" className="invisible mx-auto w-[220px] max-md:h-[clamp(175px,27svh,240px)] max-md:w-[calc(clamp(175px,27svh,240px)*0.75)] sm:w-[235px] max-md:sm:w-[calc(clamp(175px,27svh,240px)*0.75)]">
+        <div aria-hidden="true" className="invisible mx-auto w-[220px] max-md:h-[clamp(205px,32svh,280px)] max-md:w-[calc(clamp(205px,32svh,280px)*0.635)] sm:w-[235px] max-md:sm:w-[calc(clamp(205px,32svh,280px)*0.635)]">
           <PassportCard card={cards[index]} active={false} />
         </div>
 
@@ -253,7 +276,7 @@ export function PassportCarousel({ cards }: { cards: CarouselCard[] }) {
                   else setIndex(i);
                 }}
                 className={cn(
-                  "absolute w-[220px] cursor-pointer will-change-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold max-md:h-[clamp(175px,27svh,240px)] max-md:w-[calc(clamp(175px,27svh,240px)*0.75)] max-md:overflow-hidden max-md:rounded-xl sm:w-[235px] max-md:sm:w-[calc(clamp(175px,27svh,240px)*0.75)]",
+                  "absolute w-[220px] cursor-pointer will-change-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold max-md:h-[clamp(205px,32svh,280px)] max-md:w-[calc(clamp(205px,32svh,280px)*0.635)] max-md:overflow-hidden max-md:rounded-xl sm:w-[235px] max-md:sm:w-[calc(clamp(205px,32svh,280px)*0.635)]",
                   isWrapping
                     ? "animate-card-wrap-in transition-none"
                     : "transition-[transform,opacity] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",

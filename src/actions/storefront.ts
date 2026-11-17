@@ -6,7 +6,7 @@ import { redirect } from "next/navigation";
 
 import { calculateCart } from "@/core/cart/calculate-cart";
 import type { DeliveryType, OrderStatus, PaymentMethod } from "@/core/schemas/common";
-import { checkoutSchema, customerLookupSchema } from "@/core/schemas/checkout";
+import { checkoutSchema, customerNameSchema } from "@/core/schemas/checkout";
 import type { CatalogDeliveryZone } from "@/core/schemas/product";
 import { getStoreStatus, type OpeningHours, type StoreStatus } from "@/core/store/opening-hours";
 import {
@@ -78,10 +78,14 @@ export type CustomerOrderView = {
   cancelReason: string | null;
   createdAt: string;
   items: CustomerOrderItemView[];
+  /** Snapshot do endereço de entrega (null em retirada). */
+  address: AddressSnapshot | null;
 };
 
 export type CustomerOrdersData = {
   customerName: string;
+  /** Apenas dígitos; exibido no card de dados do Meu Passaporte. */
+  customerPhone: string;
   orders: CustomerOrderView[];
 };
 
@@ -310,7 +314,7 @@ async function loadCustomerOrders(tenantId: string, customerId: string): Promise
     .from(orders)
     .where(and(eq(orders.tenantId, tenantId), eq(orders.customerId, customerId)))
     .orderBy(desc(orders.createdAt))
-    .limit(30);
+    .limit(100);
 
   if (orderRows.length === 0) return [];
 
@@ -353,6 +357,7 @@ async function loadCustomerOrders(tenantId: string, customerId: string): Promise
     cancelReason: o.cancelReason,
     createdAt: o.createdAt.toISOString(),
     items: itemsByOrder.get(o.id) ?? [],
+    address: o.addressSnapshot ?? null,
   }));
 }
 
@@ -365,42 +370,39 @@ export async function getCustomerOrders(): Promise<CustomerOrdersData | null> {
   if (!session || session.tenantId !== ref.id) return null;
 
   const [customer] = await db
-    .select({ id: customers.id, name: customers.name })
+    .select({ id: customers.id, name: customers.name, phone: customers.phone })
     .from(customers)
     .where(and(eq(customers.id, session.customerId), eq(customers.tenantId, ref.id)))
     .limit(1);
 
   if (!customer) return null;
 
-  return { customerName: customer.name, orders: await loadCustomerOrders(ref.id, customer.id) };
+  return {
+    customerName: customer.name,
+    customerPhone: customer.phone,
+    orders: await loadCustomerOrders(ref.id, customer.id),
+  };
 }
 
-/** Consulta por WhatsApp (cliente sem cookie). Em caso de sucesso, grava o cookie de sessão. */
-export async function lookupOrdersByPhone(input: unknown): Promise<ActionResult<CustomerOrdersData>> {
+/** Primeiro acesso: define o nome do cliente já autenticado via OTP (exige sessão). */
+export async function saveCustomerName(input: unknown): Promise<ActionResult<{ name: string }>> {
   const ref = await getTenantRef();
   if (!ref) return failure("Loja não encontrada.");
 
-  const parsed = customerLookupSchema.safeParse(input);
+  const session = await getCustomerSession();
+  if (!session || session.tenantId !== ref.id) return failure("Sessão expirada. Entre novamente.");
+
+  const parsed = customerNameSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
 
-  const [customer] = await db
-    .select()
-    .from(customers)
-    .where(and(eq(customers.tenantId, ref.id), eq(customers.phone, parsed.data.phone)))
-    .limit(1);
+  const updated = await db
+    .update(customers)
+    .set({ name: parsed.data.name })
+    .where(and(eq(customers.id, session.customerId), eq(customers.tenantId, ref.id)))
+    .returning({ name: customers.name });
 
-  if (!customer) return failure("Nenhum pedido encontrado para este WhatsApp.");
-
-  await setCustomerSessionCookie({
-    customerId: customer.id,
-    tenantId: ref.id,
-    phone: customer.phone,
-  });
-
-  return success({
-    customerName: customer.name,
-    orders: await loadCustomerOrders(ref.id, customer.id),
-  });
+  if (updated.length === 0) return failure("Cliente não encontrado.");
+  return success({ name: updated[0].name });
 }
 
 /** "Trocar número": encerra a sessão do cliente (apaga o cookie `customer_token`). */

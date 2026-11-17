@@ -353,7 +353,7 @@ export const MENU: SeedCategory[] = [
         priceCents: 960,
       },
       {
-        name: "Nuggets",
+        name: "Nugguets",
         description:
           "Saboreie nossos Nuggets suculentos feitos de Peito de frango, com qualidade única e livres de hormônios. Com uma crocância leve e macia, cada mordida é uma explosão de sabor. Experimente já e sinta o desejo pelo próximo!",
         priceCents: 0,
@@ -435,13 +435,24 @@ export const MENU: SeedCategory[] = [
   {
     name: "Sobremesas",
     products: [
-      { name: "Brownie Pug Factory! 50 g", priceCents: 999 },
       {
-        name: "Leitinho Recheado com avela!",
-        description: "Delicioso Bombom Leitinho Recheado com avela Pug Factory! (20 g)",
+        name: "Brownie de Chocolate – Pug Factory (50g)",
+        description:
+          "Brownie artesanal com casquinha levemente crocante por fora e massa densa, úmida e chocolatuda por dentro. Unidade embalada de 50g.",
+        priceCents: 999,
+      },
+      {
+        name: "Leitinho com Creme de Avelã – Pug Factory (20g)",
+        description:
+          "Massa macia à base de leite em pó com recheio cremoso de avelã. Porção individual de 20g, ideal para acompanhar o lanche ou adoçar a refeição na medida certa.",
         priceCents: 350,
       },
-      { name: "Pudim", description: "Delicioso Pudim no copo americano", priceCents: 1599 },
+      {
+        name: "Pudim de Leite no Copo Americano (aprox. 150g / 190ml)",
+        description:
+          "Clássico pudim de leite condensado de textura lisa e cremosa, finalizado com calda artesanal de caramelo no fundo. Servido no tradicional copo americano.",
+        priceCents: 1599,
+      },
     ],
   },
 ];

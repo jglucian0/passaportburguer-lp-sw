@@ -247,7 +247,29 @@ export const customers = pgTable(
 );
 
 /* ------------------------------------------------------------------ */
-/* 9. customer_addresses                                               */
+/* 8b. whatsapp_otps (login sem senha)                                 */
+/* ------------------------------------------------------------------ */
+
+export const whatsappOtps = pgTable(
+  "whatsapp_otps",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** Padrão internacional, apenas dígitos (ex: 5544999999999). */
+    phone: text("phone").notNull(),
+    /** Código de embarque único (ex: PASS-4829), enviado pelo cliente via wa.me. */
+    code: text("code").notNull(),
+    verified: boolean("verified").notNull().default(false),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("whatsapp_otps_phone_idx").on(t.phone, t.createdAt),
+    uniqueIndex("whatsapp_otps_code_uq").on(t.code),
+  ],
+);
+
+/* ------------------------------------------------------------------ */
+/* 9. customer_addresses                                             */
 /* ------------------------------------------------------------------ */
 
 export const customerAddresses = pgTable(
