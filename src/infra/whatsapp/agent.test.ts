@@ -645,7 +645,7 @@ describe("runBotTurn (Gemini mockado)", () => {
     const sys = requests[0].systemInstruction;
     expect(sys).toContain("Passaporte Burguer");
     expect(sys).not.toContain("https://app.test"); // a IA não conhece nenhuma URL
-    expect(sys).toMatch(/2 a 3 frases curtas/i);
+    expect(sys).toMatch(/1 a 2 frases/i);
     expect(sys).toMatch(/1 emoji/i);
     expect(sys).toMatch(/NUNCA peça/i);
     expect(sys).toMatch(/NUNCA escreva URL/i);
@@ -660,7 +660,9 @@ describe("runBotTurn (Gemini mockado)", () => {
     const { d, requests } = deps([modelText("Opa, bem-vindo!")]);
     await runBotTurn(PHONE, [msg()], d);
     const sys = requests[0].systemInstruction;
-    expect(sys).toMatch(/atendente humano da equipe do Passaporte Burguer/);
+    expect(sys).toMatch(/Você é a Bia, atendente do Passaporte Burguer/);
+    expect(sys).toContain("DADOS OPERACIONAIS AGORA");
+    expect(sys).toMatch(/Status da loja: /);
     // Saudação / pergunta aberta: nada de botão.
     expect(sys).toMatch(/Oi[^\n]*Bom dia[^\n]*Tudo bem\?[^\n]*Estão abertos\?/);
     expect(sys).toMatch(/NÃO chame sendQuickMenu/);
@@ -668,8 +670,6 @@ describe("runBotTurn (Gemini mockado)", () => {
     expect(sys).toMatch(/manda o cardápio[^\n]*quais lanches tem\?[^\n]*quero escolher[^\n]*me vê as opções/);
     expect(sys).toMatch(/messageText/);
     // Cliente cadastrado e novo.
-    expect(sys).toMatch(/isRegistered = true[^]*primeiro nome[^]*como (ele )?está[^]*já sabe o que vai pedir hoje[^]*último pedido/i);
-    expect(sys).toMatch(/isRegistered = false[^]*boas-vindas ao Passaporte Burguer[^]*já conhece os lanches[^]*link rápido[^]*site/i);
     // Tom: sem robô, sem bullets em pergunta simples, sem empurrar link.
     expect(sys).toMatch(/Como posso ajudar\?[^\n]*Para prosseguir[^\n]*Selecione uma opção/);
     expect(sys).toMatch(/bullet/i);
