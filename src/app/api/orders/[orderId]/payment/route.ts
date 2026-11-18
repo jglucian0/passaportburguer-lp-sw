@@ -178,7 +178,19 @@ export async function POST(request: NextRequest, { params }: Ctx) {
     });
     // Aprovado: o pedido já foi liberado (idempotente com o webhook). PENDING/RISK_ANALYSIS: aguarda o webhook.
     return NextResponse.json(
-      { ok: true, status: charge.status, released: charge.released },
+      {
+        ok: true,
+        status: charge.status,
+        released: charge.released,
+        ...(charge.released
+          ? {}
+          : {
+              message:
+                charge.status === "RISK_ANALYSIS"
+                  ? "Pagamento em análise de segurança. Assim que aprovado, seu pedido será enviado para a cozinha."
+                  : "Aguardando confirmação da operadora do cartão...",
+            }),
+      },
       { headers: NO_STORE },
     );
   } catch (error) {

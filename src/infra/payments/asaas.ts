@@ -444,7 +444,9 @@ export async function createCreditCardCharge({
 
   /* Aprovação imediata: libera o pedido já (idempotente com o webhook PAYMENT_CONFIRMED que chega depois). */
   let released = false;
-  if (cardData && (status === "CONFIRMED" || status === "RECEIVED")) {
+  // Estrito: HTTP 200 não prova nada. Só o campo `status` CRU da resposta libera o pedido
+  // (RECEIVED_IN_CASH, status desconhecido, PENDING etc. aguardam o webhook).
+  if (cardData && (charge.status === "CONFIRMED" || charge.status === "RECEIVED")) {
     const [existing] = inserted.length
       ? inserted
       : await db
@@ -458,7 +460,7 @@ export async function createCreditCardCharge({
         orderId: order.id,
         tenantId: order.tenantId,
         paidCents: order.totalCents,
-        status,
+        status: charge.status === "RECEIVED" ? "RECEIVED" : "CONFIRMED",
       }));
     }
   }

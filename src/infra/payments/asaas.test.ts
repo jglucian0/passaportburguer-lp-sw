@@ -329,3 +329,59 @@ describe("cartão: tratamento da resposta síncrona", () => {
     expect(fake.batches).toHaveLength(0);
   });
 });
+
+describe("cartão: HTTP 200 nunca aprova por si só", () => {
+  const card = {
+    holderName: "MARIA S SILVA",
+    number: "4111111111111111",
+    expiryMonth: "12",
+    expiryYear: "2030",
+    ccv: "123",
+    holderCpfCnpj: "52998224725",
+    postalCode: "87020025",
+    addressNumber: "100",
+    email: "m@x.com",
+  };
+
+  it.each(["PENDING", "RECEIVED_IN_CASH", "SOMETHING_NEW", undefined])(
+    "status %s não libera o pedido (aguarda o webhook)",
+    async (status) => {
+      respond = (c) =>
+        c.url.endsWith("/payments") && c.method === "POST"
+          ? { json: { id: "pay_card", status } }
+          : { json: { id: "cus_x" } };
+      fake.handler = (q: Query) => (q.kind === "insert" && q.table === "payments" ? [{ id: "p-local" }] : []);
+      const result = await createCreditCardCharge({
+        order: cardOrder,
+        customer,
+        cardData: card,
+        remoteIp: "203.0.113.9",
+      });
+      expect(result.released).toBe(false);
+      expect(result.paymentId).toBe("pay_card");
+      expect(fake.batches).toHaveLength(0);
+      expect(fake.queries.some((q) => q.kind === "update" && q.table === "orders")).toBe(false);
+    },
+  );
+
+  it("RECEIVED libera e grava o pagamento como RECEIVED", async () => {
+    respond = (c) =>
+      c.url.endsWith("/payments") && c.method === "POST"
+        ? { json: { id: "pay_card", status: "RECEIVED" } }
+        : { json: { id: "cus_x" } };
+    fake.handler = (q: Query) =>
+      q.kind === "insert" && q.table === "payments"
+        ? [{ id: "p-local" }]
+        : q.kind === "update" && q.table === "orders"
+          ? [{ id: order.id }]
+          : [];
+    const result = await createCreditCardCharge({
+      order: cardOrder,
+      customer,
+      cardData: card,
+      remoteIp: "203.0.113.9",
+    });
+    expect(result.released).toBe(true);
+    expect(fake.batches[0][0].set).toMatchObject({ status: "RECEIVED" });
+  });
+});

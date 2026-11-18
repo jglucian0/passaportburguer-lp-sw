@@ -51,6 +51,8 @@ const EMPTY_CARD = {
   addressNumber: "",
 };
 
+const REFUSED_MESSAGE =
+  "Pagamento recusado pela operadora do cartão. Verifique os dados, tente outro cartão ou pague via Pix.";
 const RISK_MESSAGE =
   "Pagamento em análise de segurança. Assim que aprovado, seu pedido será enviado para a cozinha.";
 
@@ -77,6 +79,8 @@ export function PaymentView({
   const [submitting, setSubmitting] = useState(false);
   const [cardError, setCardError] = useState<string | null>(null);
   const [waitingGateway, setWaitingGateway] = useState(false);
+  const [waitingMessage, setWaitingMessage] = useState(RISK_MESSAGE);
+  const submittingRef = useRef(false);
   const [switching, setSwitching] = useState(false);
 
   /* ---------------- Pix: gera/recupera a cobrança ---------------- */
@@ -120,11 +124,15 @@ export function PaymentView({
         const data = (await res.json()) as { orderStatus: string; paymentStatus: string | null };
         if (stopped) return;
         if (data.orderStatus === "AWAITING_PAYMENT") {
-          if (data.paymentStatus === "RISK_ANALYSIS") setWaitingGateway(true);
-          if (data.paymentStatus === "FAILED") {
+          if (data.paymentStatus === "RISK_ANALYSIS") {
+            setWaitingMessage(RISK_MESSAGE);
+            setWaitingGateway(true);
+          }
+          // Ignora FAILED antigo enquanto uma nova tentativa está sendo enviada.
+          if (data.paymentStatus === "FAILED" && !submittingRef.current) {
             // Recusa assíncrona (captura/análise de risco): libera o formulário para nova tentativa.
             setWaitingGateway(false);
-            setCardError((prev) => prev ?? "Cartão recusado. Tente outro cartão ou pague com Pix.");
+            setCardError(REFUSED_MESSAGE);
           }
           return;
         }
@@ -201,6 +209,7 @@ export function PaymentView({
     event.preventDefault();
     if (submitting) return;
     setCardError(null);
+    submittingRef.current = true;
 
     const [expiryMonth = "", expiryYear = ""] = card.expiry.split("/");
     setSubmitting(true);
@@ -228,9 +237,11 @@ export function PaymentView({
         error?: string;
         status?: string;
         released?: boolean;
+        message?: string;
       };
       if (res.status === 409 && data.error) {
         // Já existe pagamento em análise para este pedido.
+        setWaitingMessage(RISK_MESSAGE);
         setWaitingGateway(true);
         return;
       }
@@ -248,11 +259,13 @@ export function PaymentView({
         router.replace("/meus-pedidos");
         return;
       }
-      // PENDING / análise de risco: aguarda o webhook (polling) com mensagem clara.
+      // PENDING / análise de risco: mantém o polling e aguarda a decisão final do webhook.
+      setWaitingMessage(data.message ?? RISK_MESSAGE);
       setWaitingGateway(true);
     } catch {
       setCardError("Sem conexão. Tente novamente.");
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   }
@@ -378,7 +391,7 @@ export function PaymentView({
 
           {waitingGateway ? (
             <p className="flex items-start gap-2 text-sm text-slate-700" aria-live="polite">
-              <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" /> {RISK_MESSAGE}
+              <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" /> {waitingMessage}
             </p>
           ) : (
             <form onSubmit={submitCard} className="space-y-3" autoComplete="on">
