@@ -6,12 +6,14 @@ vi.mock("@/infra/db", async () => (await import("@/test/fake-db")).makeDbModule(
 vi.mock("@/infra/db/store-settings", () => ({
   loadStoreSettings: async () => ({ autoAcceptOrders: state.autoAccept }),
 }));
-vi.mock("@/lib/saipos", () => ({ sendOrderToSaipos: vi.fn() }));
+vi.mock("@/lib/saipos", () => ({ sendOrderToSaipos: vi.fn(), cancelOrderOnSaipos: vi.fn() }));
 vi.mock("next/server", async (orig) => ({ ...(await orig<object>()), after: vi.fn() }));
 
 const state = vi.hoisted(() => ({ autoAccept: false }));
 
 import { after } from "next/server";
+
+import { cancelOrderOnSaipos } from "@/lib/saipos";
 
 import { tokenMatches } from "@/infra/payments/webhook-auth";
 
@@ -35,7 +37,15 @@ function req(body: unknown, token: string | null = TOKEN) {
 }
 
 let seenEvents: Set<string>;
-let order: { id: string; tenantId: string; status: string; totalCents: number };
+let order: {
+  id: string;
+  tenantId: string;
+  status: string;
+  totalCents: number;
+  saiposSyncStatus?: string;
+  saiposOrderId?: string | null;
+  saiposCancelStatus?: string;
+};
 let orderRowsUpdated: number;
 
 beforeEach(() => {
@@ -300,17 +310,77 @@ describe("cartão: análise de risco", () => {
   });
 });
 
-describe("chargeback", () => {
-  it.each(["PAYMENT_CHARGEBACK_REQUESTED", "PAYMENT_CHARGEBACK_DISPUTE"])(
-    "%s => alerta de alta prioridade, sem alterar pedido/pagamento",
-    async (event) => {
-      const res = await POST(req(ev("evt_cb_" + event, event, "CONFIRMED")));
-      expect(await res.json()).toMatchObject({ flagged: "chargeback" });
-      expect(console.warn).toHaveBeenCalledWith(
-        "[asaas-webhook]",
-        expect.stringContaining("CHARGEBACK_HIGH_PRIORITY_OWNER_ACTION_REQUIRED"),
-      );
-      expect(orderUpdates()).toHaveLength(0);
-    },
-  );
+describe("estorno e chargeback após a aprovação", () => {
+  const sentToSaipos = () => {
+    order.status = "PREPARING";
+    order.saiposSyncStatus = "SYNCED";
+    order.saiposOrderId = "saipos-99";
+    order.saiposCancelStatus = "NOT_APPLICABLE";
+  };
+  const batchSets = () => fake.batches.flat().filter((q) => q.kind === "update" && q.table === "orders").map((q) => q.set);
+  const timelineTypes = () =>
+    fake.batches.flat().filter((q) => q.kind === "insert" && q.table === "order_timeline_events").map((q) => q.values!.type);
+
+  beforeEach(() => vi.mocked(cancelOrderOnSaipos).mockReset());
+
+  it("PAYMENT_REFUNDED em pedido enviado: cancela na Saipos com sucesso => CANCELLED", async () => {
+    sentToSaipos();
+    vi.mocked(cancelOrderOnSaipos).mockResolvedValue({ ok: true });
+    const res = await POST(req(ev("evt_rf1", "PAYMENT_REFUNDED", "REFUNDED")));
+    expect(await res.json()).toMatchObject({ flagged: "refund", saiposCancelStatus: "CANCELLED" });
+    expect(cancelOrderOnSaipos).toHaveBeenCalledWith("saipos-99");
+    const [payment, ord] = fake.batches[0];
+    expect(payment.set).toMatchObject({ status: "REFUNDED" });
+    expect(ord.set).toMatchObject({ status: "CANCELED" });
+    expect(batchSets()).toContainEqual(expect.objectContaining({ financialAlertType: "REFUNDED" }));
+    expect(batchSets()).toContainEqual(expect.objectContaining({ saiposCancelStatus: "CANCELLED" }));
+    expect(timelineTypes()).toEqual(["PAYMENT_REFUNDED", "SAIPOS_CANCEL_ATTEMPT"]);
+  });
+
+  it("PAYMENT_CHARGEBACK_REQUESTED: Saipos rejeita => MANUAL_ACTION_REQUIRED + alerta CHARGEBACK", async () => {
+    sentToSaipos();
+    vi.mocked(cancelOrderOnSaipos).mockResolvedValue({ ok: false, error: "Saipos HTTP 409: pedido em rota" });
+    const res = await POST(req(ev("evt_cb1", "PAYMENT_CHARGEBACK_REQUESTED", "CONFIRMED")));
+    expect(await res.json()).toMatchObject({ flagged: "chargeback", saiposCancelStatus: "MANUAL_ACTION_REQUIRED" });
+    expect(fake.batches[0][0].set).toMatchObject({ status: "CHARGEBACK" });
+    expect(fake.batches[0][1].set).toMatchObject({ status: "CANCELED" });
+    expect(batchSets()).toContainEqual(expect.objectContaining({ financialAlertType: "CHARGEBACK" }));
+    expect(batchSets()).toContainEqual(expect.objectContaining({ saiposCancelStatus: "MANUAL_ACTION_REQUIRED" }));
+    expect(console.warn).toHaveBeenCalledWith(
+      "[asaas-webhook]",
+      expect.stringContaining("CHARGEBACK_HIGH_PRIORITY_OWNER_ACTION_REQUIRED"),
+    );
+  });
+
+  it("sem endpoint de cancelamento (unsupported) => MANUAL_ACTION_REQUIRED", async () => {
+    sentToSaipos();
+    vi.mocked(cancelOrderOnSaipos).mockResolvedValue({ ok: false, unsupported: true, error: "não configurado" });
+    const res = await POST(req(ev("evt_rf2", "PAYMENT_PARTIALLY_REFUNDED", "REFUNDED")));
+    expect(await res.json()).toMatchObject({ saiposCancelStatus: "MANUAL_ACTION_REQUIRED" });
+    expect(timelineTypes()).toContain("SAIPOS_CANCEL_ATTEMPT");
+  });
+
+  it("pedido que nunca foi ao Saipos: não tenta cancelar e permanece NOT_APPLICABLE", async () => {
+    order.status = "AWAITING_PAYMENT";
+    order.saiposSyncStatus = "PENDING";
+    const res = await POST(req(ev("evt_rf3", "PAYMENT_REFUNDED", "REFUNDED")));
+    expect(await res.json()).toMatchObject({ flagged: "refund", saiposCancelStatus: "NOT_APPLICABLE" });
+    expect(cancelOrderOnSaipos).not.toHaveBeenCalled();
+    expect(timelineTypes()).toEqual(["PAYMENT_REFUNDED"]);
+  });
+
+  it("já conciliado: não chama a Saipos de novo", async () => {
+    sentToSaipos();
+    order.saiposCancelStatus = "RECONCILED";
+    await POST(req(ev("evt_cb2", "PAYMENT_CHARGEBACK_DISPUTE", "CONFIRMED")));
+    expect(cancelOrderOnSaipos).not.toHaveBeenCalled();
+  });
+
+  it("evento duplicado não repete o cancelamento na Saipos", async () => {
+    sentToSaipos();
+    vi.mocked(cancelOrderOnSaipos).mockResolvedValue({ ok: true });
+    await POST(req(ev("evt_dup", "PAYMENT_REFUNDED", "REFUNDED")));
+    await POST(req(ev("evt_dup", "PAYMENT_REFUNDED", "REFUNDED")));
+    expect(cancelOrderOnSaipos).toHaveBeenCalledTimes(1);
+  });
 });

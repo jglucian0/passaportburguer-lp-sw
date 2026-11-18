@@ -1,11 +1,12 @@
 import { timingSafeEqual } from "node:crypto";
 
 import { and, eq, or } from "drizzle-orm";
-import { NextResponse, type NextRequest } from "next/server";
+import { after, NextResponse, type NextRequest } from "next/server";
 
 import type { DeliveryType, OrderStatus } from "@/core/schemas/common";
 import { db } from "@/infra/db";
 import { orders } from "@/infra/db/schema";
+import { notifyOutForDelivery } from "@/infra/whatsapp/notifications";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -166,6 +167,10 @@ export async function POST(request: NextRequest) {
     })
     .where(and(eq(orders.id, order.id), eq(orders.status, order.status)))
     .returning({ id: orders.id });
+
+  if (updated.length > 0 && target === "OUT_FOR_DELIVERY") {
+    after(() => notifyOutForDelivery(order.id));
+  }
 
   return NextResponse.json({ ok: true, updated: updated.length });
 }

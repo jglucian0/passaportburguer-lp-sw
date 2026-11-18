@@ -57,6 +57,8 @@ export type AddressSnapshot = {
 };
 
 export type SaiposSyncStatus = "PENDING" | "SYNCED" | "FAILED" | "DISABLED";
+export type FinancialAlertType = "REFUNDED" | "CHARGEBACK";
+export type SaiposCancelStatus = "NOT_APPLICABLE" | "CANCELLED" | "MANUAL_ACTION_REQUIRED" | "RECONCILED";
 
 export type OrderItemAddonSnapshot = {
   /** Id do adicional no cardápio (usado para resolver o saiposCode). Ausente em pedidos antigos. */
@@ -310,6 +312,8 @@ export const customers = pgTable(
     email: text("email"),
     /** Id do cliente no Asaas (cus_xxx): reaproveitado para não duplicar cadastro a cada pedido. */
     asaasCustomerId: text("asaas_customer_id"),
+    /** CPF (só dígitos), coletado no cadastro pós-pagamento do WhatsApp. Dado pessoal: nunca logar. */
+    documentNumber: text("document_number"),
     /** Hash bcrypt da senha; nulo enquanto o cadastro não foi concluído. */
     passwordHash: text("password_hash"),
     /** Senhas erradas consecutivas; zera ao acertar ou ao bloquear. */
@@ -473,6 +477,16 @@ export const orders = pgTable(
       .default("PENDING"),
     saiposLastError: text("saipos_last_error"),
     saiposSyncedAt: timestamp("saipos_synced_at", { withTimezone: true }),
+    /** Estorno/chargeback após a aprovação do pagamento (nulo = nenhum). */
+    financialAlertType: text("financial_alert_type").$type<FinancialAlertType>(),
+    /** Conciliação com o PDV Saipos após estorno/chargeback. */
+    saiposCancelStatus: text("saipos_cancel_status")
+      .$type<SaiposCancelStatus>()
+      .notNull()
+      .default("NOT_APPLICABLE"),
+    reconciledAt: timestamp("reconciled_at", { withTimezone: true }),
+    /** Nome do OWNER que confirmou o ajuste manual no Saipos. */
+    reconciledBy: text("reconciled_by"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
@@ -481,6 +495,7 @@ export const orders = pgTable(
   },
   (t) => [
     index("orders_tenant_idx").on(t.tenantId),
+    index("orders_tenant_saipos_cancel_idx").on(t.tenantId, t.saiposCancelStatus),
     uniqueIndex("orders_tenant_number_uq").on(t.tenantId, t.orderNumber),
     index("orders_tenant_status_idx").on(t.tenantId, t.status),
     index("orders_tenant_updated_idx").on(t.tenantId, t.updatedAt),
@@ -666,6 +681,7 @@ export type PaymentStatus =
   | "RECEIVED"
   | "OVERDUE"
   | "REFUNDED"
+  | "CHARGEBACK"
   | "FAILED"
   /** Cobrança removida no Asaas (troca de método, nova tentativa ou pedido expirado). */
   | "CANCELLED";
@@ -706,6 +722,42 @@ export type Payment = typeof payments.$inferSelect;
 export type NewPayment = typeof payments.$inferInsert;
 
 /* ------------------------------------------------------------------ */
+/* order_timeline_events (histórico cronológico do pedido)             */
+/* ------------------------------------------------------------------ */
+
+export type OrderTimelineEventType =
+  | "ORDER_CREATED"
+  | "PAYMENT_CONFIRMED"
+  | "SENT_TO_SAIPOS"
+  | "PAYMENT_REFUNDED"
+  | "PAYMENT_CHARGEBACK"
+  | "SAIPOS_CANCEL_ATTEMPT"
+  | "SAIPOS_RECONCILED";
+
+export const orderTimelineEvents = pgTable(
+  "order_timeline_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    type: text("type").$type<OrderTimelineEventType>().notNull(),
+    title: text("title").notNull(),
+    description: text("description"),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+    /** Chave de idempotência (ex.: `<eventId>:refund`): retentativas do webhook não duplicam o registro. */
+    dedupeKey: text("dedupe_key"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("order_timeline_order_idx").on(t.orderId, t.createdAt),
+    uniqueIndex("order_timeline_dedupe_uq").on(t.dedupeKey),
+  ],
+);
+
+export type OrderTimelineEvent = typeof orderTimelineEvents.$inferSelect;
+
+/* ------------------------------------------------------------------ */
 /* payment_events (idempotência de webhooks de pagamento)              */
 /* ------------------------------------------------------------------ */
 
@@ -726,4 +778,74 @@ export const paymentEvents = pgTable(
     index("payment_events_order_idx").on(t.orderId),
     index("payment_events_provider_payment_idx").on(t.providerPaymentId),
   ],
+);
+
+/* ------------------------------------------------------------------ */
+/* WhatsApp Bot (Meta Cloud API)                                       */
+/* ------------------------------------------------------------------ */
+
+export type WhatsAppSessionState =
+  | "GREETING"
+  | "BROWSING"
+  | "CONFIRMING_ORDER"
+  | "AWAITING_PAYMENT"
+  | "COMPLETED";
+
+export type WhatsAppDraftCartItem = {
+  productId: string;
+  quantity: number;
+  notes?: string | null;
+  addons?: { addonId: string; quantity: number }[];
+};
+
+export type WhatsAppMessageRole = "user" | "assistant" | "system";
+export type WhatsAppMediaType = "text" | "audio" | "image" | "sticker" | "interactive";
+
+/** Sessão da conversa. PK = telefone E.164 só com dígitos (ex.: 5543999999999). */
+export const whatsappSessions = pgTable(
+  "whatsapp_sessions",
+  {
+    phone: text("phone").primaryKey(),
+    customerId: uuid("customer_id").references(() => customers.id, { onDelete: "set null" }),
+    state: text("state").$type<WhatsAppSessionState>().notNull().default("GREETING"),
+    draftCart: jsonb("draft_cart").$type<WhatsAppDraftCartItem[]>(),
+    deliveryAddress: jsonb("delivery_address").$type<AddressSnapshot>(),
+    /** Transbordo humano: enquanto > now(), a IA não responde. */
+    botPausedUntil: timestamp("bot_paused_until", { withTimezone: true }),
+    lastInteractionAt: timestamp("last_interaction_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("whatsapp_sessions_customer_idx").on(t.customerId)],
+);
+
+/** Histórico + deduplicação (wamid único da Meta). */
+export const whatsappMessages = pgTable(
+  "whatsapp_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    wamid: text("wamid").unique(),
+    phone: text("phone").notNull(),
+    role: text("role").$type<WhatsAppMessageRole>().notNull(),
+    content: text("content").notNull(),
+    mediaType: text("media_type").$type<WhatsAppMediaType>().notNull().default("text"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("whatsapp_messages_phone_idx").on(t.phone, t.createdAt)],
+);
+
+/** Buffer de debounce: mensagens "picadas" são agrupadas antes de processar. */
+export const whatsappInboxBuffer = pgTable(
+  "whatsapp_inbox_buffer",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    phone: text("phone").notNull(),
+    wamid: text("wamid").notNull().unique(),
+    payload: jsonb("payload").notNull(),
+    processed: boolean("processed").notNull().default(false),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("whatsapp_inbox_phone_idx").on(t.phone, t.processed, t.receivedAt)],
 );

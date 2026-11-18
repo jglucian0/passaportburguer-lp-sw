@@ -10,6 +10,7 @@ import { formatDocument } from "@/core/validation/document";
 import type { AdminOrderView } from "@/infra/db/admin-orders";
 import { cn, formatCents, formatPhone, whatsappLink } from "@/lib/utils";
 
+import { FinancialBadges, TimelineButton } from "./financial-alerts";
 import { actionErrorMessage } from "./use-run-action";
 import { PAYMENT_LABELS } from "./order-ticket";
 
@@ -113,6 +114,7 @@ export function KdsOrderCard({
   now,
   onChanged,
   onPrint,
+  onTimeline,
   dragging = false,
   detailed = false,
   onDragStartCard,
@@ -128,6 +130,7 @@ export function KdsOrderCard({
   /** Chamado após uma mudança bem-sucedida, para recarregar a lista imediatamente. */
   onChanged: () => void;
   onPrint: (order: AdminOrderView) => void;
+  onTimeline?: (order: AdminOrderView) => void;
 }) {
   const [isPending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -268,6 +271,8 @@ export function KdsOrderCard({
         </p>
       ) : null}
 
+      <FinancialBadges order={order} />
+
       {order.status === "CANCELED" && order.cancelReason ? (
         <p className="rounded-md bg-red-100 p-1.5 text-xs font-semibold text-red-700">
           Cancelado: {order.cancelReason}
@@ -306,6 +311,7 @@ export function KdsOrderCard({
             <X className="h-4 w-4" />
           </Button>
         ) : null}
+        {onTimeline ? <TimelineButton onClick={() => onTimeline(order)} /> : null}
         <Button
           variant="secondary"
           className="h-10 w-10 shrink-0 px-0"

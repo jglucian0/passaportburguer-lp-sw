@@ -1,6 +1,6 @@
 "use client";
 
-import { Bell, BellOff, History, Plus, Rows3, Search, WifiOff, Zap } from "lucide-react";
+import { Bell, BellOff, Headset, History, Plus, Rows3, Search, WifiOff, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { advanceOrder } from "@/actions/admin";
@@ -12,11 +12,13 @@ import { cn } from "@/lib/utils";
 import type { CatalogCategoryWithStatus } from "@/infra/db/queries";
 import type { AdminOrderView } from "@/infra/db/admin-orders";
 
+import { OrderTimelineDialog, SaiposAdjustBanner } from "./financial-alerts";
 import { HistoryDrawer, matchesOrderQuery } from "./history-drawer";
 import { ManualOrderDialog } from "./manual-order-dialog";
 import { KdsOrderCard } from "./kds-order-card";
 import { OrderTicketDialog } from "./order-ticket";
 import { Toast, type ToastState } from "./toast";
+import { WhatsAppChatsDrawer } from "./whatsapp-chats-drawer";
 import { actionErrorMessage } from "./use-run-action";
 
 const POLL_INTERVAL_MS = 8_000;
@@ -56,6 +58,7 @@ export function KdsBoard({
   storeName,
   menu,
   headerExtra,
+  canReconcile = false,
 }: {
   initialOrders: AdminOrderView[];
   /** Instante do servidor (ms) — evita divergência de hidratação nos cronômetros. */
@@ -63,6 +66,8 @@ export function KdsBoard({
   storeName: string;
   menu: CatalogCategoryWithStatus[];
   headerExtra?: ReactNode;
+  /** Proprietário (OWNER) pode confirmar o ajuste no Saipos. */
+  canReconcile?: boolean;
 }) {
   const [orders, setOrders] = useState(initialOrders);
   const [now, setNow] = useState(initialNow);
@@ -73,8 +78,10 @@ export function KdsBoard({
   const [query, setQuery] = useState("");
   const [detailed, setDetailed] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [chatsOpen, setChatsOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [printing, setPrinting] = useState<AdminOrderView | null>(null);
+  const [timelineOrder, setTimelineOrder] = useState<AdminOrderView | null>(null);
 
   const [dragged, setDragged] = useState<AdminOrderView | null>(null);
   const [overColumn, setOverColumn] = useState<Column["id"] | null>(null);
@@ -318,12 +325,17 @@ export function KdsBoard({
           <Button variant="outline" className="h-10" onClick={() => setHistoryOpen(true)}>
             <History className="h-4 w-4" /> Histórico Hoje ({history.length})
           </Button>
+          <Button variant="outline" className="h-10" onClick={() => setChatsOpen(true)}>
+            <Headset className="h-4 w-4" /> Atendimentos WhatsApp
+          </Button>
           <Button className="h-10 w-full sm:w-auto" onClick={() => setCreating(true)}>
             <Plus className="h-4 w-4" /> Novo Pedido
           </Button>
           {headerExtra}
         </div>
       </div>
+
+      <SaiposAdjustBanner orders={orders} canReconcile={canReconcile} onChanged={() => void refresh()} />
 
       <div
         className="grid gap-3 md:grid-cols-2 lg:min-h-0 lg:flex-1 lg:grid-cols-[repeat(var(--cols),minmax(0,1fr))] lg:grid-rows-[minmax(0,1fr)]"
@@ -390,6 +402,7 @@ export function KdsBoard({
                     now={now}
                     onChanged={() => void refresh()}
                     onPrint={setPrinting}
+                    onTimeline={setTimelineOrder}
                     detailed={detailed}
                     dragging={dragged?.id === order.id}
                     onDragStartCard={setDragged}
@@ -404,7 +417,9 @@ export function KdsBoard({
       </div>
       </div>
 
-      <HistoryDrawer open={historyOpen} onOpenChange={setHistoryOpen} orders={history} onPrint={setPrinting} />
+      <WhatsAppChatsDrawer open={chatsOpen} onOpenChange={setChatsOpen} />
+
+      <HistoryDrawer open={historyOpen} onOpenChange={setHistoryOpen} orders={history} onPrint={setPrinting} onTimeline={setTimelineOrder} />
 
       {creating ? (
         <ManualOrderDialog
@@ -418,6 +433,8 @@ export function KdsBoard({
       ) : null}
 
       <Toast toast={toast} onDismiss={() => setToast(null)} />
+
+      {timelineOrder ? <OrderTimelineDialog order={timelineOrder} onClose={() => setTimelineOrder(null)} /> : null}
 
       {printing ? (
         <OrderTicketDialog order={printing} storeName={storeName} onClose={() => setPrinting(null)} />

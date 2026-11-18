@@ -7,6 +7,7 @@ import { Sheet } from "@/components/ui/sheet";
 import type { AdminOrderView } from "@/infra/db/admin-orders";
 import { cn, formatCents } from "@/lib/utils";
 
+import { FinancialBadges, TimelineButton } from "./financial-alerts";
 import { PAYMENT_LABELS } from "./order-ticket";
 
 export function matchesOrderQuery(order: AdminOrderView, query: string): boolean {
@@ -21,11 +22,13 @@ export function HistoryDrawer({
   onOpenChange,
   orders,
   onPrint,
+  onTimeline,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   orders: AdminOrderView[];
   onPrint: (order: AdminOrderView) => void;
+  onTimeline?: (order: AdminOrderView) => void;
 }) {
   const [query, setQuery] = useState("");
   const list = orders
@@ -73,6 +76,7 @@ export function HistoryDrawer({
                     >
                       {canceled ? "Cancelado" : "Concluído"}
                     </span>
+                    <FinancialBadges order={order} />
                   </p>
                   <p className="truncate text-xs text-slate-600">{order.customerName}</p>
                   <p className="truncate text-[11px] text-slate-500">
@@ -80,6 +84,7 @@ export function HistoryDrawer({
                     {canceled && order.cancelReason ? ` • ${order.cancelReason}` : ""}
                   </p>
                 </div>
+                {onTimeline ? <TimelineButton onClick={() => onTimeline(order)} className="h-9 w-9" /> : null}
                 <button
                   type="button"
                   onClick={() => onPrint(order)}

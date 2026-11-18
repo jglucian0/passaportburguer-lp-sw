@@ -4,7 +4,10 @@ import { after } from "next/server";
 import { db } from "@/infra/db";
 import { orders, payments } from "@/infra/db/schema";
 import { loadStoreSettings } from "@/infra/db/store-settings";
+import { recordTimelineEvent } from "@/infra/db/timeline";
+import { notifyPaymentConfirmed } from "@/infra/whatsapp/notifications";
 import { sendOrderToSaipos } from "@/lib/saipos";
+import { formatCents } from "@/lib/utils";
 
 type BatchItem = Parameters<typeof db.batch>[0][number];
 
@@ -48,6 +51,19 @@ export async function settlePayment(opts: {
 
   const results = (await db.batch(batch)) as unknown as unknown[];
   const released = ((results[1] as unknown[] | undefined)?.length ?? 0) > 0;
-  if (released) after(() => sendOrderToSaipos(opts.orderId));
+  if (released) {
+    await recordTimelineEvent({
+      orderId: opts.orderId,
+      type: "PAYMENT_CONFIRMED",
+      title: "Pagamento confirmado",
+      description: `Pagamento online de ${formatCents(opts.paidCents)} confirmado.`,
+      metadata: { paidCents: opts.paidCents, status: opts.status },
+      dedupeKey: `${opts.orderId}:payment-confirmed`,
+    });
+    // Um único after(): Saipos e aviso no WhatsApp (só quem liberou o pedido avisa; o aviso também é idempotente).
+    after(async () => {
+      await Promise.allSettled([sendOrderToSaipos(opts.orderId), notifyPaymentConfirmed(opts.orderId)]);
+    });
+  }
   return { released };
 }

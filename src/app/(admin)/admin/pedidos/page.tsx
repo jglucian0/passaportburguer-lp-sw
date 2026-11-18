@@ -25,6 +25,7 @@ export default async function AdminOrdersPage() {
         initialNow={Date.now()}
         menu={menu}
         storeName={settings?.name ?? "Passaporte Burguer"}
+        canReconcile={session.role === "OWNER"}
       />
     </AdminShell>
   );

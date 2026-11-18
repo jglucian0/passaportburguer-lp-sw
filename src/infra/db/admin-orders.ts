@@ -10,7 +10,9 @@ import {
   orderItems,
   orders,
   type AddressSnapshot,
+  type FinancialAlertType,
   type OrderItemAddonSnapshot,
+  type SaiposCancelStatus,
 } from "./schema";
 
 export type AdminOrderItemView = {
@@ -34,6 +36,10 @@ export type AdminOrderView = {
   notes: string | null;
   documentNumber: string | null;
   cancelReason: string | null;
+  financialAlertType: FinancialAlertType | null;
+  saiposCancelStatus: SaiposCancelStatus;
+  reconciledAt: string | null;
+  reconciledBy: string | null;
   addressSnapshot: AddressSnapshot | null;
   latitude: number | null;
   longitude: number | null;
@@ -72,7 +78,12 @@ export async function loadAdminOrders(tenantId: string): Promise<AdminOrderView[
     .where(
       and(
         eq(orders.tenantId, tenantId),
-        or(notInArray(orders.status, ["DELIVERED", "CANCELED"]), gte(orders.updatedAt, since)),
+        or(
+          notInArray(orders.status, ["DELIVERED", "CANCELED"]),
+          gte(orders.updatedAt, since),
+          // Pendências de conciliação no Saipos continuam visíveis até o dono confirmar o ajuste.
+          eq(orders.saiposCancelStatus, "MANUAL_ACTION_REQUIRED"),
+        ),
       ),
     )
     .orderBy(desc(orders.createdAt))
@@ -119,6 +130,10 @@ export async function loadAdminOrders(tenantId: string): Promise<AdminOrderView[
     notes: o.notes,
     documentNumber: o.documentNumber,
     cancelReason: o.cancelReason,
+    financialAlertType: o.financialAlertType,
+    saiposCancelStatus: o.saiposCancelStatus,
+    reconciledAt: o.reconciledAt?.toISOString() ?? null,
+    reconciledBy: o.reconciledBy,
     addressSnapshot: o.addressSnapshot,
     latitude: o.addressSnapshot?.latitude ?? null,
     longitude: o.addressSnapshot?.longitude ?? null,

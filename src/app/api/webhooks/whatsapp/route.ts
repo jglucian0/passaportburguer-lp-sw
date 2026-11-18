@@ -1,23 +1,30 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 import { and, eq, gt } from "drizzle-orm";
-import { NextResponse } from "next/server";
+import { after } from "next/server";
 
 import { CODE_REGEX, samePhone } from "@/infra/auth/otp";
 import { db } from "@/infra/db";
 import { maskPhone } from "@/infra/security/mask";
 import { whatsappOtps } from "@/infra/db/schema";
+import { bufferInbound, processAfterDebounce } from "@/infra/whatsapp/inbox";
+import { errorSummary } from "@/infra/whatsapp/log";
+import { extractInboundMessages, safeEqual } from "@/infra/whatsapp/webhook";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+/* after() precisa sobreviver ao debounce de 5s + processamento do bot. */
+export const maxDuration = 60;
 
 /** GET: handshake de verificação do Webhook (Meta Cloud API). */
 export function GET(request: Request) {
   const params = new URL(request.url).searchParams;
-  const expected = process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
+  /* WHATSAPP_VERIFY_TOKEN é o nome novo; WHATSAPP_WEBHOOK_VERIFY_TOKEN segue aceito (legado). */
+  const expected = process.env.WHATSAPP_VERIFY_TOKEN || process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN;
   if (
     expected &&
     params.get("hub.mode") === "subscribe" &&
-    params.get("hub.verify_token") === expected
+    safeEqual(params.get("hub.verify_token"), expected)
   ) {
     return new Response(params.get("hub.challenge") ?? "", { status: 200 });
   }
@@ -114,8 +121,30 @@ export async function POST(request: Request) {
       }
     }
   } catch (error) {
-    console.error("[whatsapp-webhook] falha ao processar:", error);
+    console.error("[whatsapp-webhook] falha ao processar:", errorSummary(error));
     return new Response("Error", { status: 500 }); // a Meta reenvia
+  }
+
+  /* Bot: tudo que não é código OTP vai para o buffer (dedupe por wamid) e é processado após o debounce. */
+  try {
+    const botMessages = extractInboundMessages(payload).filter(
+      (m) => !(m.mediaType === "text" && CODE_REGEX.test(m.content)),
+    );
+    if (botMessages.length > 0) {
+      const fresh = await bufferInbound(botMessages);
+      const lastByPhone = new Map<string, string>();
+      for (const m of fresh) lastByPhone.set(m.phone, m.wamid);
+      for (const [phone, wamid] of lastByPhone) {
+        after(() =>
+          processAfterDebounce(phone, wamid).catch((error) =>
+            console.error("[whatsapp-bot] falha no processamento:", errorSummary(error)),
+          ),
+        );
+      }
+    }
+  } catch (error) {
+    console.error("[whatsapp-bot] falha ao bufferizar:", errorSummary(error));
+    return new Response("Error", { status: 500 }); // a Meta reenvia; o dedupe por wamid torna seguro
   }
 
   return new Response("OK", { status: 200 });

@@ -3,9 +3,19 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
 import { db } from "@/infra/db";
-import { orders, paymentEvents, payments, type PaymentStatus } from "@/infra/db/schema";
+import {
+  orders,
+  paymentEvents,
+  payments,
+  type FinancialAlertType,
+  type PaymentStatus,
+  type SaiposCancelStatus,
+} from "@/infra/db/schema";
+import { timelineInsert } from "@/infra/db/timeline";
 import { settlePayment } from "@/infra/payments/settle";
 import { tokenMatches } from "@/infra/payments/webhook-auth";
+import { cancelOrderOnSaipos } from "@/lib/saipos";
+import { formatCents } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -40,6 +50,9 @@ const PAID_EVENTS = new Set([
 ]);
 const FAILED_EVENTS = new Set(["PAYMENT_CREDIT_CARD_CAPTURE_REFUSED", "PAYMENT_REPROVED_BY_RISK_ANALYSIS"]);
 const CHARGEBACK_EVENTS = new Set(["PAYMENT_CHARGEBACK_REQUESTED", "PAYMENT_CHARGEBACK_DISPUTE"]);
+const REFUND_EVENTS = new Set(["PAYMENT_REFUNDED", "PAYMENT_PARTIALLY_REFUNDED"]);
+/** Pedidos ainda "vivos": passam a CANCELED após estorno/chargeback. */
+const ACTIVE_ORDER_STATUSES = ["AWAITING_PAYMENT", "RECEIVED", "PREPARING", "OUT_FOR_DELIVERY", "READY_FOR_PICKUP"] as const;
 const PAID_STATUSES = new Set(["RECEIVED", "CONFIRMED", "RECEIVED_IN_CASH"]);
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -62,6 +75,91 @@ async function findPayment(providerPaymentId: string) {
 }
 
 type Outcome = Record<string, unknown>;
+
+type FoundPayment = NonNullable<Awaited<ReturnType<typeof findPayment>>>;
+
+async function handleRefundOrChargeback(
+  evt: AsaasEvent,
+  { payment, order }: FoundPayment,
+  link: unknown,
+  logBase: Record<string, unknown>,
+): Promise<Outcome> {
+  const { event, payment: p } = evt;
+  const chargeback = CHARGEBACK_EVENTS.has(event);
+  const alertType: FinancialAlertType = chargeback ? "CHARGEBACK" : "REFUNDED";
+  const newStatus: PaymentStatus = chargeback ? "CHARGEBACK" : "REFUNDED";
+  const valueCents = Math.round(p.value * 100);
+  const reasonLabel = chargeback ? "Chargeback" : event === "PAYMENT_PARTIALLY_REFUNDED" ? "Estorno parcial" : "Estorno";
+  const wasActive = (ACTIVE_ORDER_STATUSES as readonly string[]).includes(order.status);
+
+  // Lote atômico: pagamento + cancelamento do pedido ativo + alerta financeiro + timeline + vínculo do evento.
+  // Os índices 0 e 1 (pagamento e pedido) são contrato com os testes.
+  const [, canceled] = await db.batch([
+    db
+      .update(payments)
+      .set({ status: newStatus })
+      // Chargeback prevalece sobre estorno; nunca o contrário.
+      .where(
+        and(
+          eq(payments.id, payment.id),
+          chargeback ? ne(payments.status, "CHARGEBACK") : notInArray(payments.status, ["REFUNDED", "CHARGEBACK"]),
+        ),
+      ),
+    db
+      .update(orders)
+      .set({
+        status: "CANCELED",
+        cancelReason: chargeback ? "Chargeback solicitado." : "Pagamento estornado.",
+        updatedAt: new Date(),
+      })
+      .where(and(eq(orders.id, order.id), inArray(orders.status, [...ACTIVE_ORDER_STATUSES])))
+      .returning({ id: orders.id }),
+    db.update(orders).set({ financialAlertType: alertType, updatedAt: new Date() }).where(eq(orders.id, order.id)),
+    timelineInsert({
+      orderId: order.id,
+      type: chargeback ? "PAYMENT_CHARGEBACK" : "PAYMENT_REFUNDED",
+      title: chargeback ? "Chargeback registrado no Asaas" : `${reasonLabel} no Asaas`,
+      description: `${reasonLabel} de ${formatCents(valueCents)} (${event}).`,
+      metadata: { asaasEvent: event, asaasEventId: evt.id, valueCents, orderStatusBefore: order.status },
+      dedupeKey: `${evt.id}:financial`,
+    }),
+    link as never,
+  ]);
+
+  /* ---- Saipos: só quando o pedido já foi enviado ---- */
+  let saiposCancelStatus: SaiposCancelStatus = order.saiposCancelStatus ?? "NOT_APPLICABLE";
+  const sentToSaipos = order.saiposSyncStatus === "SYNCED" && !!order.saiposOrderId;
+  const alreadyHandled = saiposCancelStatus === "CANCELLED" || saiposCancelStatus === "RECONCILED";
+
+  if (sentToSaipos && !alreadyHandled) {
+    const result = await cancelOrderOnSaipos(order.saiposOrderId!);
+    saiposCancelStatus = result.ok ? "CANCELLED" : "MANUAL_ACTION_REQUIRED";
+    await db.batch([
+      db.update(orders).set({ saiposCancelStatus, updatedAt: new Date() }).where(eq(orders.id, order.id)),
+      timelineInsert({
+        orderId: order.id,
+        type: "SAIPOS_CANCEL_ATTEMPT",
+        title: result.ok ? "Pedido cancelado no Saipos" : "Cancelamento no Saipos exige ação manual",
+        description: result.ok
+          ? "O Saipos aceitou o cancelamento do pedido."
+          : result.unsupported
+            ? "Sem endpoint de cancelamento na integração: ajuste o pedido no Saipos manualmente."
+            : "O Saipos recusou o cancelamento (ex.: pedido já concluído): ajuste manualmente.",
+        metadata: { saiposOrderId: order.saiposOrderId, ...(result.ok ? {} : { error: result.error }) },
+        dedupeKey: `${evt.id}:saipos-cancel`,
+      }),
+    ]);
+  }
+
+  audit("warn", {
+    ...logBase,
+    status: newStatus,
+    flag: chargeback ? "CHARGEBACK_HIGH_PRIORITY_OWNER_ACTION_REQUIRED" : "REFUND_AFTER_APPROVAL",
+    wasActive,
+    saiposCancelStatus,
+  });
+  return { flagged: chargeback ? "chargeback" : "refund", updated: canceled.length, saiposCancelStatus };
+}
 
 async function processEvent(evt: AsaasEvent): Promise<Outcome> {
   const { event, payment: p } = evt;
@@ -155,43 +253,28 @@ async function processEvent(evt: AsaasEvent): Promise<Outcome> {
     return { updated: 1 };
   }
 
-  /* ---- Chargeback: alerta de alta prioridade para o OWNER (log + evento vinculado ao pedido) ---- */
-  if (CHARGEBACK_EVENTS.has(event)) {
-    await link;
-    audit("warn", { ...logBase, status: p.status, flag: "CHARGEBACK_HIGH_PRIORITY_OWNER_ACTION_REQUIRED" });
-    return { flagged: "chargeback" };
+  /* ---- Estorno / chargeback (pedido possivelmente já na cozinha e no Saipos) ---- */
+  if (REFUND_EVENTS.has(event) || CHARGEBACK_EVENTS.has(event)) {
+    return handleRefundOrChargeback(evt, found, link, logBase);
   }
 
-  /* ---- Vencido / estornado ---- */
-  if (event === "PAYMENT_OVERDUE" || event === "PAYMENT_REFUNDED") {
-    const refunded = event === "PAYMENT_REFUNDED";
-    const newStatus: PaymentStatus = refunded ? "REFUNDED" : "OVERDUE";
-    // Vencido só cancela pedido que ainda aguarda pagamento; estorno cancela qualquer pedido em andamento.
-    const cancelable = refunded
-      ? (["AWAITING_PAYMENT", "RECEIVED", "PREPARING", "OUT_FOR_DELIVERY", "READY_FOR_PICKUP"] as const)
-      : (["AWAITING_PAYMENT"] as const);
-
+  /* ---- Vencido: só cancela pedido que ainda aguarda pagamento ---- */
+  if (event === "PAYMENT_OVERDUE") {
     const [, canceled] = await db.batch([
       db
         .update(payments)
-        .set({ status: newStatus })
-        .where(and(eq(payments.id, payment.id), notInArray(payments.status, ["RECEIVED", "REFUNDED"]))),
+        .set({ status: "OVERDUE" })
+        .where(
+          and(eq(payments.id, payment.id), notInArray(payments.status, ["RECEIVED", "REFUNDED", "CHARGEBACK"])),
+        ),
       db
         .update(orders)
-        .set({
-          status: "CANCELED",
-          cancelReason: refunded ? "Pagamento estornado." : "Pagamento não realizado (vencido).",
-          updatedAt: new Date(),
-        })
-        .where(and(eq(orders.id, order.id), inArray(orders.status, [...cancelable])))
+        .set({ status: "CANCELED", cancelReason: "Pagamento não realizado (vencido).", updatedAt: new Date() })
+        .where(and(eq(orders.id, order.id), eq(orders.status, "AWAITING_PAYMENT")))
         .returning({ id: orders.id }),
       link,
     ]);
-    audit(refunded && canceled.length > 0 && order.status !== "AWAITING_PAYMENT" ? "warn" : "info", {
-      ...logBase,
-      status: newStatus,
-      ...(refunded && order.status !== "AWAITING_PAYMENT" ? { flag: "REFUND_AFTER_PRODUCTION" } : {}),
-    });
+    audit("info", { ...logBase, status: "OVERDUE" });
     return { updated: canceled.length };
   }
 

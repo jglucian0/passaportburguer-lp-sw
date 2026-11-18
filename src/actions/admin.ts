@@ -6,6 +6,7 @@ import { revalidateTag } from "next/cache";
 import { after } from "next/server";
 import { z } from "zod";
 
+import { notifyOutForDelivery } from "@/infra/whatsapp/notifications";
 import { sendOrderToSaipos } from "@/lib/saipos";
 
 import {
@@ -54,6 +55,7 @@ import {
   customers,
   deliveryZones,
   orderItems,
+  orderTimelineEvents,
   orders,
   paymentEvents,
   products,
@@ -62,7 +64,9 @@ import {
   type AdminRole,
   type DeliveryRules,
   type OpeningHours,
+  type OrderTimelineEventType,
 } from "@/infra/db/schema";
+import { recordTimelineEvent } from "@/infra/db/timeline";
 
 import { failure, fromZod, success, type ActionResult } from "./result";
 
@@ -233,6 +237,10 @@ export async function advanceOrder(input: unknown): Promise<ActionResult<{ statu
       after(() => sendOrderToSaipos(order.id));
     }
 
+    if (next === "OUT_FOR_DELIVERY") {
+      after(() => notifyOutForDelivery(order.id));
+    }
+
     if (manualOnlineRelease) {
       console.warn(
         "[audit] liberação manual de pedido com pagamento online",
@@ -292,7 +300,69 @@ export async function cancelOrder(input: unknown): Promise<ActionResult<{ status
   });
 }
 
-const CHANNEL_LABELS = { COUNTER: "Balcão", WHATSAPP: "WhatsApp" } as const;
+/** Confirma que o dono já ajustou/cancelou o pedido no Saipos após estorno ou chargeback. */
+export async function reconcileSaiposAdjustment(input: unknown): Promise<ActionResult<null>> {
+  return guardOwner(async (session) => {
+    const parsed = idInputSchema.safeParse({ id: (input as { orderId?: unknown } | null)?.orderId });
+    if (!parsed.success) return fromZod(parsed.error);
+
+    const now = new Date();
+    const updated = await db
+      .update(orders)
+      .set({ saiposCancelStatus: "RECONCILED", reconciledAt: now, reconciledBy: session.name, updatedAt: now })
+      .where(
+        and(
+          eq(orders.id, parsed.data.id),
+          eq(orders.tenantId, session.tenantId),
+          eq(orders.saiposCancelStatus, "MANUAL_ACTION_REQUIRED"),
+        ),
+      )
+      .returning({ id: orders.id });
+    if (updated.length === 0) return failure("Este pedido não tem ajuste pendente no Saipos.");
+
+    await recordTimelineEvent({
+      orderId: parsed.data.id,
+      type: "SAIPOS_RECONCILED",
+      title: "Ajuste no Saipos confirmado",
+      description: `Conciliado manualmente por ${session.name}.`,
+      metadata: { reconciledBy: session.name, reconciledByUserId: session.userId },
+    });
+    return success(null);
+  });
+}
+
+export type OrderTimelineItem = {
+  id: string;
+  type: OrderTimelineEventType;
+  title: string;
+  description: string | null;
+  createdAt: string;
+};
+
+/** Linha do tempo cronológica de um pedido (somente o próprio tenant). */
+export async function getOrderTimeline(input: unknown): Promise<ActionResult<OrderTimelineItem[]>> {
+  return guard(async (session) => {
+    const parsed = idInputSchema.safeParse({ id: (input as { orderId?: unknown } | null)?.orderId });
+    if (!parsed.success) return fromZod(parsed.error);
+
+    const rows = await db
+      .select({
+        id: orderTimelineEvents.id,
+        type: orderTimelineEvents.type,
+        title: orderTimelineEvents.title,
+        description: orderTimelineEvents.description,
+        createdAt: orderTimelineEvents.createdAt,
+      })
+      .from(orderTimelineEvents)
+      .innerJoin(orders, eq(orders.id, orderTimelineEvents.orderId))
+      .where(and(eq(orderTimelineEvents.orderId, parsed.data.id), eq(orders.tenantId, session.tenantId)))
+      .orderBy(asc(orderTimelineEvents.createdAt));
+
+    return success(rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString() })));
+  });
+}
+
+const CHANNEL_LABELS ={ COUNTER: "Balcão", WHATSAPP: "WhatsApp" } as const;
 
 /** Lança um pedido recebido fora do site (balcão/WhatsApp) direto em "Novos", na fila da cozinha. */
 export async function createManualOrder(input: unknown): Promise<ActionResult<{ orderNumber: number }>> {

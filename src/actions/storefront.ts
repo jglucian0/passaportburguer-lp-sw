@@ -37,6 +37,7 @@ import {
   type OrderItemAddonSnapshot,
 } from "@/infra/db/schema";
 import { loadStoreSettings } from "@/infra/db/store-settings";
+import { recordTimelineEvent } from "@/infra/db/timeline";
 import { getTenantRef } from "@/infra/tenant/resolve";
 
 import { failure, fromZod, success, type ActionFailure, type ActionResult } from "./result";
@@ -381,6 +382,14 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
   }
 
   if (!created) return failure("Não foi possível registrar o pedido. Tente novamente.");
+
+  await recordTimelineEvent({
+    orderId: created.orderId,
+    type: "ORDER_CREATED",
+    title: "Pedido criado",
+    description: `Pedido #${created.orderNumber} criado no site.`,
+    dedupeKey: `${created.orderId}:created`,
+  });
 
   /* Saipos: nunca bloqueia nem falha a compra. PIX só é enviado após a confirmação do pagamento. */
   if (initialStatus !== "AWAITING_PAYMENT") {

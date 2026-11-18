@@ -1,0 +1,125 @@
+import { and, eq, inArray } from "drizzle-orm";
+
+import { db } from "@/infra/db";
+import {
+  customerAddresses,
+  customers,
+  orders,
+  whatsappMessages,
+  whatsappSessions,
+} from "@/infra/db/schema";
+
+import { sendCtaUrlButton, sendTextMessage } from "./client";
+import { signWhatsAppToken } from "./session-token";
+import { appUrl, customerPhoneVariants } from "./shared";
+import { errorSummary } from "./log";
+
+/** A Meta só aceita texto livre até 24h depois da última mensagem do cliente. */
+const SESSION_WINDOW_MS = 24 * 60 * 60 * 1000;
+export const REGISTRATION_TOKEN_MINUTES = 1440;
+
+/**
+ * Pedido "do WhatsApp" = o cliente do pedido tem sessão de conversa ativa.
+ * O número de envio é o da própria sessão (como a Meta o entregou, com ou sem o 9º dígito).
+ */
+async function findChat(orderId: string) {
+  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  if (!order) return null;
+  const [customer] = await db.select().from(customers).where(eq(customers.id, order.customerId)).limit(1);
+  if (!customer) return null;
+
+  const candidates = [...new Set(customerPhoneVariants(`55${customer.phone}`).map((v) => `55${v}`))];
+  if (candidates.length === 0) return null;
+  const [session] = await db
+    .select()
+    .from(whatsappSessions)
+    .where(inArray(whatsappSessions.phone, candidates))
+    .limit(1);
+  if (!session) return null;
+  if (Date.now() - session.lastInteractionAt.getTime() > SESSION_WINDOW_MS) return null;
+  return { order, customer, session };
+}
+
+/** Envio único por (pedido, tipo): o registro com wamid `notif:*` é ao mesmo tempo o histórico e a trava. */
+async function claimNotification(phone: string, key: string, content: string): Promise<boolean> {
+  const claimed = await db
+    .insert(whatsappMessages)
+    .values({ wamid: key, phone, role: "assistant", content, mediaType: "text" })
+    .onConflictDoNothing({ target: whatsappMessages.wamid })
+    .returning({ id: whatsappMessages.id });
+  return claimed.length > 0;
+}
+
+const orderLabel = (n: number) => `#${n}`;
+
+/** Pagamento aprovado: confirma no WhatsApp e, se o cadastro está incompleto, oferece completá-lo. */
+export async function notifyPaymentConfirmed(orderId: string): Promise<void> {
+  try {
+    const chat = await findChat(orderId);
+    if (!chat) return;
+    const { order, customer, session } = chat;
+
+    const text =
+      order.deliveryType === "DELIVERY"
+        ? `Pagamento confirmado! ✅ Seu pedido ${orderLabel(order.orderNumber)} já está na chapa no Passaporte Burguer. Avisaremos quando sair para entrega!`
+        : `Pagamento confirmado! ✅ Seu pedido ${orderLabel(order.orderNumber)} já está na chapa no Passaporte Burguer. Avisaremos quando estiver pronto para retirada!`;
+
+    const key = `notif:${orderId}:paid`;
+    if (!(await claimNotification(session.phone, key, text))) return; // já enviada
+    try {
+      await sendTextMessage(session.phone, text);
+    } catch (error) {
+      await db.delete(whatsappMessages).where(eq(whatsappMessages.wamid, key)).catch(() => undefined);
+      throw error;
+    }
+
+    await db
+      .update(whatsappSessions)
+      .set({ state: "COMPLETED", updatedAt: new Date() })
+      .where(eq(whatsappSessions.phone, session.phone))
+      .catch(() => undefined);
+
+    /* Cadastro pós-pagamento (sem OTP: o telefone já foi provado pela conversa). Quem tem conta no site fica de fora. */
+    if (customer.passwordHash) return;
+    const saved = await db
+      .select({ id: customerAddresses.id })
+      .from(customerAddresses)
+      .where(and(eq(customerAddresses.customerId, customer.id)))
+      .limit(1);
+    if (customer.documentNumber && saved.length > 0) return;
+
+    const token = signWhatsAppToken(
+      { phone: session.phone, orderId, purpose: "COMPLETE_REGISTRATION" },
+      REGISTRATION_TOKEN_MINUTES,
+    );
+    const url = `${appUrl()}/completar-cadastro?token=${encodeURIComponent(token)}`;
+    await sendCtaUrlButton(
+      session.phone,
+      "Quer salvar seu endereço e CPF para pedir com 1 clique na próxima vez? Leva 15 segundos (sem precisar confirmar código):",
+      "Completar cadastro",
+      url,
+    );
+  } catch (error) {
+    // Notificação nunca derruba a liquidação do pagamento.
+    console.error("[whatsapp-notify] falha (pagamento):", errorSummary(error));
+  }
+}
+
+/** Pedido saiu para entrega (painel ou Saipos). */
+export async function notifyOutForDelivery(orderId: string): Promise<void> {
+  try {
+    const chat = await findChat(orderId);
+    if (!chat || chat.order.deliveryType !== "DELIVERY" || chat.order.status !== "OUT_FOR_DELIVERY") return;
+    const text = `Seu pedido ${orderLabel(chat.order.orderNumber)} saiu para entrega! 🛵 Já já chega aí.`;
+    const key = `notif:${orderId}:out`;
+    if (!(await claimNotification(chat.session.phone, key, text))) return;
+    try {
+      await sendTextMessage(chat.session.phone, text);
+    } catch (error) {
+      await db.delete(whatsappMessages).where(eq(whatsappMessages.wamid, key)).catch(() => undefined);
+      throw error;
+    }
+  } catch (error) {
+    console.error("[whatsapp-notify] falha (entrega):", errorSummary(error));
+  }
+}

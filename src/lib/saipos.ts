@@ -3,6 +3,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { db } from "@/infra/db";
 import { addons, customers, orderItems, orders, products } from "@/infra/db/schema";
 import { loadStoreSettings } from "@/infra/db/store-settings";
+import { recordTimelineEvent } from "@/infra/db/timeline";
 
 /**
  * Integração com a Saipos Order API (https://order-api.saipos.com).
@@ -282,6 +283,13 @@ export async function sendOrderToSaipos(orderId: string): Promise<SaiposSyncResu
       saiposLastError: null,
       saiposSyncedAt: new Date(),
     });
+    await recordTimelineEvent({
+      orderId,
+      type: "SENT_TO_SAIPOS",
+      title: "Pedido enviado ao Saipos",
+      metadata: { saiposOrderId },
+      dedupeKey: `${orderId}:sent-to-saipos`,
+    });
     return { ok: true, saiposOrderId };
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 1000);
@@ -292,5 +300,51 @@ export async function sendOrderToSaipos(orderId: string): Promise<SaiposSyncResu
       console.error("[saipos] falha ao registrar erro:", dbError);
     }
     return { ok: false, error: message };
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Cancelamento (estorno/chargeback)                                    */
+/* ------------------------------------------------------------------ */
+
+export type SaiposCancelResult =
+  | { ok: true }
+  /** `unsupported`: a integração não tem endpoint de cancelamento configurado => ajuste manual no PDV. */
+  | { ok: false; unsupported?: boolean; error: string };
+
+/**
+ * Cancela um pedido já enviado ao Saipos (POST /cancel-order, doc "cancel-order" da Order API).
+ * Corpo: { order_id, cod_store }; auth igual ao /order (token cru no header Authorization).
+ * Resposta 200 `{ status: true }`; 400 sem detalhes. Nunca lança: qualquer recusa vira `ok: false`
+ * e o fluxo cai em "ação manual necessária". `SAIPOS_CANCEL_PATH` permite sobrescrever o caminho.
+ */
+export async function cancelOrderOnSaipos(saiposOrderId: string): Promise<SaiposCancelResult> {
+  try {
+    const config = readConfig();
+    if (!config) return { ok: false, unsupported: true, error: "Integração Saipos não configurada." };
+    const path = process.env.SAIPOS_CANCEL_PATH?.trim() || "/cancel-order";
+
+    const url = `${config.baseUrl}${path.replace("{id}", encodeURIComponent(saiposOrderId))}`;
+    const send = async (forceRefresh: boolean) =>
+      fetchWithTimeout(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Authorization: await getAccessToken(config, forceRefresh),
+        },
+        body: JSON.stringify({ order_id: saiposOrderId, cod_store: config.storeId }),
+      });
+
+    let response = await send(false);
+    if (response.status === 401) response = await send(true);
+    if (!response.ok) {
+      return { ok: false, error: `Saipos HTTP ${response.status}: ${await readErrorBody(response)}` };
+    }
+    const json = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+    if (json && json.status === false) return { ok: false, error: "Saipos recusou o cancelamento (status:false)." };
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: (error instanceof Error ? error.message : String(error)).slice(0, 500) };
   }
 }
