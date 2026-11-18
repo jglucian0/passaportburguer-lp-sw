@@ -666,7 +666,9 @@ export type PaymentStatus =
   | "RECEIVED"
   | "OVERDUE"
   | "REFUNDED"
-  | "FAILED";
+  | "FAILED"
+  /** Cobrança removida no Asaas (troca de método, nova tentativa ou pedido expirado). */
+  | "CANCELLED";
 
 export const payments = pgTable(
   "payments",

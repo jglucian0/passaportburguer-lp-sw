@@ -11,6 +11,7 @@ vi.mock("next/server", async (orig) => ({ ...(await orig<object>()), after: vi.f
 
 import {
   AsaasError,
+  PaymentConflictError,
   centsToReais,
   createCreditCardCharge,
   createPixCharge,
@@ -388,5 +389,148 @@ describe("cartão: HTTP 200 nunca aprova por si só", () => {
     });
     expect(result.released).toBe(true);
     expect(fake.batches[0][0].set).toMatchObject({ status: "RECEIVED" });
+  });
+});
+
+describe("troca de método e reaproveitamento", () => {
+  const pendingCard = { id: "p-old", providerPaymentId: "pay_card_old" };
+
+  /** 1ª consulta a payments = findReusablePix; as seguintes = cobranças pendentes a cancelar. */
+  function paymentsSelects(first: unknown[], rest: unknown[]) {
+    let n = 0;
+    fake.handler = (q: Query) => {
+      if (q.kind === "select" && q.table === "payments") return n++ === 0 ? first : rest;
+      return [];
+    };
+  }
+
+  it("gerar Pix com cartão PENDING cancela a cobrança anterior (DELETE) e marca CANCELLED antes de criar a nova", async () => {
+    paymentsSelects([], [pendingCard]);
+    await createPixCharge({ order, customer: { ...customer, cpfCnpj: "52998224725" } });
+    const del = calls.findIndex((c) => c.method === "DELETE");
+    expect(calls[del].url).toContain("/payments/pay_card_old");
+    expect(
+      fake.queries.some((q) => q.kind === "update" && q.table === "payments" && q.set?.status === "CANCELLED"),
+    ).toBe(true);
+    expect(del).toBeLessThan(calls.findIndex((c) => c.method === "POST" && c.url.endsWith("/payments")));
+  });
+
+  /** Resposta do Asaas: DELETE falha (400) e o GET devolve o estado real da cobrança antiga. */
+  function deleteFailsThenGet(remote: unknown, getStatus = 200) {
+    respond = (c) => {
+      if (c.method === "DELETE") return { status: 400, json: { errors: [{ code: "x", description: "n/a" }] } };
+      if (c.method === "GET" && c.url.endsWith("/payments/pay_card_old")) {
+        return getStatus === 200 ? { json: remote } : { status: getStatus, json: { errors: [{ code: "nf" }] } };
+      }
+      if (c.url.endsWith("/pixQrCode")) return { json: { encodedImage: "I", payload: "P" } };
+      if (c.url.endsWith("/payments")) return { json: { id: "pay_new", status: "PENDING" } };
+      return { json: { id: "cus_x" } };
+    };
+    let n = 0;
+    fake.handler = (q: Query) => {
+      if (q.kind === "select" && q.table === "payments") return n++ === 0 ? [] : [pendingCard];
+      if (q.kind === "select" && q.table === "orders") return [{ tenantId: "t1", totalCents: 4590 }];
+      if (q.kind === "update" && q.table === "orders") return [{ id: order.id }];
+      return [];
+    };
+  }
+  const cancelledLocally = () =>
+    fake.queries.some((q) => q.kind === "update" && q.table === "payments" && q.set?.status === "CANCELLED");
+  const createdNewCharge = () => calls.some((c) => c.method === "POST" && c.url.endsWith("/payments"));
+
+  it.each(["CONFIRMED", "RECEIVED"])(
+    "DELETE falhou porque a cobrança acabou de ser paga (GET %s): libera o pedido, NÃO cancela e NÃO cria nova cobrança",
+    async (status) => {
+      deleteFailsThenGet({ id: "pay_card_old", status, value: 45.9 });
+      const error = await createPixCharge({
+        order,
+        customer: { ...customer, asaasCustomerId: "cus_x" },
+      }).catch((e) => e);
+      expect(error).toBeInstanceOf(PaymentConflictError);
+      expect(error.reason).toBe("PAID");
+      expect(createdNewCharge()).toBe(false);
+      expect(cancelledLocally()).toBe(false);
+      // pagamento sincronizado + pedido liberado no mesmo lote atômico
+      const [payment, ord] = fake.batches[0];
+      expect(payment.set).toMatchObject({ status });
+      expect(ord.set).toMatchObject({ status: "RECEIVED" });
+    },
+  );
+
+  it.each([
+    ["OVERDUE", { id: "pay_card_old", status: "OVERDUE" }, 200],
+    ["DELETED", { id: "pay_card_old", status: "DELETED" }, 200],
+    ["deleted:true", { id: "pay_card_old", status: "PENDING", deleted: true }, 200],
+    ["404", null, 404],
+  ])("DELETE falhou e o GET indica cobrança morta (%s): marca CANCELLED e segue com a nova cobrança", async (_n, remote, getStatus) => {
+    deleteFailsThenGet(remote, getStatus as number);
+    await expect(
+      createPixCharge({ order, customer: { ...customer, asaasCustomerId: "cus_x" } }),
+    ).resolves.toMatchObject({ paymentId: "pay_new" });
+    expect(cancelledLocally()).toBe(true);
+    expect(fake.batches).toHaveLength(0);
+  });
+
+  it("DELETE falhou e o GET segue PENDING (não dá para garantir): bloqueia, mantém PENDING e não cria cobrança", async () => {
+    deleteFailsThenGet({ id: "pay_card_old", status: "PENDING" });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    // Caminho do cartão não consulta Pix reaproveitável: o 1º select já é o das cobranças pendentes.
+    fake.handler = (q: Query) => (q.kind === "select" && q.table === "payments" ? [pendingCard] : []);
+    const error = await createCreditCardCharge({ order: cardOrder, customer }).catch((e) => e);
+    expect(error).toBeInstanceOf(PaymentConflictError);
+    expect(error.reason).toBe("UNVERIFIED");
+    expect(createdNewCharge()).toBe(false);
+    expect(cancelledLocally()).toBe(false);
+  });
+
+  it("DELETE 200 cancela normalmente sem consultar o GET", async () => {
+    let n = 0;
+    fake.handler = (q: Query) =>
+      q.kind === "select" && q.table === "payments" ? (n++ === 0 ? [] : [pendingCard]) : [];
+    await createPixCharge({ order, customer: { ...customer, cpfCnpj: "52998224725" } });
+    expect(cancelledLocally()).toBe(true);
+    expect(calls.some((c) => c.method === "GET" && c.url.endsWith("/payments/pay_card_old"))).toBe(false);
+  });
+
+  it("Pix PENDING ainda válido é devolvido do banco sem criar cobrança nova", async () => {
+    paymentsSelects(
+      [
+        {
+          providerPaymentId: "pay_pix",
+          status: "PENDING",
+          pixPayload: "SAVED",
+          pixQrCodeBase64: "IMG",
+          pixExpirationDate: new Date(Date.now() + 600_000),
+          invoiceUrl: null,
+        },
+      ],
+      [],
+    );
+    const result = await createPixCharge({ order, customer });
+    expect(result).toMatchObject({ paymentId: "pay_pix", pixPayload: "SAVED" });
+    expect(calls.some((c) => c.method === "POST")).toBe(false);
+  });
+
+  it("Pix expirado NÃO é reaproveitado (gera nova cobrança)", async () => {
+    paymentsSelects(
+      [
+        {
+          providerPaymentId: "pay_exp",
+          status: "PENDING",
+          pixPayload: "OLD",
+          pixQrCodeBase64: "IMG",
+          pixExpirationDate: new Date(Date.now() - 1000),
+        },
+      ],
+      [],
+    );
+    const result = await createPixCharge({ order, customer: { ...customer, cpfCnpj: "52998224725" } });
+    expect(result.paymentId).toBe("pay_1");
+  });
+
+  it("trocar para cartão cancela o Pix pendente antes da nova cobrança", async () => {
+    paymentsSelects([{ id: "p-pix", providerPaymentId: "pay_pix_old" }], []);
+    await createCreditCardCharge({ order: cardOrder, customer });
+    expect(calls.find((c) => c.method === "DELETE")?.url).toContain("/payments/pay_pix_old");
   });
 });

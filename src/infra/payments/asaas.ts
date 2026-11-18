@@ -6,6 +6,7 @@ import { db } from "@/infra/db";
 import { settlePayment } from "./settle";
 import {
   customers,
+  orders,
   payments,
   type Order,
   type Payment,
@@ -239,31 +240,101 @@ export async function getOrCreateAsaasCustomer(customer: AsaasCustomerInput): Pr
 /* Cobranças                                                           */
 /* ------------------------------------------------------------------ */
 
-type AsaasPayment = { id: string; status?: string; invoiceUrl?: string };
+type AsaasPayment = { id: string; status?: string; invoiceUrl?: string; value?: number; deleted?: boolean };
+
+/** Cobrança anterior não pôde ser invalidada com segurança: NÃO se cria nova cobrança. */
+export class PaymentConflictError extends Error {
+  readonly reason: "PAID" | "UNVERIFIED";
+  constructor(reason: "PAID" | "UNVERIFIED") {
+    super(reason === "PAID" ? "Pagamento anterior já foi confirmado" : "Cobrança anterior não verificada");
+    this.name = "PaymentConflictError";
+    this.reason = reason;
+  }
+}
+
+export type CancelPendingResult = { blocked: null | "PAID" | "UNVERIFIED"; handled: Set<string> };
 
 /**
- * Cancela no Asaas as cobranças ainda PENDING do pedido (exceto `keepPaymentId`),
- * evitando que o cliente pague duas vezes ou pague um pedido já cancelado.
+ * Invalida no Asaas as cobranças PENDING do pedido (exceto `keepPaymentId`), sem nunca cancelar
+ * localmente algo que possa ter sido pago:
+ *  - DELETE 200            -> CANCELLED;
+ *  - DELETE != 200         -> GET na cobrança (a verdade está no Asaas):
+ *      CONFIRMED/RECEIVED  -> sincroniza e libera o pedido (settlePayment) e bloqueia (PAID);
+ *      OVERDUE/DELETED/404 -> CANCELLED;
+ *      qualquer outro caso -> bloqueia (UNVERIFIED), mantém PENDING.
+ * `handled` traz os ids de cobrança resolvidos (cancelados ou liquidados).
  */
-export async function cancelPendingCharges(orderId: string, keepPaymentId?: string): Promise<void> {
+export async function cancelPendingCharges(
+  orderId: string,
+  keepPaymentId?: string,
+): Promise<CancelPendingResult> {
   const pending = await db
     .select({ id: payments.id, providerPaymentId: payments.providerPaymentId })
     .from(payments)
     .where(and(eq(payments.orderId, orderId), eq(payments.status, "PENDING")));
 
+  const result: CancelPendingResult = { blocked: null, handled: new Set() };
+
   for (const p of pending) {
     if (p.providerPaymentId === keepPaymentId) continue;
+    const path = `/payments/${encodeURIComponent(p.providerPaymentId)}`;
+
     try {
-      await asaasRequest("DELETE", `/payments/${encodeURIComponent(p.providerPaymentId)}`);
-      await db.update(payments).set({ status: "OVERDUE" }).where(eq(payments.id, p.id));
-    } catch (error) {
-      // Best-effort: se o Asaas não removeu, mantém PENDING para nova tentativa.
-      console.error("[asaas] falha ao cancelar cobrança pendente", {
-        orderId,
-        code: error instanceof AsaasError ? error.httpStatus : "unknown",
-      });
+      await asaasRequest("DELETE", path);
+      await db.update(payments).set({ status: "CANCELLED" }).where(eq(payments.id, p.id));
+      result.handled.add(p.providerPaymentId);
+      continue;
+    } catch {
+      /* DELETE falhou: confirma o estado real antes de decidir */
     }
+
+    let remote: AsaasPayment | null = null;
+    let notFound = false;
+    try {
+      remote = await asaasRequest<AsaasPayment>("GET", path);
+    } catch (error) {
+      notFound = error instanceof AsaasError && error.httpStatus === 404;
+    }
+
+    if (remote && (remote.status === "CONFIRMED" || remote.status === "RECEIVED")) {
+      const [order] = await db
+        .select({ tenantId: orders.tenantId, totalCents: orders.totalCents })
+        .from(orders)
+        .where(eq(orders.id, orderId))
+        .limit(1);
+      if (order) {
+        await settlePayment({
+          paymentId: p.id,
+          orderId,
+          tenantId: order.tenantId,
+          paidCents: Math.round((remote.value ?? order.totalCents / 100) * 100),
+          status: remote.status,
+        });
+      }
+      result.handled.add(p.providerPaymentId);
+      result.blocked = "PAID";
+      continue;
+    }
+
+    const gone =
+      notFound || (remote && (remote.deleted === true || remote.status === "OVERDUE" || remote.status === "DELETED"));
+    if (gone) {
+      await db.update(payments).set({ status: "CANCELLED" }).where(eq(payments.id, p.id));
+      result.handled.add(p.providerPaymentId);
+      continue;
+    }
+
+    console.error("[asaas] cobrança pendente não pôde ser invalidada", { orderId, remoteStatus: remote?.status });
+    if (result.blocked !== "PAID") result.blocked = "UNVERIFIED";
   }
+
+  return result;
+}
+
+/** Antes de gerar nova cobrança: a anterior precisa estar comprovadamente morta. */
+async function clearPreviousCharges(orderId: string, keepPaymentId?: string): Promise<void> {
+  const { blocked } = await cancelPendingCharges(orderId, keepPaymentId);
+  if (blocked) throw new PaymentConflictError(blocked);
 }
 
 async function findReusablePix(orderId: string): Promise<Payment | null> {
@@ -288,6 +359,8 @@ export async function createPixCharge({
   // Idempotente: duplo clique/recarga reaproveita o QR Code ainda válido.
   const reusable = await findReusablePix(order.id);
   if (reusable) {
+    // Pix ativo reaproveitado: qualquer outra cobrança pendente (ex.: cartão) deixa de valer.
+    await clearPreviousCharges(order.id, reusable.providerPaymentId);
     return {
       paymentId: reusable.providerPaymentId,
       status: reusable.status,
@@ -298,7 +371,7 @@ export async function createPixCharge({
     };
   }
 
-  await cancelPendingCharges(order.id);
+  await clearPreviousCharges(order.id);
   const asaasCustomerId = await getOrCreateAsaasCustomer(customer);
 
   const charge = await asaasRequest<AsaasPayment>("POST", "/payments", {
@@ -366,7 +439,7 @@ export async function createCreditCardCharge({
     throw new AsaasError(400, [], "Não foi possível validar sua conexão. Tente novamente.");
   }
 
-  await cancelPendingCharges(order.id);
+  await clearPreviousCharges(order.id);
   const asaasCustomerId = await getOrCreateAsaasCustomer({
     ...customer,
     cpfCnpj: cardData?.holderCpfCnpj ?? customer.cpfCnpj,

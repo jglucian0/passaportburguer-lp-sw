@@ -7,6 +7,7 @@ import { db } from "@/infra/db";
 import { customers, orders, payments } from "@/infra/db/schema";
 import {
   AsaasError,
+  PaymentConflictError,
   createCreditCardCharge,
   createPixCharge,
   type AsaasCustomerInput,
@@ -17,6 +18,8 @@ import { checkRateLimit, getClientIp, tooManyRequests } from "@/infra/security/r
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
+/** Tentativas de cartão recusadas (FAILED) por pedido antes de bloquear novas. */
+const MAX_CARD_FAILURES = 5;
 const NO_STORE = { "Cache-Control": "no-store" };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -86,17 +89,22 @@ export async function POST(request: NextRequest, { params }: Ctx) {
   const { orderId } = await params;
   const order = await loadOwnedOrder(orderId, session.customerId, session.tenantId);
   if (!order) return NextResponse.json({ error: "Pedido não encontrado." }, { status: 404 });
+
+  /* Histórico de cobranças do pedido: base das proteções contra cobrança duplicada e card testing. */
+  const history = await db
+    .select({ status: payments.status, method: payments.method })
+    .from(payments)
+    .where(eq(payments.orderId, order.id));
+
+  if (history.some((h) => h.status === "CONFIRMED" || h.status === "RECEIVED")) {
+    return NextResponse.json({ error: "Este pedido já foi pago." }, { status: 409, headers: NO_STORE });
+  }
   if (order.status !== "AWAITING_PAYMENT") {
     return NextResponse.json({ error: "Este pedido não aguarda pagamento." }, { status: 409 });
   }
 
   /* Pagamento já em análise de risco: nova cobrança poderia gerar cobrança em duplicidade. */
-  const [inReview] = await db
-    .select({ id: payments.id })
-    .from(payments)
-    .where(and(eq(payments.orderId, order.id), eq(payments.status, "RISK_ANALYSIS")))
-    .limit(1);
-  if (inReview) {
+  if (history.some((h) => h.status === "RISK_ANALYSIS")) {
     return NextResponse.json(
       { error: "Pagamento em análise de segurança. Assim que aprovado, seu pedido será enviado para a cozinha." },
       { status: 409, headers: NO_STORE },
@@ -124,6 +132,18 @@ export async function POST(request: NextRequest, { params }: Ctx) {
   }
 
   if (input.mode === "card") {
+    // Anti card-testing por pedido: bloqueia após 5 tentativas de cartão recusadas (FAILED).
+    const failedCards = history.filter((h) => h.method === "CREDIT_CARD" && h.status === "FAILED").length;
+    if (failedCards >= MAX_CARD_FAILURES) {
+      return NextResponse.json(
+        {
+          error:
+            "Muitas tentativas com cartão neste pedido. Pague via Pix ou fale conosco pelo WhatsApp.",
+        },
+        { status: 429, headers: NO_STORE },
+      );
+    }
+
     // Anti card-testing: poucas tentativas por cliente.
     const cardLimit = await checkRateLimit({
       identifier: session.customerId,
@@ -198,6 +218,18 @@ export async function POST(request: NextRequest, { params }: Ctx) {
       { status: 202, headers: NO_STORE },
     );
   } catch (error) {
+    if (error instanceof PaymentConflictError) {
+      // A cobrança anterior foi paga (pedido já liberado) ou não pôde ser invalidada com segurança.
+      return NextResponse.json(
+        {
+          error:
+            error.reason === "PAID"
+              ? "Pagamento anterior já foi confirmado."
+              : "Não foi possível cancelar a cobrança anterior agora. Tente novamente em instantes.",
+        },
+        { status: 409, headers: NO_STORE },
+      );
+    }
     // Nunca logamos corpo/cartão: só status HTTP e códigos do Asaas.
     console.error("[payments] falha ao criar cobrança", {
       orderId: order.id,

@@ -34,13 +34,18 @@ export async function expireAbandonedOrders(
     .limit(100);
   if (candidates.length === 0) return 0;
 
+  /* Só expira o que comprovadamente não tem cobrança viva: o Asaas é consultado/cancelado antes.
+     Pago no Asaas => o pedido é liberado (settlePayment) e NÃO é cancelado. */
+  const expirable: string[] = [];
   for (const { id } of candidates) {
     try {
-      await cancelPendingCharges(id);
+      const { blocked } = await cancelPendingCharges(id);
+      if (!blocked) expirable.push(id);
     } catch {
-      /* mantém PENDING: o NOT EXISTS abaixo impede o cancelamento */
+      /* falha inesperada: não cancela este pedido agora */
     }
   }
+  if (expirable.length === 0) return 0;
 
   const canceled = await db
     .update(orders)
@@ -51,10 +56,7 @@ export async function expireAbandonedOrders(
     })
     .where(
       and(
-        inArray(
-          orders.id,
-          candidates.map((c) => c.id),
-        ),
+        inArray(orders.id, expirable),
         eq(orders.status, "AWAITING_PAYMENT"),
         notExists(
           db
