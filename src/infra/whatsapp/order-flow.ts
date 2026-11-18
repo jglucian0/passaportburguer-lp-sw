@@ -3,7 +3,6 @@ import { z } from "zod";
 
 import { calculateCart, type CalculateCartResult } from "@/core/cart/calculate-cart";
 import { calculateDeliveryQuote, resolveDeliveryZone, withQuotedFee } from "@/core/delivery/quote";
-import { isOnlinePaymentMethod } from "@/core/schemas/common";
 import type { CatalogDeliveryZone } from "@/core/schemas/product";
 import { effectiveMinOrderCents } from "@/core/store/min-order";
 import { OTHER_ZONE_NAME } from "@/core/store/maringa-zones";
@@ -25,11 +24,8 @@ import {
 } from "@/infra/db/schema";
 import { loadStoreSettings } from "@/infra/db/store-settings";
 import { recordTimelineEvent } from "@/infra/db/timeline";
-import { createPixCharge } from "@/infra/payments/asaas";
-import { sendOrderToSaipos } from "@/lib/saipos";
 import { formatCents } from "@/lib/utils";
 
-import { sendTextMessage } from "./client";
 import { getBrazilianPhoneVariants } from "./phone";
 import { checkoutUrl, getTenantId, toCustomerPhone, type ToolContext } from "./shared";
 
@@ -158,7 +154,6 @@ function isUniqueViolation(error: unknown): boolean {
 export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown): Promise<FinalizeResult> {
   const parsed = finalizeInputSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Forma de pagamento inválida." };
-  const { changeForCents } = parsed.data;
   const providedDocument = parsed.data.documentNumber ? onlyDigits(parsed.data.documentNumber) : null;
 
   const tenantId = await getTenantId();
@@ -169,7 +164,9 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     .from(whatsappSessions)
     .where(eq(whatsappSessions.phone, ctx.phone))
     .limit(1);
-  const paymentMethod = parsed.data.paymentMethod ?? session?.paymentMethod ?? null;
+  // Pagamento sempre online, escolhido na página (Pix é só o padrão inicial; lá o cliente troca para cartão).
+  const requested = parsed.data.paymentMethod ?? session?.paymentMethod ?? null;
+  const paymentMethod: PaymentMethod = requested === "CREDIT_CARD" ? "CREDIT_CARD" : "PIX";
   const draft = session?.draftCart;
   if (!session || !draft || draft.length === 0 || !session.customerId) {
     return { ok: false, error: "Não há pedido em rascunho. Monte o pedido antes de finalizar." };
@@ -181,18 +178,10 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     .where(and(eq(customers.id, session.customerId), eq(customers.tenantId, tenantId)))
     .limit(1);
   if (!customer) return { ok: false, error: "Cliente não encontrado." };
-  if (!paymentMethod) return { ok: false, error: "Falta a forma de pagamento." };
 
-  /* CPF informado agora ou já salvo no cadastro pós-pagamento. */
-  const documentNumber = providedDocument ?? customer.documentNumber ?? null;
-  const online = isOnlinePaymentMethod(paymentMethod);
-  if (online && !customer.asaasCustomerId) {
-    const err = documentNumber ? documentError(documentNumber) : "Informe o CPF para pagar online.";
-    if (err) return { ok: false, error: err, needsDocument: true };
-  }
-  if (paymentMethod !== "CASH" && changeForCents != null) {
-    return { ok: false, error: "Troco só vale para pagamento em dinheiro." };
-  }
+  /* CPF informado agora (válido) ou já salvo no cadastro; senão a página de pagamento o coleta. */
+  const providedValid = providedDocument && !documentError(providedDocument) ? providedDocument : null;
+  const documentNumber = providedValid ?? customer.documentNumber ?? null;
 
   /* Recalcula tudo agora (preço/loja podem ter mudado desde o rascunho). Nada vem do modelo. */
   const address = session.deliveryAddress;
@@ -203,11 +192,7 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
       : null;
   const priced = await priceCart(tenantId, draft, deliveryType, coords, address?.district ?? null, paymentMethod);
   if (!priced.ok) return priced;
-  const { calc, zone, autoAccept } = priced;
-
-  if (changeForCents != null && changeForCents < calc.totalCents) {
-    return { ok: false, error: "O troco precisa ser maior que o total do pedido." };
-  }
+  const { calc, zone } = priced;
 
   /*
    * Reivindica o rascunho de forma atômica (duas finalizações simultâneas não criam dois pedidos) e já
@@ -265,7 +250,7 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     }
   }
 
-  const initialStatus: OrderStatus = online ? "AWAITING_PAYMENT" : autoAccept ? "PREPARING" : "RECEIVED";
+  const initialStatus: OrderStatus = "AWAITING_PAYMENT";
   const noteLines = draft
     .map((d, i) => (d.notes ? `${calc.lines[i]?.productName ?? "Item"}: ${d.notes}` : null))
     .filter((n): n is string => n !== null);
@@ -291,7 +276,7 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
             deliveryType,
             addressSnapshot,
             paymentMethod,
-            changeForCents: paymentMethod === "CASH" ? (changeForCents ?? null) : null,
+            changeForCents: null,
             subtotalCents: calc.subtotalCents,
             deliveryFeeCents: calc.deliveryFeeCents,
             totalCents: calc.totalCents,
@@ -347,35 +332,12 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     deliveryType,
   };
 
-  if (!online) {
-    /* Saipos nunca bloqueia nem falha a compra. */
-    await sendOrderToSaipos(created.orderId).catch(() => undefined);
-    return base;
-  }
-
-  if (paymentMethod === "CREDIT_CARD") {
-    const payUrl = checkoutUrl(created.orderId, ctx.phone);
-    ctx.cta = { buttonText: "Pagar com Cartão", url: payUrl };
-    return { ...base, checkoutUrl: payUrl };
-  }
-
-  try {
-    const charge = await createPixCharge({
-      order: { id: created.orderId, totalCents: calc.totalCents },
-      customer: {
-        id: customer.id,
-        name: customer.name,
-        phone: customer.phone,
-        email: customer.email,
-        asaasCustomerId: customer.asaasCustomerId,
-        cpfCnpj: documentNumber,
-      },
-    });
-    // Pix = 2 mensagens: confirmação (texto do backend, sem link nem botão) e o código Copia e Cola, sozinho.
-    ctx.afterReply.push(() => sendTextMessage(ctx.phone, charge.pixPayload));
-    return { ...base, pixPayload: charge.pixPayload };
-  } catch {
-    console.error("[whatsapp-bot] cobrança Pix não criada", { orderId: created.orderId });
-    return { ...base, chargeError: true };
-  }
+  // Uma única mensagem: botão nativo cta_url para a página de pagamento (token ORDER_PAYMENT, 2 h, sem login).
+  const payUrl = checkoutUrl(created.orderId, ctx.phone);
+  ctx.cta = {
+    buttonText: "Ir para pagamento",
+    url: payUrl,
+    bodyText: `Pedido #${created.orderNumber} anotado! Total ${base.amountFormatted}. Toque abaixo para escolher como pagar e mandar pra chapa 👇`,
+  };
+  return { ...base, checkoutUrl: payUrl };
 }

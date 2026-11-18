@@ -14,7 +14,7 @@ export type NextStep = "CART" | "DELIVERY" | "PAYMENT" | "CHECKOUT";
 export function nextStep(s: SessionProgress): NextStep {
   if (!s.draftCart || s.draftCart.length === 0) return "CART";
   if (!s.addressConfirmed) return "DELIVERY";
-  if (!s.paymentMethod) return "PAYMENT";
+  // A forma de pagamento é escolhida na página de pagamento (não no chat): itens + entrega/retirada => fecha.
   return "CHECKOUT";
 }
 

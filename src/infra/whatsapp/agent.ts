@@ -6,7 +6,7 @@ import { whatsappMessages, whatsappSessions, type PaymentMethod } from "@/infra/
 import { downloadMedia, sendCtaUrlButton, sendTextMessage } from "./client";
 import { checkoutMessage, resetSession, runAutoCheckout } from "./draft-flow";
 import { generateContent } from "./gemini-client";
-import type { GeminiContent, GeminiPart, GeminiRequest } from "./gemini";
+import { GeminiHttpError, GeminiUnavailableError, type GeminiContent, type GeminiPart, type GeminiRequest } from "./gemini";
 import { stripRepeatedGreeting, stripUrlsAndMarkdownLinks } from "./sanitizer";
 import { loadStoreContext, type StoreContext } from "./store-context";
 import { greetingForHour, resolveGreetingMode, type GreetingMode } from "./greeting";
@@ -101,7 +101,11 @@ export function buildSystemPrompt({ now = new Date(), greetingMode = "FIRST_TODA
     minute: "2-digit",
   });
   const greeting = {
-    FIRST_TODAY: `greetingMode = FIRST_TODAY: primeiro contato de hoje. Cumprimente UMA vez, de forma cordial, conforme o horário de Brasília (agora: "${greetingForHour(now)}"), chamando pelo primeiro nome se já for cliente, ANTES de responder ou de enviar o botão do cardápio.`,
+    FIRST_TODAY: `greetingMode = FIRST_TODAY: primeiro contato de hoje. Cumprimente UMA vez, de forma calorosa e com a cara do Passaporte Burguer (horário em Brasília: "${greetingForHour(now)}"), chamando pelo primeiro nome se já for cliente, ANTES de responder ou de enviar o botão do cardápio.
+   Se o cliente mandou SÓ um cumprimento ("Oi", "Opa", "Boa noite"), cumprimente E já puxe o papo de forma natural (nunca seco, nunca "Como posso ajudar?"):
+   - Cadastrado: "Oi, <primeiro nome>! Tudo bem? Já sabe qual lanche vai embarcar hoje ou quer dar uma olhadinha no cardápio rápido?"
+   - Novo: "Oi! Tudo bem? Bem-vindo ao Passaporte Burguer! Já conhece nossos lanches ou quer dar uma olhadinha no cardápio rápido pra escolher?"
+   Varie levemente as palavras e respeite o horário se o cliente usou "Boa noite"/"Bom dia". Isso NÃO aciona sendQuickMenu: é só a pergunta; a tool só sai se ele pedir o cardápio.`,
     RETURNING_TODAY:
       "greetingMode = RETURNING_TODAY: o cliente já conversou hoje e está começando um novo atendimento. Dê continuidade natural, sem repetir Boa tarde/Boa noite nem se apresentar de novo.",
     IN_CONVERSATION:
@@ -117,18 +121,19 @@ Você conversa como uma atendente real da hamburgueria: educada, direta, simpát
 
 REGRAS DE COMPORTAMENTO (SIGA À RISCA):
 1. RESPONDA APENAS O QUE FOI PERGUNTADO:
-   - Se o cliente apenas agradecer ("obg", "valeu", "top"), responda curto ("Imagina! 😊" ou "Por nada!") e NÃO faça perguntas nem empurre o cardápio.
+   - Resposta seca ("Imagina! 😊", "Por nada!") SÓ quando o cliente apenas agradece no fim da conversa ("obg", "valeu", "top"): sem perguntas e sem empurrar o cardápio. Um simples cumprimento NÃO é agradecimento (ver ESTILO E SAUDAÇÃO).
    - Se o cliente tirar uma dúvida (horário, agendamento, pagamento, entrega), responda a dúvida de forma clara e direta, usando os DADOS OPERACIONAIS abaixo, sem forçar o pedido na mesma frase.
    - Só conduza para o pedido ou ofereça o cardápio quando o cliente demonstrar intenção de pedir ou perguntar o que tem. Saudação ("Oi", "Bom dia", "Tudo bem?") e pergunta aberta ("Estão abertos?") são só conversa: NÃO chame sendQuickMenu.
 2. ESPELHE O RITMO DO CLIENTE:
    - Mensagens curtas do cliente = respostas curtas suas (1 a 2 frases no máximo). Nunca passe de 3 frases curtas.
    - Nunca faça duas perguntas na mesma mensagem.
    - Use no máximo 1 emoji por mensagem (ou nenhum).
-   - Se o cliente cumprimentou perguntando como você está ("Bom dia, tudo bem?"), responda que está tudo ótimo por aqui e pergunte como ele está.
+   - Se o cliente perguntou como você está ("Bom dia, tudo bem?"), responda em poucas palavras e já puxe o pedido. PROIBIDO "Tudo ótimo por aqui, e com você? Como posso te ajudar hoje?".
 3. LOJA FECHADA:
    - Se a loja estiver fechada no momento, avise logo na resposta o horário em que abre hoje/próximo dia. Não tente fechar pedido enquanto estiver fechada, a menos que o cliente peça para ver o cardápio.
 4. FLUXO DE PEDIDO (QUANDO O CLIENTE QUISER PEDIR):
-   - Cliente cadastrado (${who.firstName}): chame pelo nome, pergunte se quer repetir o último pedido (${who.lastOrder}) ou escolher outro lanche. Se ele já disser os itens, anote, confirme o endereço salvo (${who.address}) e pergunte a forma de pagamento.
+   - Cliente cadastrado (${who.firstName}): chame pelo nome, pergunte se quer repetir o último pedido (${who.lastOrder}) ou escolher outro lanche. Se ele já disser os itens, anote e confirme o endereço salvo (${who.address}).
+   - NUNCA pergunte forma de pagamento (Pix, cartão, entrega) nem escreva código Pix: o pagamento é escolhido pelo cliente na página que o sistema envia por botão assim que houver itens + endereço/retirada.
    - Cliente novo: pergunte se já conhece os lanches ou se quer o link do cardápio rápido (só acione a tool do cardápio se ele pedir para ver o cardápio/opções).
    - Nunca escreva URLs ou links no texto.
 
@@ -175,8 +180,7 @@ FLUXO DO PEDIDO (estado explícito: session.nextStep diz o que falta)
 1. CART: cliente disse o que quer → updateCart com o carrinho COMPLETO (sobrescreve; só o que ele pediu; observações em notes). Cliente cadastrado que quer repetir o último pedido: use lastOrderItems.
    Pedido vindo do Cardápio Rápido ("[Cliente montou o pedido no Cardápio Rápido]"): os itens já estão em draftCart; não remonte, siga para a entrega.
 2. DELIVERY: pergunte entrega ou retirada e o endereço (rua e número). Cliente cadastrado com defaultAddress e addressConfirmed = false: pergunte UMA vez se entrega no endereço salvo (mostre rua e número). Quando ele confirmar ("sim", "no mesmo endereço") ou informar outro, chame setDeliveryAndPayment com addressConfirmed: true (sem address para usar o salvo). Depois disso NUNCA pergunte o endereço de novo. Cliente novo: peça o nome e envie em customerName.
-3. PAYMENT: pergunte a forma: Pix, cartão de crédito pelo link seguro, ou na entrega/retirada (cartão na máquina ou dinheiro; dinheiro: pergunte o troco e registre em notes do updateCart). Informe o total que setDeliveryAndPayment devolveu (itens, taxa, total). Chame setDeliveryAndPayment com paymentMethod assim que ele escolher; o cliente pode dar endereço e pagamento na mesma mensagem.
-4. CHECKOUT: com carrinho + endereço confirmado + pagamento, o SERVIDOR fecha o pedido sozinho e envia a confirmação (valor, botão de pagamento, Pix). Não peça confirmação extra, não escreva o resumo final, não escreva código Pix nem link.
+3. CHECKOUT: com carrinho + endereço confirmado (ou retirada), o SERVIDOR fecha o pedido sozinho (status aguardando pagamento) e envia UMA mensagem com o botão "Ir para pagamento". Não pergunte forma de pagamento, não peça confirmação extra, não escreva o resumo final, nem código Pix, nem link.
 - CPF: se customer.hasDocument = true, NUNCA peça. Só se o sistema avisar que falta o CPF, peça ao cliente e envie em documentNumber via setDeliveryAndPayment.
 - Depois de finalizado, não crie outro pedido a menos que o cliente peça.
 
@@ -322,6 +326,14 @@ const defaultDeps: AgentDeps = {
   download: downloadMedia,
 };
 
+const RATE_LIMIT_RETRY_MS = 1500;
+
+function isRateLimited(error: unknown): boolean {
+  if (error instanceof GeminiHttpError) return error.status === 429;
+  if (error instanceof GeminiUnavailableError) return error.attempts.some((a) => /\b429\b/.test(a));
+  return false;
+}
+
 const CTA_BODY_LIMIT = 1024;
 const clip = (text: string, max: number) => {
   const chars = Array.from(text);
@@ -409,11 +421,16 @@ export async function runBotTurn(
     let usedTools = false;
     let checkoutTried = false;
     for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-      const content = await deps.generate({
-        systemInstruction,
-        contents,
-        functionDeclarations: TOOL_DECLARATIONS,
-      });
+      const request = { systemInstruction, contents, functionDeclarations: TOOL_DECLARATIONS };
+      let content: GeminiContent | null;
+      try {
+        content = await deps.generate(request);
+      } catch (error) {
+        // 429 (limite por minuto com várias mensagens seguidas): espera 1500 ms e tenta UMA vez; senão, contingência.
+        if (!isRateLimited(error)) throw error;
+        await new Promise((r) => setTimeout(r, RATE_LIMIT_RETRY_MS));
+        content = await deps.generate(request);
+      }
       if (!content) break;
 
       const calls = content.parts.filter((p) => p.functionCall);

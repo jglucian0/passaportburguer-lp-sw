@@ -195,7 +195,7 @@ export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
   {
     name: "setDeliveryAndPayment",
     description:
-      "Grava entrega/retirada, endereço e forma de pagamento na sessão. Chame assim que o cliente informar ou confirmar cada um (pode ser tudo de uma vez). Entrega com addressConfirmed=true e sem address usa o endereço salvo do cliente cadastrado. Quando carrinho + endereço + pagamento estiverem prontos o pedido é fechado AUTOMATICAMENTE pelo servidor.",
+      "Grava entrega/retirada e endereço na sessão. Chame assim que o cliente informar ou confirmar. Entrega com addressConfirmed=true e sem address usa o endereço salvo do cliente cadastrado. Não existe forma de pagamento no chat: quando carrinho + endereço (ou retirada) estiverem prontos o pedido é fechado AUTOMATICAMENTE pelo servidor, que envia o botão para a página de pagamento.",
     parameters: {
       type: "object",
       properties: {
@@ -216,7 +216,6 @@ export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
           type: "boolean",
           description: "true quando o cliente CONFIRMOU o endereço ('sim', 'no mesmo endereço') ou acabou de informá-lo. Retirada: true.",
         },
-        paymentMethod: { type: "string", enum: ["PIX", "CREDIT_CARD", "CARD_ON_DELIVERY", "CASH"] },
         customerName: { type: "string", description: "Só para cliente novo." },
         documentNumber: { type: "string", description: "CPF, SOMENTE se o sistema pedir. Quem tem hasDocument=true nunca informa." },
       },

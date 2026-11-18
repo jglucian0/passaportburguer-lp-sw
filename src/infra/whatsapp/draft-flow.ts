@@ -327,17 +327,5 @@ export async function runAutoCheckout(ctx: ToolContext): Promise<AutoCheckoutOut
 
 /** Mensagem de fechamento escrita pelo backend (único texto, além do botão, que carrega link). */
 export function checkoutMessage(r: Extract<FinalizeResult, { ok: true }>): string {
-  const head = `Pedido #${r.orderNumber} confirmado! Total ${r.amountFormatted}.`;
-  switch (r.paymentMethod) {
-    case "PIX":
-      return r.chargeError
-        ? `${head} Não consegui gerar o Pix agora. Quer que eu tente de novo ou chamo um atendente?`
-        : `${head} Assim que o Pix cair, ele vai pra chapa. O código Pix copia e cola vai na próxima mensagem 👇`;
-    case "CREDIT_CARD":
-      return `${head} Toque no botão pra pagar com cartão e ele vai pra chapa 👇`;
-    default:
-      return r.deliveryType === "PICKUP"
-        ? `${head} Já foi pra chapa! Você paga na retirada.`
-        : `${head} Já foi pra chapa! Você paga na entrega.`;
-  }
+  return `Pedido #${r.orderNumber} anotado! Total ${r.amountFormatted}. Toque abaixo para escolher como pagar e mandar pra chapa 👇`;
 }
