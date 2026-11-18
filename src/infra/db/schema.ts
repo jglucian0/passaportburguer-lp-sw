@@ -845,6 +845,10 @@ export const whatsappInboxBuffer = pgTable(
     wamid: text("wamid").notNull().unique(),
     payload: jsonb("payload").notNull(),
     processed: boolean("processed").notNull().default(false),
+    /** Quantas vezes um turno tentou processar este item (>= 3: desiste, para não entrar em loop). */
+    attempts: integer("attempts").notNull().default(0),
+    /** Reserva temporária enquanto um turno processa; expira sozinha se o processo morrer no meio. */
+    lockedUntil: timestamp("locked_until", { withTimezone: true }),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("whatsapp_inbox_phone_idx").on(t.phone, t.processed, t.receivedAt)],

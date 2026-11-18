@@ -4,12 +4,8 @@ import { db } from "@/infra/db";
 import { whatsappMessages } from "@/infra/db/schema";
 
 import { downloadMedia, sendTextMessage } from "./client";
-import {
-  generateContent,
-  type GeminiContent,
-  type GeminiPart,
-  type GeminiRequest,
-} from "./gemini";
+import { generateContent } from "./gemini-client";
+import type { GeminiContent, GeminiPart, GeminiRequest } from "./gemini";
 import { executeTool, TOOL_DECLARATIONS } from "./tools";
 import { appUrl, type ToolContext } from "./shared";
 import type { InboundMessage } from "./webhook";
@@ -19,8 +15,10 @@ const MAX_TOOL_ROUNDS = 6;
 const HISTORY_LIMIT = 20;
 const MAX_MEDIA_BYTES = 12 * 1024 * 1024;
 
-export const FALLBACK_REPLY =
-  "Opa, deu um probleminha aqui do meu lado 😅 Pode mandar de novo em instantes? Se preferir, é só pedir que eu chamo um atendente.";
+/** Contingência: o cliente nunca fica no vácuo quando a IA (ou o envio) falha de vez. */
+export function contingencyMessage(): string {
+  return `Tive uma instabilidade rápida aqui no meu sistema agora. Pode me mandar novamente ou, se preferir agilizar, fazer seu pedido direto pelo nosso cardápio: ${appUrl()}`;
+}
 
 /* ------------------------------------------------------------------ */
 /* System prompt                                                       */
@@ -163,12 +161,14 @@ async function recordAssistant(phone: string, content: string) {
 /**
  * Recebe as mensagens do cliente já agrupadas (debounce) com o bot ativo,
  * roda o Gemini com function calling e envia a resposta.
+ * Retorna true só se a resposta da IA foi entregue (o buffer só é dado como processado nesse caso).
+ * Em qualquer falha envia a mensagem de contingência ao cliente e retorna false.
  */
 export async function runBotTurn(
   phone: string,
   messages: InboundMessage[],
   deps: AgentDeps = defaultDeps,
-): Promise<void> {
+): Promise<boolean> {
   const ctx: ToolContext = { phone, afterReply: [] };
 
   try {
@@ -204,7 +204,8 @@ export async function runBotTurn(
       contents.push({ role: "user", parts: responses });
     }
 
-    if (!reply) reply = FALLBACK_REPLY;
+    // Sem texto (bloqueio/resposta vazia) é falha: não vale como atendimento.
+    if (!reply) throw new Error("O modelo não devolveu resposta de texto.");
 
     await deps.sendText(phone, reply);
     await recordAssistant(phone, reply);
@@ -217,9 +218,13 @@ export async function runBotTurn(
         console.error("[whatsapp-bot] falha no envio pós-resposta:", errorSummary(error));
       }
     }
+    return true;
   } catch (error) {
     console.error("[whatsapp-bot] falha no turno:", errorSummary(error));
-    await deps.sendText(phone, FALLBACK_REPLY).catch(() => undefined);
+    await deps.sendText(phone, contingencyMessage()).catch((e) => {
+      console.error("[whatsapp-bot] falha ao enviar a contingência:", errorSummary(e));
+    });
+    return false;
   }
 }
 

@@ -404,12 +404,38 @@ describe("runBotTurn (Gemini mockado)", () => {
     expect(order).toEqual(["Pedido feito! O código vem a seguir.", "PIXCOPIAECOLA"]);
   });
 
-  it("falha do Gemini: pede desculpas em vez de silenciar", async () => {
+  it("2) falha total do Gemini: mensagem de contingência ao cliente (com o link do cardápio) e retorno false", async () => {
     const { d, sent } = deps([]);
     d.generate = async () => {
-      throw new Error("boom");
+      throw new Error("todos os modelos falharam");
     };
-    await runBotTurn(PHONE, [msg()], d);
-    expect(sent[0]).toMatch(/probleminha/);
+    const ok = await runBotTurn(PHONE, [msg()], d);
+    expect(ok).toBe(false);
+    expect(sent).toEqual([
+      "Tive uma instabilidade rápida aqui no meu sistema agora. Pode me mandar novamente ou, se preferir agilizar, fazer seu pedido direto pelo nosso cardápio: https://app.test",
+    ]);
+  });
+
+  it("resposta vazia do modelo (bloqueio) também é falha com contingência", async () => {
+    const { d, sent } = deps([]); // generate devolve null
+    expect(await runBotTurn(PHONE, [msg()], d)).toBe(false);
+    expect(sent[0]).toMatch(/instabilidade/);
+  });
+
+  it("sucesso devolve true e não manda contingência", async () => {
+    const { d, sent } = deps([modelText("Oi!")]);
+    expect(await runBotTurn(PHONE, [msg()], d)).toBe(true);
+    expect(sent).toEqual(["Oi!"]);
+  });
+
+  it("falha no envio pela Meta: tenta a contingência e retorna false (o lote volta à fila)", async () => {
+    const { d } = deps([modelText("Oi!")]);
+    const calls: string[] = [];
+    d.sendText = async (_t, text) => {
+      calls.push(text);
+      throw new Error("meta fora");
+    };
+    expect(await runBotTurn(PHONE, [msg()], d)).toBe(false);
+    expect(calls).toHaveLength(2); // resposta + contingência
   });
 });

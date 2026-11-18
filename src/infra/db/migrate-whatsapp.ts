@@ -46,6 +46,8 @@ async function main() {
     )`;
   await sql`CREATE INDEX IF NOT EXISTS whatsapp_inbox_phone_idx ON whatsapp_inbox_buffer (phone, processed, received_at)`;
   await sql`ALTER TABLE customers ADD COLUMN IF NOT EXISTS document_number text`;
+  await sql`ALTER TABLE whatsapp_inbox_buffer ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE whatsapp_inbox_buffer ADD COLUMN IF NOT EXISTS locked_until timestamptz`;
   console.log("whatsapp ok.");
 }
 

@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 
 import { db } from "@/infra/db";
 import {
@@ -8,6 +8,7 @@ import {
 } from "@/infra/db/schema";
 
 import { markMessageAsRead } from "./client";
+import { errorSummary } from "./log";
 import type { InboundMessage } from "./webhook";
 
 export const DEBOUNCE_MS = 5_000;
@@ -35,9 +36,18 @@ export async function bufferInbound(messages: InboundMessage[]): Promise<Inbound
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Após 3 turnos que falharam, o item é dado como processado (a IA não fica em loop). */
+export const MAX_ATTEMPTS = 3;
+/** Reserva do lote durante o turno; se o processo morrer, expira e o item volta à fila. */
+export const LOCK_MS = 120_000;
+
 /**
  * Debounce por telefone. Após esperar, se chegou mensagem mais recente (de outra execução),
  * esta encerra; a última execução assume todas as pendentes agrupadas.
+ *
+ * Não-perda: o lote é só RESERVADO (lock + attempts) ao começar; `processed = true` só depois que o
+ * turno da IA terminou e a resposta foi enviada. Se falhar, os itens voltam à fila (com a contagem de
+ * tentativas) e entram no próximo turno desse cliente, até MAX_ATTEMPTS.
  */
 export async function processAfterDebounce(
   phone: string,
@@ -54,22 +64,65 @@ export async function processAfterDebounce(
     .limit(1);
   if (!latest || latest.wamid !== myLastWamid) return; // outra execução assume (ou já processado)
 
-  // Claim atômico: só uma execução leva as linhas.
+  // Reserva atômica: só uma execução leva as linhas (as já reservadas e não expiradas ficam de fora).
+  const now = new Date();
   const claimed = await db
     .update(whatsappInboxBuffer)
-    .set({ processed: true })
-    .where(and(eq(whatsappInboxBuffer.phone, phone), eq(whatsappInboxBuffer.processed, false)))
-    .returning({ payload: whatsappInboxBuffer.payload, receivedAt: whatsappInboxBuffer.receivedAt });
+    .set({ attempts: sql`${whatsappInboxBuffer.attempts} + 1`, lockedUntil: new Date(now.getTime() + LOCK_MS) })
+    .where(
+      and(
+        eq(whatsappInboxBuffer.phone, phone),
+        eq(whatsappInboxBuffer.processed, false),
+        or(isNull(whatsappInboxBuffer.lockedUntil), lt(whatsappInboxBuffer.lockedUntil, now)),
+      ),
+    )
+    .returning({
+      id: whatsappInboxBuffer.id,
+      payload: whatsappInboxBuffer.payload,
+      receivedAt: whatsappInboxBuffer.receivedAt,
+      attempts: whatsappInboxBuffer.attempts,
+    });
   if (claimed.length === 0) return;
 
-  const batch = claimed
-    .sort((a, b) => a.receivedAt.getTime() - b.receivedAt.getTime())
-    .map((r) => r.payload as InboundMessage);
+  const ordered = [...claimed].sort((a, b) => a.receivedAt.getTime() - b.receivedAt.getTime());
+  const ids = ordered.map((r) => r.id);
+  const batch = ordered.map((r) => r.payload as InboundMessage);
 
-  await handleBatch(phone, batch);
+  let ok = false;
+  try {
+    ok = await handleBatch(phone, batch);
+  } catch (error) {
+    console.error("[whatsapp-bot] falha no lote:", errorSummary(error));
+  }
+
+  if (ok) {
+    await db
+      .update(whatsappInboxBuffer)
+      .set({ processed: true, lockedUntil: null })
+      .where(inArray(whatsappInboxBuffer.id, ids));
+    return;
+  }
+
+  // Falhou: itens que já esgotaram as tentativas são dados como processados; os demais voltam à fila.
+  const giveUp = ordered.filter((r) => r.attempts >= MAX_ATTEMPTS).map((r) => r.id);
+  const retry = ordered.filter((r) => r.attempts < MAX_ATTEMPTS).map((r) => r.id);
+  if (giveUp.length > 0) {
+    console.error("[whatsapp-bot] desistindo de itens após tentativas esgotadas:", giveUp.length);
+    await db
+      .update(whatsappInboxBuffer)
+      .set({ processed: true, lockedUntil: null })
+      .where(inArray(whatsappInboxBuffer.id, giveUp));
+  }
+  if (retry.length > 0) {
+    await db
+      .update(whatsappInboxBuffer)
+      .set({ lockedUntil: null })
+      .where(inArray(whatsappInboxBuffer.id, retry));
+  }
 }
 
-async function handleBatch(phone: string, batch: InboundMessage[]): Promise<void> {
+/** true = lote concluído (resposta entregue ou bot pausado); false = falhou e deve voltar à fila. */
+async function handleBatch(phone: string, batch: InboundMessage[]): Promise<boolean> {
   // Histórico (idempotente por wamid).
   await db
     .insert(whatsappMessages)
@@ -93,9 +146,9 @@ async function handleBatch(phone: string, batch: InboundMessage[]): Promise<void
     })
     .returning({ botPausedUntil: whatsappSessions.botPausedUntil });
 
-  // Transbordo humano: só registra, não aciona a IA.
-  if (session?.botPausedUntil && session.botPausedUntil.getTime() > Date.now()) return;
+  // Transbordo humano: só registra, não aciona a IA (concluído).
+  if (session?.botPausedUntil && session.botPausedUntil.getTime() > Date.now()) return true;
 
   const { runBotTurn } = await import("./agent");
-  await runBotTurn(phone, batch);
+  return runBotTurn(phone, batch);
 }
