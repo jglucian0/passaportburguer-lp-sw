@@ -132,11 +132,11 @@ export async function submitQuickCart(raw: unknown): Promise<QuickCartResult> {
   if (!paused) {
     try {
       const ctx = await getCustomerContext(phone);
-      const greeting = ctx.isRegistered ? `Anotei seus itens, ${ctx.firstName}! 🍔` : "Anotei seus itens! 🍔";
+      const greeting = ctx.isRegistered ? `Anotei seus itens, ${ctx.firstName}! ` : "Anotei seus itens!";
       const next = ctx.isRegistered
         ? ctx.defaultAddress
-          ? `Entrego em *${ctx.defaultAddress.street}, ${ctx.defaultAddress.number}*? Me confirma e já me diz como prefere pagar: Pix, cartão ou na entrega.`
-          : "Me passa o endereço de entrega (ou me avise se vai retirar) e como prefere pagar: Pix, cartão ou na entrega."
+          ? `Entrego em *${ctx.defaultAddress.street}, ${ctx.defaultAddress.number}*? Me confirma que eu já te mando o link pra finalizar. 😉`
+          : "Me passa o endereço de entrega (rua e número) ou me avise se vai retirar. 😉"
         : "Pra fechar, só preciso do seu nome e do endereço de entrega (rua e número) — ou me avise se prefere retirar. 😉";
       const text = `${greeting}\n\n${itemsText}\n\nSubtotal: *${formatCents(calc.subtotalCents)}* (+ taxa de entrega, se for entrega)\n\n${next}`;
       await sendTextMessage(phone, text);

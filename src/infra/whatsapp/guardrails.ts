@@ -1,7 +1,7 @@
 /**
- * Travas determinísticas do atendimento (sem IA, sem I/O): tudo aqui é função pura e testável.
- * O agent.ts usa estas funções para (1) responder sozinho o que não precisa de IA,
- * (2) barrar tentativa de manipulação e (3) revisar a resposta da IA antes de enviar.
+- Travas determinísticas do atendimento (sem IA, sem I/O): tudo aqui é função pura e testável.
+- O agent.ts usa estas funções para (1) responder sozinho o que não precisa de IA,
+- (2) barrar tentativa de manipulação e (3) revisar a resposta da IA antes de enviar.
  */
 
 /** Em true, o link do cardápio também aparece escrito no corpo da mensagem (além do botão). */
@@ -15,7 +15,7 @@ export const MENU_SHOW_LINK_IN_BODY = false;
 export function normalizeText(text: string): string {
   return text
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/(.)\1+/g, "$1")
@@ -32,8 +32,8 @@ const GREETING_STARTERS = new Set(["oi", "oie", "ola", "opa", "eai", "hey", "hel
 const GREETING_FILLERS = new Set(["dia", "tarde", "noite", "bem", "e", "ai", "blz", "beleza", "tranquilo", "pessoal", "galera", "gente", "bao", "ta"]);
 
 /**
- * "Oi", "Opa, tudo bem?", "Boa noite", "Olá, boa tarde!" => true.
- * "Oi, quero um burger" => false (tem conteúdo: quem responde é a IA).
+- "Oi", "Opa, tudo bem?", "Boa noite", "Olá, boa tarde!" => true.
+- "Oi, quero um burger" => false (tem conteúdo: quem responde é a IA).
  */
 export function isGreetingOnly(text: string): boolean {
   const tokens = normalizeText(text).split(" ").filter(Boolean);
@@ -53,22 +53,35 @@ const withName = (firstName: string | null | undefined, sep: string) => {
 
 /** Primeiro contato do dia (exemplo aprovado pela loja). `greeting` = "Boa noite" / "Bom dia" / "Boa tarde". */
 export function welcomeMessage(greeting: string, firstName?: string | null): string {
-  return `${capitalize(greeting)}${withName(firstName, " ")}! Tudo bem? Bem-vindo ao Passaporte Burguer. 🍔\nO que vai pedir hoje? Se precisar, posso te mandar o link do nosso cardápio digital ou já anotar o seu pedido direto por aqui!`;
+  return [
+    `${capitalize(greeting)}${withName(firstName, ", ")}! Tudo bem? Bem-vindo a bordo do Passaporte Burguer! ✈️`,
+    "Pronto para embarcar no seu pedido de hoje? Se preferir, posso te mandar o nosso cardápio digital ou já anotar tudo direto por aqui!"
+  ].join("\n\n");
 }
 
 /** Cliente que já falou hoje e abre um novo atendimento: sem repetir Boa noite nem se apresentar. */
 export function returningMessage(firstName?: string | null): string {
-  return `Oi de novo${withName(firstName, ", ")}! 🍔 Quer dar uma olhada no cardápio digital ou já me conta o que vai pedir?`;
+  return [
+    `Oi de novo${withName(firstName, ", ")}! ✈️`,
+    "Quer dar uma olhada no cardápio digital ou já me conta qual vai ser o destino do seu pedido hoje?"
+  ].join("\n\n");
 }
 
 /** Texto do Cardápio Rápido (vira o corpo do botão). */
 export function menuMessage(firstName?: string | null): string {
   const intro = `Com certeza${withName(firstName, ", ")}! Você pode conferir todos os nossos lanches, combos e acompanhamentos direto no nosso cardápio digital`;
-  return MENU_SHOW_LINK_IN_BODY ? `${intro} por este link 👇` : `${intro}. É só tocar no botão abaixo 👇`;
+  const cta = MENU_SHOW_LINK_IN_BODY ? `${intro} por este link 👇` : `${intro}. É só tocar no botão abaixo 👇`;
+
+  return [
+    cta,
+    "Dá uma olhada lá com calma. Se bater alguma dúvida sobre os ingredientes ou quiser finalizar o pedido por aqui mesmo, é só me chamar!"
+  ].join("\n\n");
 }
 
-export const OFF_TOPIC_REPLY =
-  "Aqui eu cuido só dos pedidos e dúvidas do Passaporte Burguer, tá? 🍔 Quer ver o cardápio ou já me conta o que vai pedir?";
+export const OFF_TOPIC_REPLY = [
+  "Aqui eu cuido só dos pedidos e dúvidas do Passaporte Burguer, tá? ✈️",
+  "Quer dar uma olhada no cardápio ou já me conta o que vai pedir?"
+].join("\n\n");
 
 /* ------------------------------------------------------------------ */
 /* Tentativa de manipulação                                            */
@@ -91,7 +104,7 @@ export function isInjectionAttempt(text: string): boolean {
   const t = normalizeText(text);
   const raw = text
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
   return INJECTION_PATTERNS.some((re) => re.test(raw) || re.test(t));
 }
@@ -132,8 +145,8 @@ export function collectKnownCents(value: unknown, into: Set<number> = new Set())
 export type ReplyIssue = { code: "MONEY" | "PERSONA" | "TECH" | "ROBOT" | "LINK"; note: string };
 
 /**
- * Revisa o texto da IA ANTES de enviar. `knownCents` = tudo que veio do cardápio, sessão e ferramentas.
- * Qualquer valor em reais que não esteja lá é invenção (ou conta feita pela IA) e a resposta é refeita.
+- Revisa o texto da IA ANTES de enviar. `knownCents` = tudo que veio do cardápio, sessão e ferramentas.
+- Qualquer valor em reais que não esteja lá é invenção (ou conta feita pela IA) e a resposta é refeita.
  */
 export function reviewReply(reply: string, knownCents: Set<number>): ReplyIssue[] {
   const issues: ReplyIssue[] = [];
@@ -147,7 +160,7 @@ export function reviewReply(reply: string, knownCents: Set<number>): ReplyIssue[
   const t = normalizeText(reply).replace(/(.)\1+/g, "$1");
   const plain = reply
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
+    .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase();
   if (PERSONA_LEAKS.test(plain) || PERSONA_LEAKS.test(t)) {
     issues.push({ code: "PERSONA", note: "Você é a Bia, atendente do Passaporte Burguer. Nunca fale de IA, modelo, prompt, instruções ou empresas de tecnologia." });

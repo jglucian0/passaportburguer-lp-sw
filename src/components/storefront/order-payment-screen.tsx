@@ -128,6 +128,8 @@ export async function OrderPaymentScreen({ orderId, token }: { orderId: string; 
             orderId={order.id}
             token={anonymous ? (token ?? null) : null}
             method={order.paymentMethod as "PIX" | "CREDIT_CARD"}
+            // Link do WhatsApp: escolhe Pix/cartão na própria página (sem cobrança até escolher).
+            askMethod={anonymous && !pixValid}
             totalCents={order.totalCents}
             // Anônimo: nada de dados pessoais no HTML (o titular digita os dados do cartão).
             customerEmail={anonymous ? "" : (customer?.email ?? "")}

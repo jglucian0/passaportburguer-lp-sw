@@ -27,6 +27,8 @@ type Props = {
   /** Link assinado do WhatsApp (acesso sem login): vai em todas as chamadas e desliga os redirecionamentos para o login. */
   token?: string | null;
   method: "PIX" | "CREDIT_CARD";
+  /** Link do WhatsApp: o cliente escolhe Pix ou cartão aqui dentro (nenhuma cobrança é criada antes). */
+  askMethod?: boolean;
   totalCents: number;
   customerEmail: string;
   initialPix: PixData | null;
@@ -75,12 +77,13 @@ export function PaymentView({
   orderId,
   token = null,
   method: initialMethod,
+  askMethod = false,
   totalCents,
   customerEmail,
   initialPix,
 }: Props) {
-  /* O cliente pode trocar Pix <-> cartão no mesmo pedido (ex.: cartão recusado). */
-  const [method, setMethod] = useState<"PIX" | "CREDIT_CARD">(initialMethod);
+  /* O cliente pode trocar Pix <-> cartão no mesmo pedido (ex.: cartão recusado). null = ainda vai escolher. */
+  const [method, setMethod] = useState<"PIX" | "CREDIT_CARD" | null>(askMethod ? null : initialMethod);
   const router = useRouter();
   const endpoint = `/api/orders/${orderId}/payment${token ? `?token=${encodeURIComponent(token)}` : ""}`;
 
@@ -381,7 +384,25 @@ export function PaymentView({
         <span className="text-xl font-bold">{formatCents(totalCents)}</span>
       </div>
 
-      {method === "PIX" ? (
+      {method === null ? (
+        <section className={cardClass}>
+          <h2 className="font-bold">Como você prefere pagar?</h2>
+          <button
+            type="button"
+            onClick={() => setMethod("PIX")}
+            className="flex h-14 w-full items-center justify-center rounded-xl bg-[#F59E0B] font-semibold text-[#071329] transition-colors hover:bg-[#d98a09]"
+          >
+            Pix
+          </button>
+          <button
+            type="button"
+            onClick={() => setMethod("CREDIT_CARD")}
+            className="flex h-14 w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white font-semibold text-slate-900 transition-colors hover:bg-slate-50"
+          >
+            <Lock className="h-4 w-4" /> Cartão de crédito
+          </button>
+        </section>
+      ) : method === "PIX" ? (
         <section className={cardClass}>
           <h2 className="font-bold">Pague com Pix</h2>
 
