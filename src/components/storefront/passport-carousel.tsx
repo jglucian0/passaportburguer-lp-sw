@@ -29,11 +29,11 @@ function slotClass(slot: Slot): string {
   switch (slot) {
     // Central maior (~1.16x) e laterais encostando nele, como no layout de referência.
     case -1:
-      return "-translate-x-[75%] lg:max-xl:-translate-x-[66%] -rotate-[4deg] scale-[0.93] opacity-100 z-10 max-md:-translate-x-[62%] max-md:scale-[0.88]";
+      return "-translate-x-[75%] lg:landscape:max-xl:-translate-x-[66%] -rotate-[4deg] scale-[0.93] opacity-100 z-10 max-md:-translate-x-[62%] max-md:scale-[0.88]";
     case 0:
       return "translate-x-0 rotate-0 scale-[1.08] opacity-100 z-30";
     case 1:
-      return "translate-x-[75%] lg:max-xl:translate-x-[66%] rotate-[4deg] scale-[0.93] opacity-100 z-10 max-md:translate-x-[62%] max-md:scale-[0.88]";
+      return "translate-x-[75%] lg:landscape:max-xl:translate-x-[66%] rotate-[4deg] scale-[0.93] opacity-100 z-10 max-md:translate-x-[62%] max-md:scale-[0.88]";
     default:
       return "translate-x-0 rotate-0 scale-75 opacity-0 z-0";
   }

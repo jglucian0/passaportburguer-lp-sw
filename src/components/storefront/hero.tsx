@@ -89,46 +89,46 @@ export function Hero({
 
       {/* --------------------------- Conteúdo --------------------------- */}
       <HeroSyncProvider>
-        <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 content-center items-center gap-10 px-4 py-10 max-md:flex max-md:min-h-[calc(100svh-116px)] max-md:flex-col max-md:justify-evenly max-md:gap-2 max-md:px-4 max-md:py-2.5 max-md:pb-16 md:px-8 lg:grid-cols-12 lg:gap-8 lg:px-10 xl:gap-10 xl:px-8 [@media(min-height:800px)]:max-md:gap-4">
+        <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 content-center items-center gap-10 px-4 py-10 max-md:flex max-md:min-h-[calc(100svh-116px)] max-md:flex-col max-md:justify-evenly max-md:gap-2 max-md:px-4 max-md:py-2.5 max-md:pb-16 md:px-8 md:portrait:justify-items-center md:portrait:gap-6 lg:landscape:grid-cols-12 lg:gap-8 lg:px-10 xl:gap-10 xl:px-8 [@media(min-height:800px)]:max-md:gap-4">
           {/* Copy + cartão de embarque (no mobile os filhos são reordenados) */}
-          <div className="max-md:contents lg:col-span-6">
-            <div className="relative min-w-0 max-md:order-1 max-md:pt-5">
+          <div className="max-md:contents md:portrait:contents lg:col-span-6">
+            <div className="relative min-w-0 max-md:order-1 max-md:pt-5 md:portrait:order-1">
               {/* Mobile: gradiente radial suave só atrás do bloco de texto */}
               <div
                 aria-hidden="true"
                 className="pointer-events-none absolute -inset-x-6 -inset-y-4 -z-10 bg-[radial-gradient(ellipse_at_center,rgba(7,19,41,0.7)_0%,rgba(7,19,41,0.35)_45%,transparent_75%)] md:hidden"
               />
-              <h1 className="font-poppins text-5xl font-extrabold uppercase leading-[1.08] tracking-tight text-white max-md:text-center max-md:text-2xl max-md:leading-[1.1] sm:text-6xl max-md:sm:text-[28px] lg:text-[44px] xl:text-6xl">
+              <h1 className="font-poppins text-5xl font-extrabold uppercase leading-[1.08] tracking-tight text-white max-md:text-center max-md:text-2xl max-md:leading-[1.1] sm:text-6xl max-md:sm:text-[28px] md:portrait:text-center lg:landscape:text-[44px] xl:landscape:text-6xl">
                 O <span className="text-[#F59E0B]">MUNDO</span> EM
                 <br />
                 CADA <span className="text-[#F59E0B]">MORDIDA</span>
               </h1>
 
-              <p className="mt-5 max-w-lg text-base leading-relaxed text-[#CBD5E1] max-md:mx-auto max-md:mt-1.5 max-md:max-w-xs max-md:text-center max-md:text-xs max-md:leading-snug max-md:text-slate-300">
+              <p className="mt-5 max-w-lg text-base leading-relaxed text-[#CBD5E1] md:portrait:mx-auto md:portrait:text-center max-md:mx-auto max-md:mt-1.5 max-md:max-w-xs max-md:text-center max-md:text-xs max-md:leading-snug max-md:text-slate-300">
                 <span className="md:hidden">Hambúrgueres artesanais inspirados em cada país. Escolha seu próximo destino.</span>
                 <span className="hidden md:inline">Hambúrgueres artesanais inspirados na gastronomia de cada país, preparados com ingredientes típicos. Escolha seu próximo destino.</span>
               </p>
             </div>
 
-            <div className="mt-7 max-md:order-3 max-md:mt-0 max-md:w-full">
+            <div className="mt-7 max-md:order-3 max-md:mt-0 max-md:w-full md:portrait:order-3 md:portrait:mt-0 md:portrait:w-full md:portrait:max-w-md">
               <DigitalBoardingPass cards={cards} storeOpen={store.isOpen} />
             </div>
           </div>
 
           {/* Carrossel de passaportes */}
-          <div className="relative min-w-0 max-md:order-2 lg:col-span-6">
+          <div className="relative min-w-0 max-md:order-2 md:portrait:order-2 md:portrait:w-full lg:col-span-6">
             <PlaneTrail
               width={140}
-              className="pointer-events-none absolute -left-9 -top-6 hidden text-gold lg:block"
+              className="pointer-events-none absolute -left-9 -top-6 hidden text-gold lg:landscape:block"
             />
             <PlaneTrail
               width={100}
-              className="pointer-events-none absolute -left-[155px] top-[500px] hidden text-gold/70 lg:block"
+              className="pointer-events-none absolute -left-[155px] top-[500px] hidden text-gold/70 lg:landscape:block"
             />
             <PlaneTrail
               width={84}
               flip
-              className="pointer-events-none absolute right-6 top-0 hidden text-gold/80 lg:block"
+              className="pointer-events-none absolute right-6 top-0 hidden text-gold/80 lg:landscape:block"
             />
             <PassportCarousel cards={cards} />
           </div>
