@@ -39,7 +39,7 @@ export function Header({ tenant, store }: { tenant: PublicTenant; store: StoreSt
         <Link href="/" className="flex min-w-0 items-center gap-3">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src="/logo_passaportburguer_nav.min.webp"
+            src="/logo_passaporteburguer_nav.min.webp"
             alt={tenant.name}
             className="h-12 w-auto shrink-0 object-contain"
           />

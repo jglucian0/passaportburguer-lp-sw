@@ -18,7 +18,7 @@ export type TenantRef = {
 export async function getTenantRef(): Promise<TenantRef | null> {
   const h = await headers();
   const host = (h.get("x-tenant-host") ?? "").replace(/^www\./, "");
-  const slug = h.get("x-tenant-slug") ?? process.env.DEFAULT_TENANT_SLUG ?? "passaportburguer";
+  const slug = h.get("x-tenant-slug") ?? process.env.DEFAULT_TENANT_SLUG ?? "passaporteburguer";
 
   const load = unstable_cache(
     async (): Promise<TenantRef | null> => {

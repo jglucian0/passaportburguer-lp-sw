@@ -42,7 +42,7 @@ export function AdminShell({
           <div className="flex min-w-0 shrink-0 items-center gap-4">
             <Link href="/admin/pedidos" className="flex shrink-0 items-center gap-2" aria-label="Passaporte Burguer — painel">
               <Image
-                src="/logo_passaportburguer_nav.webp"
+                src="/logo_passaporteburguer_nav.webp"
                 alt="Passaporte Burguer"
                 width={126}
                 height={34}

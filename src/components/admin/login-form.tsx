@@ -24,7 +24,7 @@ export function LoginForm() {
         {/* O logo é branco: assenta sobre uma placa navy dentro do card branco. */}
         <div className="rounded-xl bg-[#071329] px-5 py-3">
           <Image
-            src="/logo_passaportburguer_nav.webp"
+            src="/logo_passaporteburguer_nav.webp"
             alt="Passaporte Burguer"
             width={168}
             height={45}

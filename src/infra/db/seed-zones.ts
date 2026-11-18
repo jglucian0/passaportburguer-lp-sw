@@ -12,7 +12,7 @@ import { DELIVERY_ZONES } from "@/core/store/maringa-zones";
 import { db } from "./index";
 import { deliveryZones, tenants } from "./schema";
 
-const TENANT_SLUG = process.env.DEFAULT_TENANT_SLUG ?? "passaportburguer";
+const TENANT_SLUG = process.env.DEFAULT_TENANT_SLUG ?? "passaporteburguer";
 
 function normalize(value: string): string {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();

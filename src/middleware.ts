@@ -54,7 +54,7 @@ export async function middleware(request: NextRequest) {
     .split(":")[0]
     .toLowerCase();
   headers.set("x-tenant-host", host);
-  headers.set("x-tenant-slug", process.env.DEFAULT_TENANT_SLUG ?? "passaportburguer");
+  headers.set("x-tenant-slug", process.env.DEFAULT_TENANT_SLUG ?? "passaporteburguer");
   headers.delete("x-tenant-id");
 
   const needsAuth =

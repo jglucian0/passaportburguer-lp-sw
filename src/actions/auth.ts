@@ -13,7 +13,7 @@ import { getTenantRef } from "@/infra/tenant/resolve";
 import { failure, fromZod, type ActionFailure } from "./result";
 
 // Hash descartável: mantém o tempo de resposta parecido quando o e-mail não existe.
-const DUMMY_HASH = bcrypt.hashSync("passaportburguer-dummy", 10);
+const DUMMY_HASH = bcrypt.hashSync("passaporteburguer-dummy", 10);
 
 const INVALID_CREDENTIALS = "E-mail ou senha inválidos.";
 

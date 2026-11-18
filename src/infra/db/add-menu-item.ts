@@ -12,7 +12,7 @@ import { db } from "./index";
 import { MENU } from "./seed-menu";
 import { addonGroups, addons, categories, products, tenants } from "./schema";
 
-const TENANT_SLUG = process.env.DEFAULT_TENANT_SLUG ?? "passaportburguer";
+const TENANT_SLUG = process.env.DEFAULT_TENANT_SLUG ?? "passaporteburguer";
 
 async function main() {
   const name = process.argv[2];

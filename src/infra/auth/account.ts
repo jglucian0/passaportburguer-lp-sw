@@ -13,7 +13,7 @@ export const RESET_TTL_MS = 15 * 60 * 1000;
 export const RESET_MAX_ATTEMPTS = 5;
 
 /** Hash descartável: iguala o tempo de resposta quando a conta não existe. */
-export const DUMMY_HASH = bcrypt.hashSync("passaportburguer-dummy", 10);
+export const DUMMY_HASH = bcrypt.hashSync("passaporteburguer-dummy", 10);
 
 export const fail = (error: string, status = 400) =>
   NextResponse.json({ error }, { status, headers: { "Cache-Control": "no-store" } });

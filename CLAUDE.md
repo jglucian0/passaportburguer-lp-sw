@@ -1,4 +1,4 @@
-# Especificação Técnica: Sistema Web de Delivery & Landing Page - Passaportburguer (Multi-Tenant Ready)
+# Especificação Técnica: Sistema Web de Delivery & Landing Page - passaporteburguer (Multi-Tenant Ready)
 
 ## 1. Regras Rígidas de Execução (Leitura Obrigatória)
 
@@ -13,7 +13,7 @@
 
 ## 2. Visão Geral e Estratégia de Infraestrutura (Baixo Custo)
 
-Construir uma aplicação web completa para a hamburgueria **PassaportBurguer** (`passaportburguer.com.br`), unindo Landing Page, Cardápio Digital com Carrinho, Painel do Cliente e Painel Administrativo (Gestor de Pedidos + CRUDs).
+Construir uma aplicação web completa para a hamburgueria **passaporteburguer** (`passaporteburguer.com.br`), unindo Landing Page, Cardápio Digital com Carrinho, Painel do Cliente e Painel Administrativo (Gestor de Pedidos + CRUDs).
 
 ### Diretrizes de Custo Zero / Baixo Consumo:
 
@@ -22,7 +22,7 @@ Construir uma aplicação web completa para a hamburgueria **PassaportBurguer** 
 3. **Banco de Dados:** Neon Postgres Serverless com **Drizzle ORM** (`@neondatabase/serverless` via driver HTTP para eliminar _cold starts_ pesados).
 4. **Tempo Real Econômico no Admin:** Sem WebSockets externos. Implemente um endpoint leve `GET /api/admin/orders/ping` (consulta apenas `MAX(updated_at)` e `COUNT(*)` via índice) consumido a cada 15 segundos **somente** quando `document.visibilityState === 'visible'`, disparando alerta sonoro via Web Audio API quando houver novo pedido.
 5. **Storage de Imagens:** Cloudflare R2 (`@aws-sdk/client-s3`) usando _Presigned URLs_ no upload. Configure `images: { unoptimized: true }` no `next.config.ts` para não consumir cota de otimização da Vercel.
-6. **Arquitetura SaaS-Ready:** Todas as tabelas possuem `tenant_id` obrigatório e indexado. Hoje haverá apenas o registro inicial da `PassaportBurguer`, mas o isolamento lógico permite escalar para SaaS sem refatoração.
+6. **Arquitetura SaaS-Ready:** Todas as tabelas possuem `tenant_id` obrigatório e indexado. Hoje haverá apenas o registro inicial da `passaporteburguer`, mas o isolamento lógico permite escalar para SaaS sem refatoração.
 
 ---
 
@@ -68,7 +68,7 @@ src/
 │ ├── db/
 │ │ ├── index.ts # Conexão Neon + Drizzle
 │ │ ├── schema.ts # Definição completa das tabelas e relações
-│ │ └── seed.ts # Seed inicial: Tenant PassaportBurguer + Admin + Cardápio demo
+│ │ └── seed.ts # Seed inicial: Tenant passaporteburguer + Admin + Cardápio demo
 │ ├── auth/session.ts # Assinatura/verificação JWT via jose (Admin e Customer)
 │ └── storage/r2.ts # Geração de Presigned URL para Cloudflare R2
 ├── components/

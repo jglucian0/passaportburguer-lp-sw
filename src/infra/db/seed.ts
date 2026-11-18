@@ -19,7 +19,7 @@ import {
   type OpeningHours,
 } from "./schema";
 
-const TENANT_SLUG = process.env.DEFAULT_TENANT_SLUG ?? "passaportburguer";
+const TENANT_SLUG = process.env.DEFAULT_TENANT_SLUG ?? "passaporteburguer";
 
 /** Terça a Domingo, 18h às 23h (perfil público da loja). */
 const openingHours: OpeningHours = {
@@ -44,7 +44,7 @@ async function main() {
     return;
   }
 
-  const adminEmail = (process.env.SEED_ADMIN_EMAIL ?? "admin@passaportburguer.com.br").toLowerCase();
+  const adminEmail = (process.env.SEED_ADMIN_EMAIL ?? "admin@passaporteburguer.com.br").toLowerCase();
   const adminPassword = process.env.SEED_ADMIN_PASSWORD;
   if (!adminPassword || adminPassword.length < 8) {
     throw new Error("Defina SEED_ADMIN_PASSWORD com no mínimo 8 caracteres.");
@@ -57,7 +57,7 @@ async function main() {
     .values({
       name: "Passaporte Burguer",
       slug: TENANT_SLUG,
-      customDomain: "passaportburguer.com.br",
+      customDomain: "passaporteburguer.com.br",
       phoneWhatsapp: "44998333450",
       primaryColor: "#f5a623",
       minOrderCents: 3300,

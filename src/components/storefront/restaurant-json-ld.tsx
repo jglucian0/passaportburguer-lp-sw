@@ -57,7 +57,7 @@ export function RestaurantJsonLd({
     description: SITE_DESCRIPTION,
     url: SITE_URL,
     image: absoluteUrl("/og-image.jpg"),
-    logo: absoluteUrl("/logo_passaportburguer.webp"),
+    logo: absoluteUrl("/logo_passaporteburguer.webp"),
     servesCuisine: "Hamburgueria Artesanal, Smash Burger",
     priceRange: "$$",
     ...(phone ? { telephone: `+${phone.startsWith("55") ? phone : `55${phone}`}` } : {}),
