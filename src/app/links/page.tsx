@@ -20,8 +20,8 @@ const ADDRESS = "Av. São Paulo, 123 - Zona 07, Maringá - PR";
 
 const INSTAGRAM_URL = "https://www.instagram.com/passaporteburguer";
 const MAPS_URL = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`Passaporte Burguer ${ADDRESS}`)}`;
-// TODO: trocar pelo link curto oficial do Google Meu Negócio (g.page/r/.../review) quando disponível.
-const GOOGLE_REVIEW_URL = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`Passaporte Burguer ${ADDRESS} avaliações`)}`;
+const GOOGLE_PLACE_ID = "ChIJXdJk2CbR7JQRPkk5dxkCbH8";
+const GOOGLE_REVIEW_URL = `https://search.google.com/local/writereview?placeid=${GOOGLE_PLACE_ID}`;
 
 export const metadata: Metadata = {
   title: "Links",
