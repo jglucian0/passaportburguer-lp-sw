@@ -24,6 +24,8 @@ export type CardDefaults = {
 type Props = {
   defaults: CardDefaults;
   orderId: string;
+  /** Link assinado do WhatsApp (acesso sem login): vai em todas as chamadas e desliga os redirecionamentos para o login. */
+  token?: string | null;
   method: "PIX" | "CREDIT_CARD";
   totalCents: number;
   customerEmail: string;
@@ -71,6 +73,7 @@ const RISK_MESSAGE =
 export function PaymentView({
   defaults,
   orderId,
+  token = null,
   method: initialMethod,
   totalCents,
   customerEmail,
@@ -79,7 +82,7 @@ export function PaymentView({
   /* O cliente pode trocar Pix <-> cartão no mesmo pedido (ex.: cartão recusado). */
   const [method, setMethod] = useState<"PIX" | "CREDIT_CARD">(initialMethod);
   const router = useRouter();
-  const endpoint = `/api/orders/${orderId}/payment`;
+  const endpoint = `/api/orders/${orderId}/payment${token ? `?token=${encodeURIComponent(token)}` : ""}`;
 
   const [expiryTouched, setExpiryTouched] = useState(false);
   const [pix, setPix] = useState<PixData | null>(initialPix);
@@ -166,7 +169,7 @@ export function PaymentView({
         } else {
           setConfirmedStatus(data.orderStatus);
           setConfirmed(true);
-          router.replace("/meus-pedidos");
+          if (!token) router.replace("/meus-pedidos");
         }
       } catch {
         /* tenta no próximo ciclo */
@@ -178,7 +181,7 @@ export function PaymentView({
       stopped = true;
       window.clearInterval(timer);
     };
-  }, [endpoint, router, confirmed, canceled]);
+  }, [endpoint, router, token, confirmed, canceled]);
 
   /* ---------------- Ações ---------------- */
   async function switchMethod(next: "PIX" | "CREDIT_CARD") {
@@ -301,7 +304,7 @@ export function PaymentView({
       if (data.released) {
         // Aprovação imediata: o pedido já foi para a cozinha.
         setConfirmed(true);
-        router.replace("/meus-pedidos");
+        if (!token) router.replace("/meus-pedidos");
         return;
       }
       // PENDING / análise de risco: mantém o polling e aguarda a decisão final do webhook.
@@ -354,7 +357,7 @@ export function PaymentView({
       <div className={cardClass}>
         <p className="flex items-center gap-2 font-semibold text-emerald-700">
           <Check className="h-5 w-5" />{" "}
-          {confirmedStatus === "PREPARING" ? "Pedido na chapa!" : "Pagamento confirmado! Redirecionando…"}
+          {confirmedStatus === "PREPARING" || token ? "Pagamento confirmado! Seu pedido está na chapa." : "Pagamento confirmado! Redirecionando…"}
         </p>
       </div>
     );

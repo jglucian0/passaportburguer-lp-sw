@@ -353,9 +353,8 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     return base;
   }
 
-  const payUrl = checkoutUrl(created.orderId);
-
   if (paymentMethod === "CREDIT_CARD") {
+    const payUrl = checkoutUrl(created.orderId, ctx.phone);
     ctx.cta = { buttonText: "Pagar com Cartão", url: payUrl };
     return { ...base, checkoutUrl: payUrl };
   }
@@ -372,8 +371,7 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
         cpfCnpj: documentNumber,
       },
     });
-    // Botão do checkout (+ link completo no corpo) na mensagem da resposta; o código Pix vai depois, sozinho.
-    ctx.cta = { buttonText: "Abrir pagamento", url: payUrl, appendUrlToBody: true };
+    // Pix = 2 mensagens: confirmação (texto do backend, sem link nem botão) e o código Copia e Cola, sozinho.
     ctx.afterReply.push(() => sendTextMessage(ctx.phone, charge.pixPayload));
     return { ...base, pixPayload: charge.pixPayload };
   } catch {

@@ -727,6 +727,7 @@ export type NewPayment = typeof payments.$inferInsert;
 
 export type OrderTimelineEventType =
   | "ORDER_CREATED"
+  | "ORDER_CANCELED"
   | "PAYMENT_CONFIRMED"
   | "SENT_TO_SAIPOS"
   | "PAYMENT_REFUNDED"

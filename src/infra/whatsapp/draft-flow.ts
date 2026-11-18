@@ -332,7 +332,7 @@ export function checkoutMessage(r: Extract<FinalizeResult, { ok: true }>): strin
     case "PIX":
       return r.chargeError
         ? `${head} Não consegui gerar o Pix agora. Quer que eu tente de novo ou chamo um atendente?`
-        : `${head} Assim que o Pix cair, ele vai pra chapa. O código copia e cola vem na próxima mensagem 👇`;
+        : `${head} Assim que o Pix cair, ele vai pra chapa. O código Pix copia e cola vai na próxima mensagem 👇`;
     case "CREDIT_CARD":
       return `${head} Toque no botão pra pagar com cartão e ele vai pra chapa 👇`;
     default:

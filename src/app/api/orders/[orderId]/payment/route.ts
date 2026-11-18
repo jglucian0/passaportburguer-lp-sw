@@ -2,7 +2,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { payOrderSchema } from "@/core/schemas/payment";
-import { getAuthSession, unauthorizedResponse } from "@/infra/auth/customer-session";
+import { unauthorizedResponse } from "@/infra/auth/customer-session";
 import { db } from "@/infra/db";
 import { customers, orders, payments } from "@/infra/db/schema";
 import {
@@ -13,6 +13,8 @@ import {
   type AsaasCustomerInput,
 } from "@/infra/payments/asaas";
 import { expireAbandonedOrders } from "@/infra/payments/expire-orders";
+import { accessDeniedResponse, resolveOrderAccess } from "@/infra/payments/order-access";
+import { loadMaskedOrderSummary } from "@/infra/payments/order-privacy";
 import { checkRateLimit, getClientIp, tooManyRequests } from "@/infra/security/rate-limit";
 
 export const dynamic = "force-dynamic";
@@ -36,11 +38,12 @@ async function loadOwnedOrder(orderId: string, customerId: string, tenantId: str
 }
 
 /** Status para o polling da tela de pagamento (a confirmação real vem do webhook). */
-export async function GET(_request: NextRequest, { params }: Ctx) {
-  const session = await getAuthSession();
-  if (!session) return unauthorizedResponse();
-
+export async function GET(request: NextRequest, { params }: Ctx) {
   const { orderId } = await params;
+  const resolved = await resolveOrderAccess(request, orderId);
+  if (!resolved.ok) return accessDeniedResponse(resolved.status);
+  const session = resolved.access;
+
   let order = await loadOwnedOrder(orderId, session.customerId, session.tenantId);
   if (!order) return NextResponse.json({ error: "Pedido não encontrado." }, { status: 404 });
 
@@ -56,16 +59,21 @@ export async function GET(_request: NextRequest, { params }: Ctx) {
     .orderBy(desc(payments.createdAt))
     .limit(1);
 
+  // Via token (sem login) o cliente só vê um resumo mascarado (LGPD): nunca CPF, e-mail ou telefone.
+  const summary = session.via === "token" ? await loadMaskedOrderSummary(order.id) : undefined;
+
   return NextResponse.json(
-    { orderStatus: order.status, paymentStatus: payment?.status ?? null },
+    { orderStatus: order.status, paymentStatus: payment?.status ?? null, ...(summary ? { summary } : {}) },
     { headers: NO_STORE },
   );
 }
 
 /** Gera o Pix, paga com cartão (checkout transparente) ou devolve a fatura hospedada. */
 export async function POST(request: NextRequest, { params }: Ctx) {
-  const session = await getAuthSession();
-  if (!session) return unauthorizedResponse();
+  const { orderId } = await params;
+  const resolved = await resolveOrderAccess(request, orderId);
+  if (!resolved.ok) return accessDeniedResponse(resolved.status);
+  const session = resolved.access;
 
   const ip = getClientIp(request.headers);
   const general = await checkRateLimit({ identifier: ip, route: "pay", limit: 30, windowSeconds: 600 });
@@ -86,7 +94,6 @@ export async function POST(request: NextRequest, { params }: Ctx) {
   }
   const input = parsed.data;
 
-  const { orderId } = await params;
   const order = await loadOwnedOrder(orderId, session.customerId, session.tenantId);
   if (!order) return NextResponse.json({ error: "Pedido não encontrado." }, { status: 404 });
 

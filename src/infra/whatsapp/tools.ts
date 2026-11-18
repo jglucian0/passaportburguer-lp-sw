@@ -2,19 +2,19 @@ import { and, eq } from "drizzle-orm";
 
 import { db } from "@/infra/db";
 import { loadCatalog } from "@/infra/db/queries";
-import { whatsappMessages, whatsappSessions } from "@/infra/db/schema";
+import { whatsappSessions } from "@/infra/db/schema";
 import { formatCents } from "@/lib/utils";
 
-import { sendTextMessage } from "./client";
 import type { GeminiFunctionDeclaration } from "./gemini";
+import { cancelUnpaidOrderTool } from "./cancel-order";
 import { setDeliveryAndPaymentTool, updateCartTool } from "./draft-flow";
+import { requestHumanHandoff } from "./handoff";
 import { signWhatsAppToken } from "./session-token";
 import { appUrl, getTenantId, type ToolContext } from "./shared";
 import { errorSummary } from "./log";
 
 export { getCustomerContext, type CustomerContext } from "./customer-context";
-
-export const HANDOFF_MINUTES = 30;
+export { HANDOFF_MINUTES, requestHumanHandoff } from "./handoff";
 
 /* ------------------------------------------------------------------ */
 /* 2. Cardápio (pré-carregado, em cache de 5 min)                       */
@@ -130,42 +130,6 @@ export function generateQuickMenuLink(phone: string): { url: string } {
 }
 
 /* ------------------------------------------------------------------ */
-/* 6. requestHumanHandoff                                              */
-/* ------------------------------------------------------------------ */
-
-export async function requestHumanHandoff(phone: string, reason: string) {
-  const until = new Date(Date.now() + HANDOFF_MINUTES * 60_000);
-  const cleanReason = reason.trim().slice(0, 300) || "Sem motivo informado";
-
-  await db
-    .insert(whatsappSessions)
-    .values({ phone, botPausedUntil: until })
-    .onConflictDoUpdate({
-      target: whatsappSessions.phone,
-      set: { botPausedUntil: until, updatedAt: new Date() },
-    });
-
-  /* Marca no histórico (e é o que o painel lê para listar atendimentos pedidos). */
-  await db.insert(whatsappMessages).values({
-    phone,
-    role: "system",
-    content: `HANDOFF: ${cleanReason}`,
-    mediaType: "text",
-  });
-
-  /* Alerta ativo no WhatsApp da loja (best-effort: fora da janela de 24h a Meta pode recusar). */
-  const store = process.env.STORE_WHATSAPP?.replace(/\D/g, "");
-  if (store) {
-    await sendTextMessage(
-      store,
-      `🔔 Cliente ${phone} pediu atendimento humano.\nMotivo: ${cleanReason}\nO bot ficará pausado por ${HANDOFF_MINUTES} min.`,
-    ).catch(() => undefined);
-  }
-
-  return { ok: true, pausedUntil: until.toISOString() };
-}
-
-/* ------------------------------------------------------------------ */
 /* Declarações para o Gemini + despacho                                */
 /* ------------------------------------------------------------------ */
 
@@ -248,6 +212,16 @@ export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
     },
   },
   {
+    name: "cancelUnpaidOrder",
+    description:
+      "Cancela o pedido do cliente que AINDA NÃO FOI PAGO (aguardando pagamento) e libera a sessão para um novo pedido; o bot segue ativo. Se o pedido já foi pago ou está em preparo/entrega, passa automaticamente para um atendente humano. O telefone é o da conversa.",
+    parameters: {
+      type: "object",
+      properties: { reason: { type: "string", description: "Motivo do cancelamento, nas palavras do cliente." } },
+      required: ["reason"],
+    },
+  },
+  {
     name: "requestHumanHandoff",
     description:
       "Passa a conversa para um atendente humano (pausa o bot por 30 min). Use em reclamações, problemas com pedido já feito, pedidos fora do comum ou quando o cliente pedir uma pessoa.",
@@ -280,6 +254,8 @@ export async function executeTool(ctx: ToolContext, name: string, args: Args = {
         return { ...(await updateCartTool(ctx, args)) };
       case "setDeliveryAndPayment":
         return { ...(await setDeliveryAndPaymentTool(ctx, args)) };
+      case "cancelUnpaidOrder":
+        return { ...(await cancelUnpaidOrderTool({ phone: ctx.phone, reason: String(args.reason ?? "") })) };
       case "requestHumanHandoff":
         return { ...(await requestHumanHandoff(ctx.phone, String(args.reason ?? ""))) };
       default:

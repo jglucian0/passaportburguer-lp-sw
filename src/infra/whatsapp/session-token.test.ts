@@ -19,6 +19,16 @@ describe("session-token", () => {
     expect(verifyWhatsAppToken(t)?.orderId).toBe("o1");
   });
 
+  it("ORDER_PAYMENT: carrega orderId e phone, válido por 2 horas", () => {
+    vi.useFakeTimers();
+    const t = signWhatsAppToken({ orderId: "o1", phone: "5543999999999", purpose: "ORDER_PAYMENT" }, 120);
+    expect(verifyWhatsAppToken(t)).toEqual({ phone: "5543999999999", purpose: "ORDER_PAYMENT", orderId: "o1" });
+    vi.advanceTimersByTime(119 * 60_000);
+    expect(verifyWhatsAppToken(t)).not.toBeNull();
+    vi.advanceTimersByTime(2 * 60_000);
+    expect(verifyWhatsAppToken(t)).toBeNull();
+  });
+
   it("expira", () => {
     vi.useFakeTimers();
     const t = signWhatsAppToken({ phone: "5543999999999", purpose: "QUICK_MENU" }, 30);

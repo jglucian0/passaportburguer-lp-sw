@@ -83,6 +83,7 @@ import { customers, orderItems, orders, tenants, whatsappMessages, whatsappSessi
 
 import { buildUserParts, runBotTurn, type AgentDeps } from "./agent";
 import { finalizeOrderAndCheckout } from "./order-flow";
+import { verifyWhatsAppToken } from "./session-token";
 import type { GeminiContent, GeminiRequest } from "./gemini";
 import type { ToolContext } from "./shared";
 import { executeTool, getAvailableMenu, getCustomerContext, resetMenuCache, TOOL_DECLARATIONS } from "./tools";
@@ -350,14 +351,14 @@ describe("finalizeOrderAndCheckout (disparado só pelo backend)", () => {
     h.rows.set(customers, [{ id: "cu1", name: "Maria", phone: "43999999999", email: null, asaasCustomerId: null }]);
   };
 
-  it("Pix: devolve o código ao agente (não ao modelo); botão com link completo e código sozinho depois", async () => {
+  it("Pix: SEM botão e SEM link de pagamento; só o código Pix, sozinho, na 2ª mensagem", async () => {
     sessionWithDraft();
     pix.fn.mockResolvedValue({ pixPayload: "00020126PIXCODE" });
     const c = ctx();
     const out = await finalizeOrderAndCheckout(c, { paymentMethod: "PIX", documentNumber: "52998224725" });
     expect(out).toMatchObject({ ok: true, paymentMethod: "PIX", deliveryType: "PICKUP" });
-    expect(c.cta).toMatchObject({ appendUrlToBody: true });
-    expect(c.cta?.url).toMatch(/^https:\/\/app\.test\/pedido\/[0-9a-f-]{36}\/pagamento$/);
+    expect(JSON.stringify(out)).not.toMatch(/https?:|pagamento/);
+    expect(c.cta).toBeNull(); // nenhum botão ("Abrir pagamento"/"Abrir link de pagamento") nem URL
     expect(c.afterReply).toHaveLength(1);
     await c.afterReply[0]();
     expect(wa.text).toHaveBeenCalledWith(PHONE, "00020126PIXCODE");
@@ -391,25 +392,28 @@ describe("finalizeOrderAndCheckout (disparado só pelo backend)", () => {
     expect(pix.fn).not.toHaveBeenCalled();
   });
 
-  it("Cartão: botão 'Pagar com Cartão' apontando para /pedido/{id}/pagamento", async () => {
+  it("Cartão: botão 'Pagar com Cartão' para /pedido/{id}/pagamento?token=... (token ORDER_PAYMENT de 2 h)", async () => {
     sessionWithDraft();
     const c = ctx();
     const out = await finalizeOrderAndCheckout(c, { paymentMethod: "CREDIT_CARD", documentNumber: "52998224725" });
     expect(out).toMatchObject({ ok: true });
     expect(c.cta?.buttonText).toBe("Pagar com Cartão");
-    expect(c.cta?.url).toMatch(/^https:\/\/app\.test\/pedido\/[0-9a-f-]{36}\/pagamento$/);
+    const m = c.cta?.url.match(/^https:\/\/app\.test\/pedido\/([0-9a-f-]{36})\/pagamento\?token=([^&]+)$/);
+    expect(m).not.toBeNull();
+    expect(verifyWhatsAppToken(decodeURIComponent(m![2]))).toEqual({ phone: PHONE, purpose: "ORDER_PAYMENT", orderId: m![1] });
+    expect(c.cta?.appendUrlToBody).toBeFalsy();
   });
 
-  it("URL de checkout: sem NEXT_PUBLIC_APP_URL usa o domínio canônico; barra final e esquema ausente são normalizados", () => {
+  it("URL de checkout: sem NEXT_PUBLIC_APP_URL usa o domínio canônico; barra final e esquema ausente são normalizados; sempre com token", () => {
     const id = "33333333-3333-4333-8333-333333333333";
-    const want = `https://www.passaporteburguer.com.br/pedido/${id}/pagamento`;
+    const want = `https://www.passaporteburguer.com.br/pedido/${id}/pagamento?token=`;
     delete process.env.NEXT_PUBLIC_APP_URL;
-    expect(checkoutUrl(id)).toBe(want);
+    expect(checkoutUrl(id, PHONE).startsWith(want)).toBe(true);
     process.env.NEXT_PUBLIC_APP_URL = "https://www.passaporteburguer.com.br/";
-    expect(checkoutUrl(id)).toBe(want);
+    expect(checkoutUrl(id, PHONE).startsWith(want)).toBe(true);
     process.env.NEXT_PUBLIC_APP_URL = "www.passaporteburguer.com.br";
-    expect(checkoutUrl(id)).toBe(want);
-    expect(checkoutUrl(id)).not.toContain("undefined");
+    expect(checkoutUrl(id, PHONE).startsWith(want)).toBe(true);
+    expect(checkoutUrl(id, PHONE)).not.toContain("undefined");
   });
 
   it("cliente já cadastrado com CPF: Pix usa o CPF salvo, sem pedir documento", async () => {
@@ -561,24 +565,38 @@ describe("runBotTurn (Gemini mockado)", () => {
     expect(sent).toEqual(["Fala, João!"]);
   });
 
-  it("saudação: só sem interação nos últimos 90 minutos", async () => {
+  it("greetingMode no systemInstruction: FIRST_TODAY, IN_CONVERSATION e RETURNING_TODAY", async () => {
+    // Sem mensagens anteriores: primeira do dia (cumprimento pelo horário de Brasília).
     const first = deps([modelText("Fala!")]);
     await runBotTurn(PHONE, [msg()], first.d);
-    expect(first.requests[0].systemInstruction).toContain("shouldGreet = true");
+    expect(first.requests[0].systemInstruction).toContain("greetingMode = FIRST_TODAY");
+    expect(first.requests[0].systemInstruction).toMatch(/Bom dia|Boa tarde|Boa noite/);
 
+    // Mensagens na sessão atual: em conversa, sem cumprimentar.
     h.rows.set(whatsappMessages, [
       { role: "assistant", content: "Fala!", createdAt: minutesAgo(10) },
       { role: "user", content: "oi", createdAt: minutesAgo(11) },
     ]);
     const next = deps([modelText("Beleza.")]);
     await runBotTurn(PHONE, [msg({ wamid: "w2" })], next.d);
-    expect(next.requests[0].systemInstruction).toContain("shouldGreet = false");
+    expect(next.requests[0].systemInstruction).toContain("greetingMode = IN_CONVERSATION");
     expect(next.requests[0].systemInstruction).toContain("NÃO cumprimente");
 
-    h.rows.set(whatsappMessages, [{ role: "assistant", content: "Fala!", createdAt: minutesAgo(200) }]);
+    // Última mensagem há 7 h: novo dia de atendimento.
+    h.rows.set(whatsappMessages, [{ role: "assistant", content: "Fala!", createdAt: minutesAgo(7 * 60) }]);
     const later = deps([modelText("Boa noite!")]);
     await runBotTurn(PHONE, [msg({ wamid: "w3" })], later.d);
-    expect(later.requests[0].systemInstruction).toContain("shouldGreet = true");
+    expect(later.requests[0].systemInstruction).toContain("greetingMode = FIRST_TODAY");
+
+    // Conversou há pouco, o atendimento foi encerrado (sessão nova, 0 mensagens nela) e o cliente volta.
+    h.rows.set(whatsappMessages, [{ role: "assistant", content: "Boa refeição!", createdAt: minutesAgo(30) }]);
+    h.rows.set(whatsappSessions, [
+      { phone: PHONE, state: "IDLE", draftCart: [], deliveryAddress: null, addressConfirmed: false, paymentMethod: null, sessionStartedAt: minutesAgo(29) },
+    ]);
+    const back = deps([modelText("Show, o que vai ser?")]);
+    await runBotTurn(PHONE, [msg({ wamid: "w4" })], back.d);
+    expect(back.requests[0].systemInstruction).toContain("greetingMode = RETURNING_TODAY");
+    expect(back.requests[0].systemInstruction).toMatch(/sem repetir Boa tarde\/Boa noite/i);
   });
 
   it("isolamento: pedido concluído (sessionStartedAt) não contamina o histórico do novo pedido", async () => {
@@ -614,7 +632,7 @@ describe("runBotTurn (Gemini mockado)", () => {
     expect(sys).toMatch(/PROIBIDO:[^\n]*Bora pra mais um[^\n]*Bora embarcar nessa[^\n]*Com certeza[^\n]*Fique à vontade/);
     expect(sys).toMatch(/PROIBIDO mencionar falha técnica[^\n]*deu tilt[^\n]*deu erro/);
     expect(sys).toMatch(/PROIBIDO adicionar itens, combos/);
-    expect(sys).toContain("shouldGreet");
+    expect(sys).toContain("greetingMode");
     expect(sys).toContain("addressConfirmed");
   });
 
@@ -626,14 +644,24 @@ describe("runBotTurn (Gemini mockado)", () => {
     expect(sent[0]).not.toMatch(/https?:|www\.|\]\(/);
   });
 
-  it("conversa em andamento (shouldGreet=false): saudação e bordão repetidos são cortados", async () => {
+  it("RETURNING_TODAY: não corta a resposta do modelo (ele já foi instruído a não repetir o Boa tarde/noite)", async () => {
+    h.rows.set(whatsappMessages, [{ role: "assistant", content: "Boa refeição!", createdAt: minutesAgo(30) }]);
+    h.rows.set(whatsappSessions, [
+      { phone: PHONE, state: "IDLE", draftCart: [], deliveryAddress: null, addressConfirmed: false, paymentMethod: null, sessionStartedAt: minutesAgo(29) },
+    ]);
+    const { d, sent } = deps([modelText("Opa, bora de novo! O que vai ser?")]);
+    await runBotTurn(PHONE, [msg()], d);
+    expect(sent).toEqual(["Opa, bora de novo! O que vai ser?"]);
+  });
+
+  it("IN_CONVERSATION: saudação e bordão repetidos são cortados", async () => {
     h.rows.set(whatsappMessages, [{ role: "assistant", content: "Anotado!", createdAt: minutesAgo(5) }]);
     const { d, sent } = deps([modelText("Boa noite, Joao! Bora pra mais um! Qual o endereço?")]);
     await runBotTurn(PHONE, [msg()], d);
     expect(sent).toEqual(["Qual o endereço?"]);
   });
 
-  it("primeira mensagem (shouldGreet=true): a saudação é mantida", async () => {
+  it("FIRST_TODAY: a saudação é mantida", async () => {
     const { d, sent } = deps([modelText("Boa noite, Joao! Qual lanche vai ser?")]);
     await runBotTurn(PHONE, [msg()], d);
     expect(sent).toEqual(["Boa noite, Joao! Qual lanche vai ser?"]);
@@ -708,13 +736,15 @@ describe("runBotTurn (Gemini mockado)", () => {
       expect(ok).toBe(true);
       expect(requests).toHaveLength(2); // sem 3ª rodada pedindo confirmação
       expect(pix.fn).toHaveBeenCalledTimes(1);
-      // UMA mensagem com botão (texto do backend) e o código Pix sozinho depois.
-      expect(order).toEqual(["cta", "text:PIXCOPIAECOLA"]);
-      expect(ctas[0].body).toMatch(/^Pedido #\d+ confirmado! Total R\$\s?41,99\./); // 35,00 + frete
-      expect(ctas[0].body).not.toContain("só confirmo");
-      expect(ctas[0].body).toContain(ctas[0].url); // link do checkout vem do backend
-      expect(ctas[0].body).not.toContain("PIXCOPIAECOLA");
-      expect(ctas[0].url).toMatch(/^https:\/\/app\.test\/pedido\/[0-9a-f-]{36}\/pagamento$/);
+      // Pix = EXATAMENTE 2 mensagens de texto: confirmação (sem URL, sem botão) e o código sozinho.
+      expect(ctas).toHaveLength(0);
+      expect(order).toHaveLength(2);
+      expect(order[1]).toBe("text:PIXCOPIAECOLA");
+      expect(sent[0]).toMatch(/^Pedido #\d+ confirmado! Total R\$\s?41,99\./); // 35,00 + frete
+      expect(sent[0]).not.toContain("só confirmo");
+      expect(sent[0]).not.toMatch(/https?:|\/pedido\/|token=|Abrir/i);
+      expect(sent[0]).not.toContain("PIXCOPIAECOLA");
+      expect(JSON.stringify({ order, ctas })).not.toMatch(/Abrir link de pagamento|Abrir pagamento/);
       // Sessão isolada para o próximo pedido.
       const claim = h.writes.find((w) => w.op === "update" && w.table === whatsappSessions && "draftCart" in (w.set as object));
       expect(claim?.set).toMatchObject({ draftCart: [], addressConfirmed: false, paymentMethod: null, state: "IDLE" });

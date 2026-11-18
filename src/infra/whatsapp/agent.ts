@@ -8,14 +8,8 @@ import { checkoutMessage, resetSession, runAutoCheckout } from "./draft-flow";
 import { generateContent } from "./gemini-client";
 import type { GeminiContent, GeminiPart, GeminiRequest } from "./gemini";
 import { stripRepeatedGreeting, stripUrlsAndMarkdownLinks } from "./sanitizer";
-import {
-  HISTORY_LIMIT,
-  isClosingMessage,
-  nextStep,
-  selectSessionMessages,
-  shouldGreet as computeShouldGreet,
-  type NextStep,
-} from "./session-rules";
+import { greetingForHour, resolveGreetingMode, type GreetingMode } from "./greeting";
+import { HISTORY_LIMIT, isClosingMessage, nextStep, selectSessionMessages, type NextStep } from "./session-rules";
 import { executeTool, getAvailableMenu, getCustomerContext, TOOL_DECLARATIONS, type CustomerContext } from "./tools";
 import { appUrl, type ToolContext } from "./shared";
 import { STICKER_TEXT, type InboundMessage } from "./webhook";
@@ -67,12 +61,12 @@ const EMPTY_CONTEXT: TurnContext = {
 
 export type PromptInput = {
   now?: Date;
-  /** false = há conversa nos últimos 90 min: não cumprimenta, responde direto ao assunto. */
-  shouldGreet?: boolean;
+  /** Contexto temporal da conversa (ver greeting.ts). */
+  greetingMode?: GreetingMode;
   context?: TurnContext;
 };
 
-export function buildSystemPrompt({ now = new Date(), shouldGreet = true, context = EMPTY_CONTEXT }: PromptInput = {}): string {
+export function buildSystemPrompt({ now = new Date(), greetingMode = "FIRST_TODAY", context = EMPTY_CONTEXT }: PromptInput = {}): string {
   const when = now.toLocaleString("pt-BR", {
     timeZone: "America/Sao_Paulo",
     weekday: "long",
@@ -81,9 +75,13 @@ export function buildSystemPrompt({ now = new Date(), shouldGreet = true, contex
     hour: "2-digit",
     minute: "2-digit",
   });
-  const greeting = shouldGreet
-    ? "Primeira mensagem da conversa (shouldGreet = true): cumprimente UMA vez, de forma natural, chamando pelo primeiro nome se já for cliente, e já emende o assunto."
-    : "shouldGreet = false: vocês JÁ estão conversando. NÃO cumprimente (nada de oi, olá, opa, fala, bom dia/tarde/noite), não se apresente e não use bordão de abertura. Responda direto ao que o cliente disse.";
+  const greeting = {
+    FIRST_TODAY: `greetingMode = FIRST_TODAY: primeiro contato de hoje. Cumprimente UMA vez, de forma cordial, conforme o horário de Brasília (agora: "${greetingForHour(now)}"), chamando pelo primeiro nome se já for cliente, ANTES de responder ou de enviar o botão do cardápio.`,
+    RETURNING_TODAY:
+      "greetingMode = RETURNING_TODAY: o cliente já conversou hoje e está começando um novo atendimento. Dê continuidade natural, sem repetir Boa tarde/Boa noite nem se apresentar de novo.",
+    IN_CONVERSATION:
+      "greetingMode = IN_CONVERSATION: vocês JÁ estão conversando. NÃO cumprimente (nada de oi, olá, opa, fala, bom dia/tarde/noite), não se apresente e não use bordão de abertura. Responda direto ao que o cliente disse.",
+  }[greetingMode];
   const { sessionStartedAt: _omit, ...session } = context.session;
 
   return `Você é atendente do Passaporte Burguer (hamburgueria artesanal, smash burgers, Maringá-PR) no WhatsApp. Fala como gente de balcão: direto, educado, natural, sem formalidade robótica. Agora: ${when} (Brasília).
@@ -123,7 +121,11 @@ FLUXO DO PEDIDO (estado explícito: session.nextStep diz o que falta)
 3. PAYMENT: pergunte a forma: Pix, cartão de crédito pelo link seguro, ou na entrega/retirada (cartão na máquina ou dinheiro; dinheiro: pergunte o troco e registre em notes do updateCart). Informe o total que setDeliveryAndPayment devolveu (itens, taxa, total). Chame setDeliveryAndPayment com paymentMethod assim que ele escolher; o cliente pode dar endereço e pagamento na mesma mensagem.
 4. CHECKOUT: com carrinho + endereço confirmado + pagamento, o SERVIDOR fecha o pedido sozinho e envia a confirmação (valor, botão de pagamento, Pix). Não peça confirmação extra, não escreva o resumo final, não escreva código Pix nem link.
 - CPF: se customer.hasDocument = true, NUNCA peça. Só se o sistema avisar que falta o CPF, peça ao cliente e envie em documentNumber via setDeliveryAndPayment.
-- Depois de finalizado, não crie outro pedido a menos que o cliente peça.`;
+- Depois de finalizado, não crie outro pedido a menos que o cliente peça.
+
+CANCELAMENTO
+- Cliente quer cancelar um pedido que ainda não foi pago: chame cancelUnpaidOrder (cancela e libera o cliente para um novo pedido; o atendimento continua com você).
+- Se a ferramenta indicar que o pedido já foi pago ou está em preparo/entrega, um atendente humano assume: avise isso ao cliente em uma frase.`;
 }
 
 /* Carga paralela do turno: cliente, sessão e cardápio (cache de 5 min) vão direto no prompt. */
@@ -296,10 +298,10 @@ async function deliverReply(deps: AgentDeps, ctx: ToolContext, phone: string, re
   }
 }
 
-/** A IA nunca escreve link; sem conversa em andamento (shouldGreet=false) também não cumprimenta de novo. */
-function sanitizeModelReply(reply: string, shouldGreet: boolean, hasButton: boolean): string {
+/** A IA nunca escreve link; em conversa em andamento (IN_CONVERSATION) também não cumprimenta de novo. */
+function sanitizeModelReply(reply: string, greetingMode: GreetingMode, hasButton: boolean): string {
   const noLinks = stripUrlsAndMarkdownLinks(reply);
-  const clean = stripRepeatedGreeting(noLinks, shouldGreet) || noLinks;
+  const clean = stripRepeatedGreeting(noLinks, greetingMode !== "IN_CONVERSATION") || noLinks;
   return clean || (hasButton ? MENU_INVITE_FALLBACK : "");
 }
 
@@ -341,10 +343,10 @@ export async function runBotTurn(
     ]);
     const history = toGeminiHistory(recent, context.session.sessionStartedAt);
     const lastMessageAt = recent.find((r) => r.role !== "system")?.createdAt ?? null;
-    const shouldGreet = computeShouldGreet(lastMessageAt);
+    const greetingMode = resolveGreetingMode(lastMessageAt, context.session.sessionStartedAt ?? new Date(0), new Date());
 
     const contents: GeminiContent[] = [...history, { role: "user", parts: userParts }];
-    const systemInstruction = buildSystemPrompt({ shouldGreet, context });
+    const systemInstruction = buildSystemPrompt({ greetingMode, context });
 
     let reply = "";
     let deterministic = false; // texto do backend (checkout): pode levar link
@@ -395,7 +397,7 @@ export async function runBotTurn(
       contents.push({ role: "user", parts: responses });
     }
 
-    if (!deterministic) reply = sanitizeModelReply(reply, shouldGreet, ctx.cta !== null);
+    if (!deterministic) reply = sanitizeModelReply(reply, greetingMode, ctx.cta !== null);
     // Sem texto (bloqueio/resposta vazia) é falha: não vale como atendimento.
     if (!reply) throw new Error("O modelo não devolveu resposta de texto.");
 

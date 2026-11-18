@@ -2,8 +2,6 @@
 
 /** Quantas mensagens da sessão atual vão ao Gemini. */
 export const HISTORY_LIMIT = 12;
-/** Dentro desta janela desde a última mensagem, o bot NÃO cumprimenta de novo. */
-export const GREETING_WINDOW_MS = 90 * 60_000;
 
 export type SessionProgress = {
   draftCart: unknown[] | null | undefined;
@@ -39,12 +37,6 @@ export function selectSessionMessages<T extends HistoryRow>(
     .filter((r) => new Date(r.createdAt).getTime() >= from)
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
     .slice(-limit);
-}
-
-/** Cumprimenta só se não houve mensagem anterior nos últimos 90 minutos. */
-export function shouldGreet(lastMessageAt: Date | null | undefined, now: Date = new Date()): boolean {
-  if (!lastMessageAt) return true;
-  return now.getTime() - new Date(lastMessageAt).getTime() > GREETING_WINDOW_MS;
 }
 
 const CLOSING_WORDS = new Set([

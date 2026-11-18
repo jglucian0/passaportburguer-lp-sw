@@ -1,13 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  GREETING_WINDOW_MS,
   HISTORY_LIMIT,
   isCheckoutReady,
   isClosingMessage,
   nextStep,
   selectSessionMessages,
-  shouldGreet,
 } from "./session-rules";
 
 const at = (iso: string) => new Date(iso);
@@ -44,20 +42,6 @@ describe("selectSessionMessages (isolamento por sessionStartedAt)", () => {
 
   it("sem sessionStartedAt (sessão nova) não filtra nada", () => {
     expect(selectSessionMessages(rows, null)).toHaveLength(4);
-  });
-});
-
-describe("shouldGreet (janela de 90 minutos)", () => {
-  const now = at("2026-01-01T20:00:00Z");
-  it("sem mensagem anterior: cumprimenta", () => {
-    expect(shouldGreet(null, now)).toBe(true);
-  });
-  it("interação há 10 min: não cumprimenta", () => {
-    expect(shouldGreet(at("2026-01-01T19:50:00Z"), now)).toBe(false);
-  });
-  it("interação há mais de 90 min: cumprimenta de novo", () => {
-    expect(GREETING_WINDOW_MS).toBe(90 * 60_000);
-    expect(shouldGreet(new Date(now.getTime() - GREETING_WINDOW_MS - 1), now)).toBe(true);
   });
 });
 

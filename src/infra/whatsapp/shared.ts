@@ -4,6 +4,8 @@ import { normalizeBrPhone, phoneVariants, toLocalPhone } from "@/infra/auth/otp"
 import { db } from "@/infra/db";
 import { tenants } from "@/infra/db/schema";
 
+import { signWhatsAppToken } from "./session-token";
+
 /** Contexto de uma execução do agente. O telefone vem da conversa, nunca do modelo. */
 export type ToolContext = {
   /** E-164 só com dígitos (chave de whatsapp_sessions). */
@@ -33,9 +35,16 @@ export function appUrl(): string {
   return base;
 }
 
-/** Página de pagamento do pedido, sempre absoluta: https://www.passaporteburguer.com.br/pedido/{id}/pagamento. */
-export function checkoutUrl(orderId: string): string {
-  return `${appUrl()}/pedido/${encodeURIComponent(orderId)}/pagamento`;
+/** Validade do link de pagamento enviado pelo WhatsApp. */
+export const ORDER_PAYMENT_TOKEN_MINUTES = 120;
+
+/**
+ * Página de pagamento do pedido (cartão), sempre absoluta e com token assinado (ORDER_PAYMENT, 2 h):
+ * abre em aba anônima e no WebView do WhatsApp sem login. Ex.: https://.../pedido/{id}/pagamento?token=...
+ */
+export function checkoutUrl(orderId: string, phone: string): string {
+  const token = signWhatsAppToken({ orderId, phone, purpose: "ORDER_PAYMENT" }, ORDER_PAYMENT_TOKEN_MINUTES);
+  return `${appUrl()}/pedido/${encodeURIComponent(orderId)}/pagamento?token=${encodeURIComponent(token)}`;
 }
 
 /** Tenant único de hoje (o webhook não tem host de requisição). */
