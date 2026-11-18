@@ -1,10 +1,11 @@
 import bcrypt from "bcryptjs";
 import { createHmac, randomInt } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { buildPasswordRecoveryEmail } from "@/emails/password-recovery-email";
+import { phoneVariants } from "@/infra/auth/otp";
 import { db } from "@/infra/db";
 import { customers } from "@/infra/db/schema";
 
@@ -34,12 +35,13 @@ export async function parseBody<S extends z.ZodTypeAny>(
 }
 
 export async function findCustomerByPhone(tenantId: string, localPhone: string) {
-  const [customer] = await db
+  /* Com ou sem o 9º dígito é a mesma pessoa; se houver duplicata antiga, prefere a conta já registrada. */
+  const rows = await db
     .select()
     .from(customers)
-    .where(and(eq(customers.tenantId, tenantId), eq(customers.phone, localPhone)))
-    .limit(1);
-  return customer ?? null;
+    .where(and(eq(customers.tenantId, tenantId), inArray(customers.phone, phoneVariants(localPhone))))
+    .limit(2);
+  return rows.find(isRegistered) ?? rows[0] ?? null;
 }
 
 /** Conta com WhatsApp validado e senha definida: o acesso é só por senha. */

@@ -26,6 +26,17 @@ export function toLocalPhone(intl: string): string {
 }
 
 /**
+ * Formas equivalentes de um telefone local (DDD + número) com e sem o 9º dígito,
+ * para achar o mesmo cliente independentemente de como foi digitado.
+ */
+export function phoneVariants(local: string): string[] {
+  const d = local.replace(/\D/g, "");
+  if (d.length === 10 && /[6-9]/.test(d[2])) return [d, `${d.slice(0, 2)}9${d.slice(2)}`];
+  if (d.length === 11 && d[2] === "9") return [d, `${d.slice(0, 2)}${d.slice(3)}`];
+  return [d];
+}
+
+/**
  * Compara telefones ignorando o 9º dígito (a Meta pode entregar números
  * brasileiros antigos sem ele): DDD + últimos 8 dígitos.
  */

@@ -56,10 +56,13 @@ export async function POST(request: Request) {
     .returning({ id: whatsappOtps.id });
   if (consumed.length === 0) return NextResponse.json({ status: "pending" });
 
-  await db
-    .insert(customers)
-    .values({ tenantId: ref.id, name: "", phone: local })
-    .onConflictDoNothing({ target: [customers.tenantId, customers.phone] });
+  /* Já existe (com ou sem o 9º dígito)? Reaproveita em vez de criar duplicata. */
+  if (!existing) {
+    await db
+      .insert(customers)
+      .values({ tenantId: ref.id, name: "", phone: local })
+      .onConflictDoNothing({ target: [customers.tenantId, customers.phone] });
+  }
 
   const customer = await findCustomerByPhone(ref.id, local);
   if (!customer) return fail("Não foi possível concluir agora. Tente novamente.", 500);
