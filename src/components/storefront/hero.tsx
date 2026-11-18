@@ -89,16 +89,16 @@ export function Hero({
 
       {/* --------------------------- Conteúdo --------------------------- */}
       <HeroSyncProvider>
-        <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 content-center items-center gap-10 px-4 py-10 max-md:flex max-md:min-h-[calc(100svh-116px)] max-md:flex-col max-md:justify-evenly max-md:gap-2 max-md:px-4 max-md:py-2.5 max-md:pb-16 lg:grid-cols-12 [@media(min-height:800px)]:max-md:gap-4">
+        <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 content-center items-center gap-10 px-4 py-10 max-md:flex max-md:min-h-[calc(100svh-116px)] max-md:flex-col max-md:justify-evenly max-md:gap-2 max-md:px-4 max-md:py-2.5 max-md:pb-16 md:px-8 lg:grid-cols-12 lg:gap-8 lg:px-10 xl:gap-10 xl:px-8 [@media(min-height:800px)]:max-md:gap-4">
           {/* Copy + cartão de embarque (no mobile os filhos são reordenados) */}
           <div className="max-md:contents lg:col-span-6">
-            <div className="relative max-md:order-1 max-md:pt-5">
+            <div className="relative min-w-0 max-md:order-1 max-md:pt-5">
               {/* Mobile: gradiente radial suave só atrás do bloco de texto */}
               <div
                 aria-hidden="true"
                 className="pointer-events-none absolute -inset-x-6 -inset-y-4 -z-10 bg-[radial-gradient(ellipse_at_center,rgba(7,19,41,0.7)_0%,rgba(7,19,41,0.35)_45%,transparent_75%)] md:hidden"
               />
-              <h1 className="font-poppins text-5xl font-extrabold uppercase leading-[1.08] tracking-tight text-white max-md:text-center max-md:text-2xl max-md:leading-[1.1] sm:text-6xl max-md:sm:text-[28px]">
+              <h1 className="font-poppins text-5xl font-extrabold uppercase leading-[1.08] tracking-tight text-white max-md:text-center max-md:text-2xl max-md:leading-[1.1] sm:text-6xl max-md:sm:text-[28px] lg:text-[44px] xl:text-6xl">
                 O <span className="text-[#F59E0B]">MUNDO</span> EM
                 <br />
                 CADA <span className="text-[#F59E0B]">MORDIDA</span>
@@ -116,7 +116,7 @@ export function Hero({
           </div>
 
           {/* Carrossel de passaportes */}
-          <div className="relative max-md:order-2 lg:col-span-6">
+          <div className="relative min-w-0 max-md:order-2 lg:col-span-6">
             <PlaneTrail
               width={140}
               className="pointer-events-none absolute -left-9 -top-6 hidden text-gold lg:block"
@@ -136,7 +136,7 @@ export function Hero({
       </HeroSyncProvider>
 
       {/* ------------------------- Diferenciais ------------------------- */}
-      <div className="mx-auto w-full max-w-7xl px-4 pb-8 max-md:pb-3">
+      <div className="mx-auto w-full max-w-7xl px-4 pb-8 max-md:pb-3 md:px-8 lg:px-10 xl:px-8">
         {/* Mobile: faixa horizontal compacta */}
         <ul className="grid grid-cols-3 gap-2 border-t border-white/10 pt-3 text-center md:hidden">
           {FEATURES.map(({ icon: Icon, title }) => (
