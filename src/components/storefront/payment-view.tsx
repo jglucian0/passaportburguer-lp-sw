@@ -11,7 +11,17 @@ import { cn, formatCents } from "@/lib/utils";
 
 type PixData = { payload: string; qrCodeBase64: string; expiresAt: string | null };
 
+/** Valores já conhecidos do pedido/cliente para pré-preencher o titular (editáveis). */
+export type CardDefaults = {
+  holderName: string;
+  /** CPF/CNPJ já formatado. */
+  holderCpf: string;
+  postalCode: string;
+  addressNumber: string;
+};
+
 type Props = {
+  defaults: CardDefaults;
   orderId: string;
   method: "PIX" | "CREDIT_CARD";
   totalCents: number;
@@ -19,7 +29,8 @@ type Props = {
   initialPix: PixData | null;
 };
 
-const POLL_MS = 4000;
+const POLL_MS = 2500;
+const PROCESSING_MESSAGE = "Processando pagamento com a operadora do cartão... Não feche esta página.";
 
 const inputClass =
   "h-12 rounded-xl border-slate-300 bg-white text-base text-slate-900 placeholder:text-slate-400 focus:border-[#F59E0B] focus:ring-2 focus:ring-[#F59E0B]/30";
@@ -57,6 +68,7 @@ const RISK_MESSAGE =
   "Pagamento em análise de segurança. Assim que aprovado, seu pedido será enviado para a cozinha.";
 
 export function PaymentView({
+  defaults,
   orderId,
   method: initialMethod,
   totalCents,
@@ -74,12 +86,22 @@ export function PaymentView({
   const [canceled, setCanceled] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
 
-  const [card, setCard] = useState(EMPTY_CARD);
+  /* Endereço de entrega utilizável como cobrança (CEP de 8 dígitos + número). */
+  const billingKnown = defaults.postalCode.replace(/D/g, "").length === 8 && !!defaults.addressNumber.trim();
+  const [sameAddress, setSameAddress] = useState(billingKnown);
+  const [card, setCard] = useState({
+    ...EMPTY_CARD,
+    holderName: defaults.holderName,
+    holderCpfCnpj: defaults.holderCpf,
+    postalCode: billingKnown ? maskCep(defaults.postalCode) : "",
+    addressNumber: billingKnown ? defaults.addressNumber : "",
+  });
   const [email, setEmail] = useState(customerEmail);
   const [submitting, setSubmitting] = useState(false);
   const [cardError, setCardError] = useState<string | null>(null);
   const [waitingGateway, setWaitingGateway] = useState(false);
-  const [waitingMessage, setWaitingMessage] = useState(RISK_MESSAGE);
+  const [waitingMessage, setWaitingMessage] = useState(PROCESSING_MESSAGE);
+  const [confirmedStatus, setConfirmedStatus] = useState<string | null>(null);
   const submittingRef = useRef(false);
   const [switching, setSwitching] = useState(false);
 
@@ -140,6 +162,7 @@ export function PaymentView({
         if (data.orderStatus === "CANCELED") {
           setCanceled(true);
         } else {
+          setConfirmedStatus(data.orderStatus);
           setConfirmed(true);
           router.replace("/meus-pedidos");
         }
@@ -212,6 +235,20 @@ export function PaymentView({
     submittingRef.current = true;
 
     const [expiryMonth = "", expiryYear = ""] = card.expiry.split("/");
+
+    /* Cobrança = entrega (valores do pedido, enviados sem aparecer na tela) ou campos preenchidos. */
+    const postalCode = (sameAddress && billingKnown ? defaults.postalCode : card.postalCode).replace(/D/g, "");
+    const addressNumber = (sameAddress && billingKnown ? defaults.addressNumber : card.addressNumber).trim();
+    if (postalCode.length !== 8) {
+      setCardError("Informe o CEP de cobrança com 8 dígitos.");
+      submittingRef.current = false;
+      return;
+    }
+    if (!addressNumber) {
+      setCardError("Informe o número do endereço de cobrança.");
+      submittingRef.current = false;
+      return;
+    }
     setSubmitting(true);
     try {
       const res = await fetch(endpoint, {
@@ -226,8 +263,8 @@ export function PaymentView({
             expiryYear,
             ccv: card.ccv,
             holderCpfCnpj: card.holderCpfCnpj,
-            postalCode: card.postalCode,
-            addressNumber: card.addressNumber,
+            postalCode,
+            addressNumber,
             email,
           },
         }),
@@ -252,7 +289,7 @@ export function PaymentView({
         return;
       }
       // Aceito: descarta tudo da memória.
-      setCard(EMPTY_CARD);
+      setCard((c) => ({ ...EMPTY_CARD, postalCode: c.postalCode, addressNumber: c.addressNumber }));
       if (data.released) {
         // Aprovação imediata: o pedido já foi para a cozinha.
         setConfirmed(true);
@@ -260,7 +297,7 @@ export function PaymentView({
         return;
       }
       // PENDING / análise de risco: mantém o polling e aguarda a decisão final do webhook.
-      setWaitingMessage(data.message ?? RISK_MESSAGE);
+      setWaitingMessage(data.message ?? PROCESSING_MESSAGE);
       setWaitingGateway(true);
     } catch {
       setCardError("Sem conexão. Tente novamente.");
@@ -308,7 +345,8 @@ export function PaymentView({
     return (
       <div className={cardClass}>
         <p className="flex items-center gap-2 font-semibold text-emerald-700">
-          <Check className="h-5 w-5" /> Pagamento confirmado! Redirecionando…
+          <Check className="h-5 w-5" />{" "}
+          {confirmedStatus === "PREPARING" ? "Pedido na chapa!" : "Pagamento confirmado! Redirecionando…"}
         </p>
       </div>
     );
@@ -446,38 +484,53 @@ export function PaymentView({
                 required
                 {...field("holderCpfCnpj", formatDocument)}
               />
-              <div className="grid grid-cols-2 gap-3">
+              {billingKnown ? (
+                <label className="flex items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    defaultChecked
+                    onChange={(e) => setSameAddress(e.target.checked)}
+                    className="h-4 w-4 accent-[#F59E0B]"
+                  />
+                  Endereço de cobrança é o mesmo da entrega
+                </label>
+              ) : null}
+              {!(billingKnown && sameAddress) ? (
+                <div className="grid grid-cols-2 gap-3">
+                  <Input
+                    className={inputClass}
+                    placeholder="CEP de cobrança"
+                    inputMode="numeric"
+                    autoComplete="postal-code"
+                    aria-label="CEP de cobrança"
+                    maxLength={9}
+                    required
+                    {...field("postalCode", maskCep)}
+                  />
+                  <Input
+                    className={inputClass}
+                    placeholder="Nº do endereço"
+                    autoComplete="off"
+                    aria-label="Número do endereço de cobrança"
+                    maxLength={10}
+                    required
+                    {...field("addressNumber")}
+                  />
+                </div>
+              ) : null}
+              {customerEmail ? null : (
                 <Input
                   className={inputClass}
-                  placeholder="CEP"
-                  inputMode="numeric"
-                  autoComplete="postal-code"
-                  aria-label="CEP do titular"
-                  maxLength={9}
+                  type="email"
+                  placeholder="E-mail do titular"
+                  autoComplete="email"
+                  aria-label="E-mail do titular"
+                  maxLength={120}
                   required
-                  {...field("postalCode", maskCep)}
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
                 />
-                <Input
-                  className={inputClass}
-                  placeholder="Nº do endereço"
-                  autoComplete="off"
-                  aria-label="Número do endereço"
-                  maxLength={10}
-                  required
-                  {...field("addressNumber")}
-                />
-              </div>
-              <Input
-                className={inputClass}
-                type="email"
-                placeholder="E-mail do titular"
-                autoComplete="email"
-                aria-label="E-mail do titular"
-                maxLength={120}
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
+              )}
 
               {cardError ? (
                 <div role="alert" className="space-y-2 rounded-lg bg-red-50 p-3">

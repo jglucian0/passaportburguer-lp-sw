@@ -40,6 +40,7 @@ let orderRowsUpdated: number;
 
 beforeEach(() => {
   fake.reset();
+  vi.mocked(after).mockClear();
   state.autoAccept = false;
   seenEvents = new Set();
   orderRowsUpdated = 1;
@@ -271,6 +272,7 @@ describe("cartão: recusa via webhook", () => {
       expect(await res.json()).toMatchObject({ ok: true, updated: 1 });
       expect(fake.batches[0][0].set).toMatchObject({ status: "FAILED" });
       expect(orderUpdates()).toHaveLength(0);
+      expect(vi.mocked(after)).not.toHaveBeenCalled(); // nenhum envio à cozinha/Saipos
     },
   );
 });

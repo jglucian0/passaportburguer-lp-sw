@@ -168,7 +168,9 @@ function ActiveOrderBanner({
 
       {order.status === "AWAITING_PAYMENT" ? (
         <p className="border-t border-white/10 bg-amber-400/10 px-5 py-3 text-xs text-amber-100">
-          Aguardando a confirmação do pagamento PIX. Assim que confirmado, seu pedido vai para a chapa.
+          {order.paymentMethod === "CREDIT_CARD"
+            ? "Processando pagamento com a operadora do cartão... Não feche esta página. Seu pedido só vai para a chapa depois da confirmação."
+            : "Aguardando a confirmação do pagamento PIX. Assim que confirmado, seu pedido vai para a chapa."}
         </p>
       ) : null}
 

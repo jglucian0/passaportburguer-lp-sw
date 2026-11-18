@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { after } from "next/server";
+
 import { fake, type Query } from "@/test/fake-db";
 
 vi.mock("@/infra/db", async () => (await import("@/test/fake-db")).makeDbModule());
@@ -27,6 +29,7 @@ let respond: (c: Call) => { status?: number; json: unknown };
 
 beforeEach(() => {
   fake.reset();
+  vi.mocked(after).mockClear();
   calls = [];
   vi.stubEnv("ASAAS_API_URL", "https://api-sandbox.asaas.com/v3/");
   vi.stubEnv("ASAAS_API_KEY", "test-key");
@@ -301,6 +304,7 @@ describe("cartão: tratamento da resposta síncrona", () => {
       status: "RISK_ANALYSIS",
     });
     expect(fake.batches).toHaveLength(0);
+    expect(vi.mocked(after)).not.toHaveBeenCalled();
   });
 
   it("PENDING: mantém PENDING e NÃO libera o pedido", async () => {
@@ -358,6 +362,7 @@ describe("cartão: HTTP 200 nunca aprova por si só", () => {
         remoteIp: "203.0.113.9",
       });
       expect(result.released).toBe(false);
+      expect(vi.mocked(after)).not.toHaveBeenCalled(); // nada de cozinha/Saipos
       expect(result.paymentId).toBe("pay_card");
       expect(fake.batches).toHaveLength(0);
       expect(fake.queries.some((q) => q.kind === "update" && q.table === "orders")).toBe(false);

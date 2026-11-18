@@ -97,7 +97,8 @@ export const manualOrderSchema = z
     number: z.string().trim().max(20).optional(),
     reference: z.string().trim().max(120).optional(),
     deliveryFeeCents: centsSchema.default(0),
-    paymentMethod: paymentMethodSchema,
+    /** Cartão online só nasce no checkout do site (precisa de confirmação do gateway). */
+    paymentMethod: paymentMethodSchema.refine((m) => m !== "CREDIT_CARD", "Forma de pagamento inválida."),
     notes: z.string().trim().max(300).optional(),
     items: z
       .array(z.object({ productId: uuidSchema, quantity: z.number().int().min(1).max(50) }))

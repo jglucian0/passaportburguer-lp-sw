@@ -177,21 +177,25 @@ export async function POST(request: NextRequest, { params }: Ctx) {
       remoteIp: ip,
     });
     // Aprovado: o pedido já foi liberado (idempotente com o webhook). PENDING/RISK_ANALYSIS: aguarda o webhook.
+    if (charge.released) {
+      return NextResponse.json(
+        { ok: true, status: charge.status, released: true },
+        { headers: NO_STORE },
+      );
+    }
+    // PENDING / análise de risco: o pedido PERMANECE em AWAITING_PAYMENT até o webhook decidir.
     return NextResponse.json(
       {
         ok: true,
         status: charge.status,
-        released: charge.released,
-        ...(charge.released
-          ? {}
-          : {
-              message:
-                charge.status === "RISK_ANALYSIS"
-                  ? "Pagamento em análise de segurança. Assim que aprovado, seu pedido será enviado para a cozinha."
-                  : "Aguardando confirmação da operadora do cartão...",
-            }),
+        orderStatus: "AWAITING_PAYMENT",
+        released: false,
+        message:
+          charge.status === "RISK_ANALYSIS"
+            ? "Pagamento em análise de segurança. Assim que aprovado, seu pedido será enviado para a cozinha."
+            : "Processando pagamento com a operadora do cartão... Não feche esta página.",
       },
-      { headers: NO_STORE },
+      { status: 202, headers: NO_STORE },
     );
   } catch (error) {
     // Nunca logamos corpo/cartão: só status HTTP e códigos do Asaas.

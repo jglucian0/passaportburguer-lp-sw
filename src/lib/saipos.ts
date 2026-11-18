@@ -251,11 +251,19 @@ export async function sendOrderToSaipos(orderId: string): Promise<SaiposSyncResu
     }
 
     const [current] = await db
-      .select({ status: orders.saiposSyncStatus, saiposOrderId: orders.saiposOrderId })
+      .select({
+        status: orders.saiposSyncStatus,
+        saiposOrderId: orders.saiposOrderId,
+        orderStatus: orders.status,
+      })
       .from(orders)
       .where(eq(orders.id, orderId))
       .limit(1);
     if (!current) return { ok: false, error: "Pedido não encontrado." };
+    // Trava final: pedido sem pagamento confirmado (ou cancelado) NUNCA vai para a cozinha/Saipos.
+    if (current.orderStatus === "AWAITING_PAYMENT" || current.orderStatus === "CANCELED") {
+      return { ok: false, skipped: true, error: "Pedido sem pagamento confirmado." };
+    }
     if (current.status === "SYNCED") return { ok: true, saiposOrderId: current.saiposOrderId };
 
     const payload = await buildPayload(orderId, config);

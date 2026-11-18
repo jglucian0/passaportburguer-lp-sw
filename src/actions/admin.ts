@@ -194,6 +194,12 @@ export async function advanceOrder(input: unknown): Promise<ActionResult<{ statu
        A liberação manual é exclusiva do proprietário e fica registrada em log de auditoria. */
     const manualOnlineRelease =
       order.status === "AWAITING_PAYMENT" && isOnlinePaymentMethod(order.paymentMethod);
+    if (manualOnlineRelease && order.paymentMethod === "CREDIT_CARD") {
+      // Cartão pode ser capturado/recusado depois: liberar à mão geraria pedido sem pagamento.
+      return failure(
+        "Pedidos com cartão online só são liberados pela confirmação do gateway. Para desistir, cancele o pedido.",
+      );
+    }
     if (manualOnlineRelease && session.role !== "OWNER") {
       return failure(
         "O pagamento online é confirmado automaticamente. Somente o proprietário pode liberar manualmente.",

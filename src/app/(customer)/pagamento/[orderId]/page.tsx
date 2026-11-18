@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { and, desc, eq } from "drizzle-orm";
 
 import { getStorefrontData } from "@/actions/storefront";
+import { formatDocument } from "@/core/validation/document";
 import { PaymentView } from "@/components/storefront/payment-view";
 import { StorefrontShell } from "@/components/storefront/storefront-shell";
 import { getAuthSession } from "@/infra/auth/customer-session";
@@ -51,7 +52,7 @@ export default async function PaymentPage({ params }: { params: Promise<{ orderI
     .limit(1);
 
   const [customer] = await db
-    .select({ email: customers.email })
+    .select({ email: customers.email, name: customers.name })
     .from(customers)
     .where(eq(customers.id, session.customerId))
     .limit(1);
@@ -78,6 +79,13 @@ export default async function PaymentPage({ params }: { params: Promise<{ orderI
             method={order.paymentMethod}
             totalCents={order.totalCents}
             customerEmail={customer?.email ?? ""}
+            defaults={{
+              holderName: customer?.name ?? "",
+              holderCpf: order.documentNumber ? formatDocument(order.documentNumber) : "",
+              // Só entrega tem endereço; retirada deixa os campos de cobrança visíveis.
+              postalCode: order.deliveryType === "DELIVERY" ? (order.addressSnapshot?.postalCode ?? "") : "",
+              addressNumber: order.deliveryType === "DELIVERY" ? (order.addressSnapshot?.number ?? "") : "",
+            }}
             initialPix={
               pixValid
                 ? {
