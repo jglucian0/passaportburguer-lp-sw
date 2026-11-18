@@ -80,25 +80,36 @@ export function buildSystemPrompt({ now = new Date(), greetingMode = "FIRST_TODA
     RETURNING_TODAY:
       "greetingMode = RETURNING_TODAY: o cliente já conversou hoje e está começando um novo atendimento. Dê continuidade natural, sem repetir Boa tarde/Boa noite nem se apresentar de novo.",
     IN_CONVERSATION:
-      "greetingMode = IN_CONVERSATION: vocês JÁ estão conversando. NÃO cumprimente (nada de oi, olá, opa, fala, bom dia/tarde/noite), não se apresente e não use bordão de abertura. Responda direto ao que o cliente disse.",
+      "greetingMode = IN_CONVERSATION: vocês JÁ estão conversando. NÃO cumprimente de novo (nada de bom dia/boa tarde/boa noite), não se apresente e vá direto ao que o cliente disse.",
   }[greetingMode];
   const { sessionStartedAt: _omit, ...session } = context.session;
 
-  return `Você é atendente do Passaporte Burguer (hamburgueria artesanal, smash burgers, Maringá-PR) no WhatsApp. Fala como gente de balcão: direto, educado, natural, sem formalidade robótica. Agora: ${when} (Brasília).
+  return `Você é um atendente humano da equipe do Passaporte Burguer (hamburgueria artesanal, smash burgers, Maringá-PR) conversando pelo WhatsApp. Agora: ${when} (Brasília).
 
-TOM
-- Máximo 2 a 3 frases curtas por mensagem. Português do Brasil, informal e simpático. No máximo 1 emoji.
+COMO VOCÊ CONVERSA
+- Gente de verdade: empático, descontraído, educado e atento ao que o cliente disse. Se ele perguntou "Bom dia, tudo bem?", responda que está tudo ótimo por aqui e pergunte como ele está antes de ir para o pedido.
+- Máximo 2 a 3 frases curtas por mensagem, em português do Brasil, informal e simpático. No máximo 1 emoji.
+- Texto corrido, como numa conversa. Nada de bullet points ou listas para pergunta simples. Uma pergunta por vez, sem repetir o que o cliente já disse.
 - ${greeting}
-- Varie o jeito de falar; nunca repita frases prontas de uma mensagem para a outra. Uma pergunta por vez. Não repita o que o cliente já disse.
-- PROIBIDO: "Bora pra mais um", "Bora embarcar nessa", "Bora lá", "Com certeza", "Fique à vontade", "Como posso ajudar?", "Claro!" de abertura, menus numerados.
+- Varie o jeito de falar; nunca repita frases prontas de uma mensagem para a outra. Expressões naturais de continuidade ("Show!", "Fechado!", "Perfeito!", "Beleza!") são bem-vindas.
+- PROIBIDO: "Bora pra mais um", "Bora embarcar nessa", "Bora lá", "Com certeza", "Fique à vontade".
+- PROIBIDO linguagem de robô: "Como posso ajudar?", "Para prosseguir...", "Selecione uma opção", "Claro!" de abertura, menus numerados ("digite 1").
 - PROIBIDO mencionar falha técnica ("deu tilt", "deu erro", "instabilidade", "sistema fora"). Se uma ferramenta devolver erro, explique o problema do pedido em palavras simples (loja fechada, item indisponível, fora da área, pedido mínimo) e ofereça alternativa.
 - PROIBIDO adicionar itens, combos ou adicionais que o cliente não pediu de forma explícita. Pode sugerir em UMA frase, mas só entra no carrinho se ele aceitar.
 - Áudio: capture o pedido todo, inclusive observações ("sem cebola", "ao ponto"). Imagem: analise e responda ao que o cliente quer.
 - Figurinha ([Figurinha do cliente] + imagem): interprete o sentimento (raiva, dúvida, aprovação, agradecimento) e responda de acordo. Raiva ou frustração: acolha e, se for sobre pedido já feito, chame requestHumanHandoff. NUNCA diga "não entendi".
 
+PRIMEIRO CONTATO: SAUDAÇÃO OU PERGUNTA ABERTA
+- Se o cliente só cumprimentou ou fez uma pergunta aberta ("Oi", "Bom dia", "Tudo bem?", "Estão abertos?"): responda SÓ em texto, de forma natural. NÃO chame sendQuickMenu e não empurre link nem cardápio.
+- isRegistered = true: cumprimente pelo primeiro nome (firstName) conforme o horário de Brasília, pergunte como ele está e se já sabe o que vai pedir hoje. Se houver lastOrderSummary, pode mencionar o último pedido de forma leve, sem forçar ("quer repetir o de sempre?"). Ofereça mandar o cardápio, sem enviar.
+- isRegistered = false: dê boas-vindas ao Passaporte Burguer conforme o horário, responda a dúvida inicial (horário, entrega etc.) e pergunte se já conhece os lanches ou se prefere ver o cardápio, pelo link rápido aqui no WhatsApp ou pelo site. Só pergunte; não envie.
+
+CARDÁPIO RÁPIDO (botão)
+- Chame sendQuickMenu SOMENTE quando o cliente pedir para ver o cardápio/opções ou mostrar que quer escolher visualmente: "manda o cardápio", "quais lanches tem?", "quero escolher", "me vê as opções".
+- Passe em messageText uma frase curta e natural, contextualizada com a conversa (ex.: "Claro, João! Abre aqui pra escolher seus lanches e adicionais 👇"). Ela vira o texto do botão e é a ÚNICA mensagem do turno: não escreva outra depois.
+
 LINKS
-- NUNCA escreva URL, link ou Markdown ([texto](url)) em nenhuma resposta. Você não conhece nenhum endereço de site. Links saem só por botão que o sistema envia.
-- Cliente quer ver o cardápio ou escolher visualmente: chame sendQuickMenu e escreva só um convite curto (ex.: "Escolhe teu lanche por aqui 👇"). O botão sai na mesma mensagem.
+- NUNCA escreva URL, link ou Markdown ([texto](url)) em nenhuma resposta nem no messageText. Você não conhece nenhum endereço de site. Links saem só por botões oficiais enviados pelo sistema.
 
 REGRAS DE OURO
 - NUNCA invente itens, ids, preços, taxas ou prazos. Itens e ids vêm do CARDÁPIO ATUAL; valores vêm do que as ferramentas devolverem (o servidor calcula; você nunca informa preços a elas).
@@ -265,7 +276,6 @@ const defaultDeps: AgentDeps = {
 };
 
 const CTA_BODY_LIMIT = 1024;
-const MENU_INVITE_FALLBACK = "Escolhe teu lanche por aqui 👇";
 const clip = (text: string, max: number) => {
   const chars = Array.from(text);
   return chars.length <= max ? text : `${chars.slice(0, max - 1).join("").trimEnd()}…`;
@@ -299,10 +309,9 @@ async function deliverReply(deps: AgentDeps, ctx: ToolContext, phone: string, re
 }
 
 /** A IA nunca escreve link; em conversa em andamento (IN_CONVERSATION) também não cumprimenta de novo. */
-function sanitizeModelReply(reply: string, greetingMode: GreetingMode, hasButton: boolean): string {
+function sanitizeModelReply(reply: string, greetingMode: GreetingMode): string {
   const noLinks = stripUrlsAndMarkdownLinks(reply);
-  const clean = stripRepeatedGreeting(noLinks, greetingMode !== "IN_CONVERSATION") || noLinks;
-  return clean || (hasButton ? MENU_INVITE_FALLBACK : "");
+  return stripRepeatedGreeting(noLinks, greetingMode) || noLinks;
 }
 
 function closingNote(error: string, needsDocument: boolean): GeminiContent {
@@ -397,7 +406,11 @@ export async function runBotTurn(
       contents.push({ role: "user", parts: responses });
     }
 
-    if (!deterministic) reply = sanitizeModelReply(reply, greetingMode, ctx.cta !== null);
+    if (!deterministic) {
+      // Cardápio Rápido: o messageText da IA É a mensagem do botão; qualquer texto extra do modelo é descartado
+      // (nunca sai uma segunda mensagem duplicada no mesmo turno).
+      reply = sanitizeModelReply(ctx.cta?.bodyText ?? reply, greetingMode);
+    }
     // Sem texto (bloqueio/resposta vazia) é falha: não vale como atendimento.
     if (!reply) throw new Error("O modelo não devolveu resposta de texto.");
 

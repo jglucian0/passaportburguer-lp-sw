@@ -38,40 +38,35 @@ describe("stripUrlsAndMarkdownLinks", () => {
   });
 });
 
-describe("stripRepeatedGreeting", () => {
-  it('shouldGreet=false bloqueia "Boa noite, Joao!"', () => {
-    expect(stripRepeatedGreeting("Boa noite, Joao! Quer mais alguma coisa?", false)).toBe("Quer mais alguma coisa?");
+describe("stripRepeatedGreeting (só atua em IN_CONVERSATION)", () => {
+  it.each(["Bom dia", "Boa tarde", "Boa noite"])("IN_CONVERSATION remove %s repetido no começo, com ou sem nome", (g) => {
+    expect(stripRepeatedGreeting(`${g}! Qual o endereço?`, "IN_CONVERSATION")).toBe("Qual o endereço?");
+    expect(stripRepeatedGreeting(`${g}, Joao! Quer mais alguma coisa?`, "IN_CONVERSATION")).toBe("Quer mais alguma coisa?");
   });
 
-  it('shouldGreet=false bloqueia "Bora pra mais um!"', () => {
-    expect(stripRepeatedGreeting("Bora pra mais um! Qual vai ser?", false)).toBe("Qual vai ser?");
-    expect(stripRepeatedGreeting("Bora pra mais um!", false)).toBe("");
+  it("remove saudações de horário empilhadas e capitaliza o resto", () => {
+    expect(stripRepeatedGreeting("Boa noite! Boa noite, João! qual o endereço?", "IN_CONVERSATION")).toBe("Qual o endereço?");
   });
 
-  it("remove os demais bordões e saudações (Oi, Olá, Opa, Fala, Bom dia, Bora lá, Bora embarcar nessa)", () => {
-    for (const g of ["Oi!", "Olá, Maria!", "Opa!", "Fala, João!", "Bom dia!", "Boa tarde!", "Bora lá!", "Bora embarcar nessa!"]) {
-      expect(stripRepeatedGreeting(`${g} Pode mandar o endereço?`, false)).toBe("Pode mandar o endereço?");
+  it.each(["Show!", "Fechado!", "Perfeito!", "Beleza!", "Opa, anotado!", "Oi, tudo certo!", "Bora lá!"])(
+    "IN_CONVERSATION preserva a expressão natural de continuidade: %s",
+    (e) => {
+      expect(stripRepeatedGreeting(`${e} Qual o endereço?`, "IN_CONVERSATION")).toBe(`${e} Qual o endereço?`);
+    },
+  );
+
+  it("IN_CONVERSATION: nunca zera a resposta se ela era só a saudação (devolve vazio para o chamador decidir)", () => {
+    expect(stripRepeatedGreeting("Boa noite!", "IN_CONVERSATION")).toBe("");
+  });
+
+  it("não come palavras parecidas nem trechos no meio do texto", () => {
+    expect(stripRepeatedGreeting("Bom diário de pedidos hoje.", "IN_CONVERSATION")).toBe("Bom diário de pedidos hoje.");
+    expect(stripRepeatedGreeting("Fechado! Boa noite pra você também.", "IN_CONVERSATION")).toBe("Fechado! Boa noite pra você também.");
+  });
+
+  it.each(["FIRST_TODAY", "RETURNING_TODAY"] as const)("%s: nunca altera o texto", (mode) => {
+    for (const t of ["Boa noite, Joao! Tudo bem?", "Bom dia! Já sabe o que vai pedir?", "Bora pra mais um!"]) {
+      expect(stripRepeatedGreeting(t, mode)).toBe(t);
     }
-  });
-
-  it("remove saudações empilhadas", () => {
-    expect(stripRepeatedGreeting("Oi, João! Bora lá! Qual lanche?", false)).toBe("Qual lanche?");
-  });
-
-  it("não come conteúdo que só começa parecido", () => {
-    expect(stripRepeatedGreeting("Opa, Nova York não está disponível hoje.", false)).toBe(
-      "Nova York não está disponível hoje.",
-    );
-    expect(stripRepeatedGreeting("Oitenta pratos saem por dia.", false)).toBe("Oitenta pratos saem por dia.");
-    expect(stripRepeatedGreeting("Fale com a gente se precisar.", false)).toBe("Fale com a gente se precisar.");
-  });
-
-  it("shouldGreet=true deixa o texto intacto", () => {
-    expect(stripRepeatedGreeting("Boa noite, Joao!", true)).toBe("Boa noite, Joao!");
-    expect(stripRepeatedGreeting("Bora pra mais um!", true)).toBe("Bora pra mais um!");
-  });
-
-  it("só mexe no INÍCIO do texto", () => {
-    expect(stripRepeatedGreeting("Fechado! Oi de novo é com a gente.", false)).toBe("Fechado! Oi de novo é com a gente.");
   });
 });

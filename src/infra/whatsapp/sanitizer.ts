@@ -4,6 +4,8 @@
  * Links só saem pelo botão cta_url montado no servidor ou pela mensagem determinística de checkout.
  */
 
+import type { GreetingMode } from "./greeting";
+
 const MARKDOWN_LINK = /\[([^\]]*)\]\(\s*[^)]*\)/g;
 const RAW_URL = /(?:https?:\/\/|www\.)[^\s<>()]+/gi;
 const HALLUCINATED_APP = /\bapp\.menu-rapido[^\s<>()]*/gi;
@@ -42,19 +44,18 @@ export function stripUrlsAndMarkdownLinks(text: string): string {
 
 /* ------------------------------------------------------------------ */
 
-const WORD_END = String.raw`(?![\p{L}])`;
-const GREETING = String.raw`(?:bom dia|boa tarde|boa noite|oi+|ol[aá]|opa|e a[ií]|eae|fala|salve)`;
-const CATCHPHRASE = String.raw`(?:bora (?:pra|para) mais um(?:\s+(?:pedido|lanche|burger|round|rodada))?|bora l[aá]|bora embarcar (?:nessa|nesse|esse)(?:\s+pedido)?)`;
+const TIME_OF_DAY = String.raw`(?:bom dia|boa tarde|boa noite)(?![\p{L}])`;
 /** Nome logo após a saudação ("Boa noite, Joao!"): só conta se for seguido de pontuação ou do fim. */
 const NAME = String.raw`(?:[,\s]+\p{Lu}[\p{L}'’-]*(?=[!.,…?]|$))?`;
-const OPENING = new RegExp(String.raw`^\s*(?:${GREETING}|${CATCHPHRASE})${WORD_END}${NAME}[!.,…?\s]*`, "iu");
+const OPENING = new RegExp(String.raw`^\s*${TIME_OF_DAY}${NAME}[!.,…?\s]*`, "iu");
 
 /**
- * Com `shouldGreet === false` (conversa em andamento), remove saudações e bordões do começo
- * da resposta para ela ir direto ao assunto. Pode devolver "" se a mensagem era só saudação.
+ * Só em IN_CONVERSATION (pedido já em andamento) e só para "Bom dia/Boa tarde/Boa noite" repetido no
+ * começo da resposta. Expressões de continuidade ("Show!", "Fechado!", "Beleza!") ficam intactas.
+ * Em FIRST_TODAY e RETURNING_TODAY o texto nunca é alterado. Pode devolver "" se era só a saudação.
  */
-export function stripRepeatedGreeting(text: string, shouldGreet: boolean): string {
-  if (shouldGreet) return text;
+export function stripRepeatedGreeting(text: string, mode: GreetingMode): string {
+  if (mode !== "IN_CONVERSATION") return text;
   let out = text;
   for (let i = 0; i < 5; i++) {
     const next = out.replace(OPENING, "");

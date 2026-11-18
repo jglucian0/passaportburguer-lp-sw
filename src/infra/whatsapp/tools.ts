@@ -9,6 +9,7 @@ import type { GeminiFunctionDeclaration } from "./gemini";
 import { cancelUnpaidOrderTool } from "./cancel-order";
 import { setDeliveryAndPaymentTool, updateCartTool } from "./draft-flow";
 import { requestHumanHandoff } from "./handoff";
+import { stripUrlsAndMarkdownLinks } from "./sanitizer";
 import { signWhatsAppToken } from "./session-token";
 import { appUrl, getTenantId, type ToolContext } from "./shared";
 import { errorSummary } from "./log";
@@ -165,7 +166,18 @@ export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
   {
     name: "sendQuickMenu",
     description:
-      'Envia o botão "Cardápio Rápido". O botão sai na MESMA mensagem da sua resposta: escreva só um convite curto, sem link.',
+      'Envia o botão "Cardápio Rápido" SOMENTE quando o cliente pedir para ver o cardápio/opções ou disser que quer escolher visualmente ("manda o cardápio", "quais lanches tem?", "quero escolher", "me vê as opções"). NUNCA em saudação ou pergunta aberta. O messageText vira o texto do botão e é a única mensagem do turno.',
+    parameters: {
+      type: "object",
+      properties: {
+        messageText: {
+          type: "string",
+          description:
+            'Frase curta, natural e contextualizada com a conversa (ex.: "Claro, João! Abre aqui pra escolher seus lanches e adicionais 👇"). Sem link nem Markdown.',
+        },
+      },
+      required: ["messageText"],
+    },
   },
   {
     name: "updateCart",
@@ -235,11 +247,21 @@ export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
 
 type Args = Record<string, unknown>;
 
-/** Gera o token assinado e arma o botão nativo cta_url (a URL nunca vai ao texto nem ao modelo). */
-export function sendQuickMenuTool(ctx: ToolContext): { sent: true; note: string } {
+/**
+ * Gera o token assinado e arma o botão nativo cta_url. O texto do botão é o `messageText` da IA,
+ * higienizado (nunca URL/Markdown); a URL real nunca vai ao texto nem ao modelo.
+ */
+export function sendQuickMenuTool(
+  ctx: ToolContext,
+  input: { messageText?: unknown },
+): { sent: true; note: string } | { sent: false; error: string } {
+  const bodyText = typeof input.messageText === "string" ? stripUrlsAndMarkdownLinks(input.messageText) : "";
+  if (!bodyText) {
+    return { sent: false, error: "Informe messageText: uma frase curta e natural, sem link, para o corpo do botão." };
+  }
   const { url } = generateQuickMenuLink(ctx.phone);
-  ctx.cta = { buttonText: "Cardápio Rápido", url };
-  return { sent: true, note: "O botão sai na mesma mensagem da sua resposta: escreva só o convite curto, sem link." };
+  ctx.cta = { buttonText: "Cardápio Rápido", url, bodyText };
+  return { sent: true, note: "O botão com o seu messageText já será enviado. Não escreva outra mensagem." };
 }
 
 /** Executa uma tool no servidor. O fechamento do pedido NÃO é tool: o backend o dispara no fim do turno. */
@@ -249,7 +271,7 @@ export async function executeTool(ctx: ToolContext, name: string, args: Args = {
       case "getDraftCart":
         return { ...(await getDraftCart(ctx.phone)) };
       case "sendQuickMenu":
-        return sendQuickMenuTool(ctx);
+        return sendQuickMenuTool(ctx, args);
       case "updateCart":
         return { ...(await updateCartTool(ctx, args)) };
       case "setDeliveryAndPayment":

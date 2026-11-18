@@ -22,6 +22,8 @@ export type ToolContext = {
 export type CtaButton = {
   buttonText: string;
   url: string;
+  /** Corpo do botão escrito pela IA (já sem URL/Markdown). Quando presente, é a ÚNICA mensagem do turno. */
+  bodyText?: string;
   /** Repete o link https:// completo no corpo (quem prefere abrir no navegador). */
   appendUrlToBody?: boolean;
 };

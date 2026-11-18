@@ -198,15 +198,35 @@ describe("tools: Cliente Novo vs Cadastrado", () => {
     expect(catalogLoads.n).toBe(2);
   });
 
-  it("link do Cardápio Rápido: token assinado, sem telefone puro; vira o botão da MESMA mensagem da resposta", async () => {
+  it("link do Cardápio Rápido: token assinado, sem telefone puro; o texto do botão vem da IA (messageText) sem URL", async () => {
     const c = ctx();
-    const out = (await executeTool(c, "sendQuickMenu")) as { sent: boolean };
+    const out = (await executeTool(c, "sendQuickMenu", {
+      messageText: "Claro, João! Abre aqui pra escolher 👇 [cardápio](https://x.com/y) www.site.com",
+    })) as { sent: boolean };
     expect(out.sent).toBe(true);
     expect(JSON.stringify(out)).not.toContain("http"); // o modelo nunca vê a URL
     expect(c.afterReply).toHaveLength(0); // nada de mensagem extra depois
     expect(c.cta?.buttonText).toBe("Cardápio Rápido");
+    expect(c.cta?.bodyText).toBe("Claro, João! Abre aqui pra escolher 👇 cardápio");
+    expect(c.cta?.bodyText).not.toMatch(/https?:|www\.|\]\(/);
     expect(c.cta?.url).toMatch(/^https:\/\/app\.test\/cardapio-rapido\?token=/);
     expect(c.cta?.url).not.toContain(PHONE);
+  });
+
+  it("sendQuickMenu sem messageText (ou só com link) é recusado: sem botão e sem texto fixo", async () => {
+    for (const args of [{}, { messageText: "   " }, { messageText: "https://app.menu-rapido.com/abc" }]) {
+      const c = ctx();
+      const out = (await executeTool(c, "sendQuickMenu", args)) as { sent: boolean; error?: string };
+      expect(out.sent).toBe(false);
+      expect(out.error).toMatch(/messageText/);
+      expect(c.cta).toBeNull();
+    }
+  });
+
+  it("declaração do tool: messageText obrigatório; só para quem pede cardápio/opções", () => {
+    const decl = TOOL_DECLARATIONS.find((t) => t.name === "sendQuickMenu")!;
+    expect(decl.parameters?.required).toEqual(["messageText"]);
+    expect(decl.description).toMatch(/SOMENTE/i);
   });
 });
 
@@ -636,6 +656,27 @@ describe("runBotTurn (Gemini mockado)", () => {
     expect(sys).toContain("addressConfirmed");
   });
 
+  it("system prompt: persona humana e regras do Cardápio Rápido (só quando pedem; saudação é só conversa)", async () => {
+    const { d, requests } = deps([modelText("Opa, bem-vindo!")]);
+    await runBotTurn(PHONE, [msg()], d);
+    const sys = requests[0].systemInstruction;
+    expect(sys).toMatch(/atendente humano da equipe do Passaporte Burguer/);
+    // Saudação / pergunta aberta: nada de botão.
+    expect(sys).toMatch(/Oi[^\n]*Bom dia[^\n]*Tudo bem\?[^\n]*Estão abertos\?/);
+    expect(sys).toMatch(/NÃO chame sendQuickMenu/);
+    // Quando chamar.
+    expect(sys).toMatch(/manda o cardápio[^\n]*quais lanches tem\?[^\n]*quero escolher[^\n]*me vê as opções/);
+    expect(sys).toMatch(/messageText/);
+    // Cliente cadastrado e novo.
+    expect(sys).toMatch(/isRegistered = true[^]*primeiro nome[^]*como (ele )?está[^]*já sabe o que vai pedir hoje[^]*último pedido/i);
+    expect(sys).toMatch(/isRegistered = false[^]*boas-vindas ao Passaporte Burguer[^]*já conhece os lanches[^]*link rápido[^]*site/i);
+    // Tom: sem robô, sem bullets em pergunta simples, sem empurrar link.
+    expect(sys).toMatch(/Como posso ajudar\?[^\n]*Para prosseguir[^\n]*Selecione uma opção/);
+    expect(sys).toMatch(/bullet/i);
+    expect(sys).toMatch(/Bom dia, tudo bem\?[^\n]*tudo ótimo/i);
+    expect(sys).not.toContain("Escolhe teu lanche por aqui");
+  });
+
   it("a resposta da IA nunca leva link: Markdown e URLs alucinadas são removidos antes do envio", async () => {
     const { d, sent } = deps([modelText("Escolhe no [Cardápio](https://app.menu-rapido.com/x) ou em www.site.com/menu, tá?")]);
     await runBotTurn(PHONE, [msg()], d);
@@ -654,11 +695,17 @@ describe("runBotTurn (Gemini mockado)", () => {
     expect(sent).toEqual(["Opa, bora de novo! O que vai ser?"]);
   });
 
-  it("IN_CONVERSATION: saudação e bordão repetidos são cortados", async () => {
+  it("IN_CONVERSATION: só 'Bom dia/Boa tarde/Boa noite' repetido é cortado; expressões naturais ficam", async () => {
     h.rows.set(whatsappMessages, [{ role: "assistant", content: "Anotado!", createdAt: minutesAgo(5) }]);
-    const { d, sent } = deps([modelText("Boa noite, Joao! Bora pra mais um! Qual o endereço?")]);
-    await runBotTurn(PHONE, [msg()], d);
-    expect(sent).toEqual(["Qual o endereço?"]);
+    const a = deps([modelText("Boa noite, Joao! Qual o endereço?")]);
+    await runBotTurn(PHONE, [msg()], a.d);
+    expect(a.sent).toEqual(["Qual o endereço?"]);
+
+    for (const text of ["Show! Qual o endereço?", "Fechado! Qual o endereço?", "Perfeito! Qual o endereço?", "Beleza! Qual o endereço?"]) {
+      const b = deps([modelText(text)]);
+      await runBotTurn(PHONE, [msg({ wamid: "w2" })], b.d);
+      expect(b.sent).toEqual([text]);
+    }
   });
 
   it("FIRST_TODAY: a saudação é mantida", async () => {
@@ -801,34 +848,72 @@ describe("runBotTurn (Gemini mockado)", () => {
     });
   });
 
-  it("botão (Cardápio Rápido): o texto da resposta vira o corpo do botão, sem mensagem de texto separada", async () => {
+  it("botão (Cardápio Rápido): o messageText da IA é o corpo do botão, sem mensagem de texto duplicada", async () => {
     const { d, sent, ctas } = deps([
-      modelCall("sendQuickMenu"),
-      modelText("Escolhe teu lanche aqui no cardápio rápido 👇"),
+      modelCall("sendQuickMenu", { messageText: "Claro, João! Abre aqui pra escolher seus lanches e adicionais 👇" }),
+      modelText("Aqui está o cardápio! Escolha o que quiser."), // 2ª mensagem redundante: NÃO pode sair
     ]);
-    expect(await runBotTurn(PHONE, [msg()], d)).toBe(true);
+    expect(await runBotTurn(PHONE, [msg({ content: "manda o cardápio" })], d)).toBe(true);
     expect(sent).toEqual([]);
     expect(ctas).toHaveLength(1);
-    expect(ctas[0].body).toBe("Escolhe teu lanche aqui no cardápio rápido 👇");
+    expect(ctas[0].body).toBe("Claro, João! Abre aqui pra escolher seus lanches e adicionais 👇");
     expect(ctas[0].button).toBe("Cardápio Rápido");
     expect(ctas[0].url).toMatch(/^https:\/\/app\.test\/cardapio-rapido\?token=/);
+    // O que o cliente recebeu é o que fica no histórico.
+    const saved = h.writes.find((w) => w.op === "insert" && w.table === whatsappMessages);
+    expect(saved?.values).toMatchObject({ role: "assistant", content: ctas[0].body });
   });
 
-  it("botão: se a IA só escreveu o link, o convite padrão vai no corpo do botão", async () => {
-    const { d, ctas } = deps([modelCall("sendQuickMenu"), modelText("https://app.menu-rapido.com/abc")]);
-    expect(await runBotTurn(PHONE, [msg()], d)).toBe(true);
-    expect(ctas[0].body).toBe("Escolhe teu lanche por aqui 👇");
+  it("botão: funciona mesmo se a IA não escrever nenhum texto depois do tool", async () => {
+    const { d, sent, ctas } = deps([
+      modelCall("sendQuickMenu", { messageText: "Te mando as opções aqui 👇" }),
+      { role: "model", parts: [{ text: "" }] },
+    ]);
+    expect(await runBotTurn(PHONE, [msg({ content: "quais lanches tem?" })], d)).toBe(true);
+    expect(sent).toEqual([]);
+    expect(ctas.map((c) => c.body)).toEqual(["Te mando as opções aqui 👇"]);
   });
 
-  it("botão recusado pela Meta: cai para texto (a resposta não se perde)", async () => {
-    const { d, sent } = deps([modelCall("sendQuickMenu"), modelText("Escolhe aqui 👇")]);
+  it("botão: messageText com link/Markdown nunca chega ao cliente", async () => {
+    const { d, ctas } = deps([
+      modelCall("sendQuickMenu", { messageText: "Abre o [cardápio](https://app.menu-rapido.com/abc) 👇" }),
+      modelText("ok"),
+    ]);
+    await runBotTurn(PHONE, [msg({ content: "me vê as opções" })], d);
+    expect(ctas[0].body).toBe("Abre o cardápio 👇");
+  });
+
+  it("botão sem messageText válido: nada de texto fixo; a IA recebe o erro e responde em texto", async () => {
+    const { d, sent, ctas, requests } = deps([
+      modelCall("sendQuickMenu", {}),
+      modelText("Já te mando as opções, um instante."),
+    ]);
+    await runBotTurn(PHONE, [msg({ content: "manda o cardápio" })], d);
+    expect(ctas).toHaveLength(0);
+    expect(sent).toEqual(["Já te mando as opções, um instante."]);
+    expect(JSON.stringify(requests)).not.toContain("Escolhe teu lanche por aqui");
+  });
+
+  it("botão recusado pela Meta: cai para texto com o link (a resposta não se perde)", async () => {
+    const { d, sent } = deps([modelCall("sendQuickMenu", { messageText: "Escolhe aqui 👇" }), modelText("ok")]);
     d.sendCta = async () => {
       throw new Error("meta recusou");
     };
-    expect(await runBotTurn(PHONE, [msg()], d)).toBe(true);
+    expect(await runBotTurn(PHONE, [msg({ content: "quero escolher" })], d)).toBe(true);
     expect(sent[0]).toContain("Escolhe aqui 👇");
     expect(sent[0]).toMatch(/cardapio-rapido/);
   });
+
+  it.each(["Oi", "Bom dia, tudo bem?", "Estão abertos?"])(
+    "saudação/pergunta aberta (%s): resposta só em texto, sem botão do cardápio",
+    async (text) => {
+      h.rows.set(customers, [{ id: "c1", name: "João Pedro", phone: "43999999999" }]);
+      const { d, sent, ctas } = deps([modelText("Bom dia, João! Tudo ótimo por aqui, e contigo? Já sabe o que vai pedir hoje?")]);
+      await runBotTurn(PHONE, [msg({ content: text })], d);
+      expect(ctas).toHaveLength(0);
+      expect(sent).toHaveLength(1);
+    },
+  );
 
   it("a resposta é persistida em whatsapp_messages antes de o turno terminar", async () => {
     const { d } = deps([modelText("Anotado.")]);
