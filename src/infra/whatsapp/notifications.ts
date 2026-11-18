@@ -1,8 +1,7 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 
 import { db } from "@/infra/db";
 import {
-  customerAddresses,
   customers,
   orders,
   whatsappMessages,
@@ -11,7 +10,8 @@ import {
 
 import { sendCtaUrlButton, sendTextMessage } from "./client";
 import { signWhatsAppToken } from "./session-token";
-import { appUrl, customerPhoneVariants } from "./shared";
+import { getBrazilianPhoneVariants } from "./phone";
+import { appUrl } from "./shared";
 import { errorSummary } from "./log";
 
 /** A Meta só aceita texto livre até 24h depois da última mensagem do cliente. */
@@ -28,7 +28,8 @@ async function findChat(orderId: string) {
   const [customer] = await db.select().from(customers).where(eq(customers.id, order.customerId)).limit(1);
   if (!customer) return null;
 
-  const candidates = [...new Set(customerPhoneVariants(`55${customer.phone}`).map((v) => `55${v}`))];
+  // customers.phone pode estar com/sem 9º dígito e a sessão guarda o wa_id da Meta: casa pelas variações.
+  const candidates = getBrazilianPhoneVariants(customer.phone).filter((v) => v.startsWith("55"));
   if (candidates.length === 0) return null;
   const [session] = await db
     .select()
@@ -81,12 +82,8 @@ export async function notifyPaymentConfirmed(orderId: string): Promise<void> {
 
     /* Cadastro pós-pagamento (sem OTP: o telefone já foi provado pela conversa). Quem tem conta no site fica de fora. */
     if (customer.passwordHash) return;
-    const saved = await db
-      .select({ id: customerAddresses.id })
-      .from(customerAddresses)
-      .where(and(eq(customerAddresses.customerId, customer.id)))
-      .limit(1);
-    if (customer.documentNumber && saved.length > 0) return;
+    // Já tem CPF: o cadastro está resolvido (o endereço é salvo no próprio pedido), não convida de novo.
+    if (customer.documentNumber) return;
 
     const token = signWhatsAppToken(
       { phone: session.phone, orderId, purpose: "COMPLETE_REGISTRATION" },

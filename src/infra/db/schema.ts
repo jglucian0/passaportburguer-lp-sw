@@ -812,6 +812,10 @@ export const whatsappSessions = pgTable(
     deliveryAddress: jsonb("delivery_address").$type<AddressSnapshot>(),
     /** Transbordo humano: enquanto > now(), a IA não responde. */
     botPausedUntil: timestamp("bot_paused_until", { withTimezone: true }),
+    /** Lock atômico do turno: enquanto > now(), outro processo já está respondendo este telefone. */
+    processingLockUntil: timestamp("processing_lock_until", { withTimezone: true }),
+    /** O cliente já confirmou o endereço de entrega: não perguntar de novo. */
+    addressConfirmed: boolean("address_confirmed").notNull().default(false),
     lastInteractionAt: timestamp("last_interaction_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

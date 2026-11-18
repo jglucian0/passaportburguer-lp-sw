@@ -3,19 +3,39 @@ import { eq } from "drizzle-orm";
 import { normalizeBrPhone, phoneVariants, toLocalPhone } from "@/infra/auth/otp";
 import { db } from "@/infra/db";
 import { tenants } from "@/infra/db/schema";
-import { SITE_URL } from "@/lib/site";
 
 /** Contexto de uma execução do agente. O telefone vem da conversa, nunca do modelo. */
 export type ToolContext = {
   /** E-164 só com dígitos (chave de whatsapp_sessions). */
   phone: string;
-  /** Envios que só podem sair DEPOIS da resposta de texto do modelo (ex.: código Pix, botões). */
+  /** Envios que só podem sair DEPOIS da resposta de texto do modelo (ex.: código Pix). */
   afterReply: Array<() => Promise<unknown>>;
+  /**
+   * Botão de link (Cardápio Rápido / checkout). A resposta do modelo vira o corpo DESTE botão:
+   * nunca sai uma mensagem de texto separada antes dele.
+   */
+  cta: CtaButton | null;
 };
 
-/** URL pública com esquema (NEXT_PUBLIC_APP_URL tem prioridade; senão o domínio canônico). */
+export type CtaButton = {
+  buttonText: string;
+  url: string;
+  /** Repete o link https:// completo no corpo (quem prefere abrir no navegador). */
+  appendUrlToBody?: boolean;
+};
+
+const CANONICAL_URL = "https://www.passaporteburguer.com.br";
+
+/** URL pública sempre absoluta, com https:// e sem barra final (nunca relativa nem "undefined"). */
 export function appUrl(): string {
-  return (process.env.NEXT_PUBLIC_APP_URL || SITE_URL).replace(/\/+$/, "");
+  let base = (process.env.NEXT_PUBLIC_APP_URL || CANONICAL_URL).trim().replace(/\/+$/, "");
+  if (!/^https?:\/\//i.test(base)) base = `https://${base}`;
+  return base;
+}
+
+/** Página de pagamento do pedido, sempre absoluta: https://www.passaporteburguer.com.br/pedido/{id}/pagamento. */
+export function checkoutUrl(orderId: string): string {
+  return `${appUrl()}/pedido/${encodeURIComponent(orderId)}/pagamento`;
 }
 
 /** Tenant único de hoje (o webhook não tem host de requisição). */

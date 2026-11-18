@@ -12,17 +12,18 @@ import {
 } from "@/infra/db/schema";
 import { formatCents } from "@/lib/utils";
 
-import { sendCtaUrlButton, sendTextMessage } from "./client";
+import { sendTextMessage } from "./client";
 import type { GeminiFunctionDeclaration } from "./gemini";
 import { finalizeOrderAndCheckout, saveDraftOrder } from "./order-flow";
 import { signWhatsAppToken } from "./session-token";
-import { appUrl, customerPhoneVariants, getTenantId, type ToolContext } from "./shared";
+import { getBrazilianPhoneVariants } from "./phone";
+import { appUrl, getTenantId, type ToolContext } from "./shared";
 import { errorSummary } from "./log";
 
 export const HANDOFF_MINUTES = 30;
 
 /* ------------------------------------------------------------------ */
-/* 1. getCustomerContext                                               */
+/* 1. Contexto do cliente (pré-carregado no systemInstruction)           */
 /* ------------------------------------------------------------------ */
 
 export type CustomerContext =
@@ -31,6 +32,8 @@ export type CustomerContext =
       isRegistered: true;
       name: string;
       firstName: string;
+      /** Já tem CPF/CNPJ no cadastro: nunca pedir o documento no chat. (O número não vai ao modelo.) */
+      hasDocument: boolean;
       defaultAddress: {
         street: string;
         number: string;
@@ -46,7 +49,7 @@ export type CustomerContext =
 
 export async function getCustomerContext(phone: string): Promise<CustomerContext> {
   const tenantId = await getTenantId();
-  const variants = customerPhoneVariants(phone);
+  const variants = getBrazilianPhoneVariants(phone);
   if (!tenantId || variants.length === 0) return { isRegistered: false };
 
   const [customer] = await db
@@ -112,6 +115,7 @@ export async function getCustomerContext(phone: string): Promise<CustomerContext
     isRegistered: true,
     name: customer.name,
     firstName: customer.name.trim().split(/\s+/)[0] ?? customer.name,
+    hasDocument: !!customer.documentNumber,
     defaultAddress,
     lastOrderSummary:
       lastOrderItems.length > 0 ? lastOrderItems.map((i) => `${i.quantity}x ${i.name}`).join(" + ") : null,
@@ -120,12 +124,45 @@ export async function getCustomerContext(phone: string): Promise<CustomerContext
 }
 
 /* ------------------------------------------------------------------ */
-/* 2. getAvailableMenu                                                 */
+/* 2. Cardápio (pré-carregado, em cache de 5 min)                       */
 /* ------------------------------------------------------------------ */
 
-export async function getAvailableMenu() {
+type MenuCategory = {
+  name: string;
+  products: {
+    id: string;
+    name: string;
+    description: string | null;
+    priceCents: number;
+    price: string;
+    addonGroups: {
+      name: string;
+      minSelections: number;
+      maxSelections: number;
+      addons: { id: string; name: string; priceCents: number; price: string; maxQuantity: number }[];
+    }[];
+  }[];
+};
+
+export const MENU_CACHE_MS = 5 * 60_000;
+type Menu = Awaited<ReturnType<typeof buildMenu>>;
+let menuCache: { at: number; menu: Menu } | null = null;
+export function resetMenuCache(): void {
+  menuCache = null;
+}
+
+/** Cardápio ativo, cacheado em memória por 5 min (o prompt de cada mensagem o carrega). */
+export async function getAvailableMenu(now: number = Date.now()): Promise<Menu> {
+  if (menuCache && now - menuCache.at < MENU_CACHE_MS) return menuCache.menu;
+  const menu = await buildMenu();
+  // Cardápio vazio (loja não encontrada / falha) não é cacheado.
+  if (menu.categories.length > 0) menuCache = { at: now, menu };
+  return menu;
+}
+
+async function buildMenu() {
   const tenantId = await getTenantId();
-  if (!tenantId) return { categories: [] };
+  if (!tenantId) return { categories: [] as MenuCategory[] };
   const catalog = await loadCatalog(tenantId);
   return {
     categories: catalog
@@ -241,7 +278,7 @@ export async function requestHumanHandoff(phone: string, reason: string) {
 
 const itemsSchema = {
   type: "array",
-  description: "Itens do pedido. Use SOMENTE ids vindos de getAvailableMenu.",
+  description: "Itens do pedido. Use SOMENTE ids do CARDÁPIO ATUAL do prompt (ou de getDraftCart).",
   items: {
     type: "object",
     properties: {
@@ -264,15 +301,6 @@ const itemsSchema = {
 /** O telefone NUNCA é parâmetro exposto ao modelo: vem da conversa (evita consultar dados de terceiros). */
 export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
   {
-    name: "getCustomerContext",
-    description:
-      "Busca o cadastro do cliente desta conversa: se é cadastrado, nome, endereço padrão e resumo do último pedido concluído. Chame logo no início da conversa.",
-  },
-  {
-    name: "getAvailableMenu",
-    description: "Cardápio atual: produtos e adicionais disponíveis, com ids e preços exatos em centavos.",
-  },
-  {
     name: "getDraftCart",
     description:
       "Itens que o cliente já escolheu (por exemplo, pelo Cardápio Rápido), com ids reais, para você usar em saveDraftOrder sem remontar o pedido.",
@@ -280,7 +308,7 @@ export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
   {
     name: "generateQuickMenuLink",
     description:
-      'Gera o link do Cardápio Rápido e envia ao cliente o botão "Abrir Cardápio Rápido" logo após a sua resposta.',
+      'Gera o link do Cardápio Rápido. O botão "Cardápio Rápido" sai na MESMA mensagem da sua resposta (o texto que você escrever vira o corpo do botão).',
   },
   {
     name: "saveDraftOrder",
@@ -304,6 +332,11 @@ export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
           required: ["street", "number"],
         },
         customerName: { type: "string" },
+        addressConfirmed: {
+          type: "boolean",
+          description:
+            "true quando o cliente CONFIRMOU o endereço de entrega (ex.: 'sim', 'isso mesmo', 'pode mandar') ou acabou de informá-lo. Depois disso nunca pergunte o endereço de novo.",
+        },
       },
       required: ["items", "deliveryType", "customerName"],
     },
@@ -311,14 +344,15 @@ export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
   {
     name: "finalizeOrderAndCheckout",
     description:
-      "Cria o pedido oficial a partir do rascunho salvo e prepara o pagamento. Só chame depois do cliente confirmar o resumo e escolher a forma de pagamento. Pix e cartão: o código/botão de pagamento é enviado automaticamente após a sua resposta.",
+      "Cria o pedido oficial a partir do rascunho salvo e prepara o pagamento. Só chame depois do cliente confirmar o resumo e escolher a forma de pagamento. Pix e cartão: o botão de pagamento sai na mesma mensagem da sua resposta e, no Pix, o código Copia e Cola vai logo depois, sozinho.",
     parameters: {
       type: "object",
       properties: {
         paymentMethod: { type: "string", enum: ["PIX", "CREDIT_CARD", "CARD_ON_DELIVERY", "CASH"] },
         documentNumber: {
           type: "string",
-          description: "CPF do cliente. Obrigatório para PIX/CREDIT_CARD quando o resultado pedir (needsDocument).",
+          description:
+            "CPF do cliente. SÓ informe se o resultado pedir (needsDocument). Cliente com hasDocument=true já tem CPF salvo: não informe.",
         },
         changeForCents: { type: "integer", description: "Só para CASH: valor da nota para troco, em centavos." },
       },
@@ -346,18 +380,12 @@ type Args = Record<string, unknown>;
 export async function executeTool(ctx: ToolContext, name: string, args: Args = {}): Promise<Record<string, unknown>> {
   try {
     switch (name) {
-      case "getCustomerContext":
-        return { ...(await getCustomerContext(ctx.phone)) };
-      case "getAvailableMenu":
-        return { ...(await getAvailableMenu()) };
       case "getDraftCart":
         return { ...(await getDraftCart(ctx.phone)) };
       case "generateQuickMenuLink": {
         const { url } = generateQuickMenuLink(ctx.phone);
-        ctx.afterReply.push(() =>
-          sendCtaUrlButton(ctx.phone, "Escolha seus itens pelo cardápio rápido 👇", "Abrir Cardápio Rápido", url),
-        );
-        return { sent: true, note: "O botão do Cardápio Rápido será enviado logo após a sua resposta." };
+        ctx.cta = { buttonText: "Cardápio Rápido", url };
+        return { sent: true, note: "O botão do Cardápio Rápido sai na mesma mensagem da sua resposta: escreva só o convite curto." };
       }
       case "saveDraftOrder":
         return { ...(await saveDraftOrder(ctx, args)) };

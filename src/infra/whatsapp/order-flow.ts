@@ -30,9 +30,10 @@ import { createPixCharge } from "@/infra/payments/asaas";
 import { sendOrderToSaipos } from "@/lib/saipos";
 import { formatCents } from "@/lib/utils";
 
-import { sendCtaUrlButton, sendTextMessage } from "./client";
+import { sendTextMessage } from "./client";
 import { geocodeAddress } from "./geocode";
-import { appUrl, getTenantId, toCustomerPhone, type ToolContext } from "./shared";
+import { getBrazilianPhoneVariants } from "./phone";
+import { checkoutUrl, getTenantId, toCustomerPhone, type ToolContext } from "./shared";
 
 /* ------------------------------------------------------------------ */
 /* Rascunho                                                            */
@@ -54,6 +55,8 @@ const draftInputSchema = z.object({
     })
     .nullish(),
   customerName: z.string().trim().min(2, "Informe o nome.").max(80),
+  /** O cliente confirmou (ou acabou de informar) o endereço: não perguntar de novo. */
+  addressConfirmed: z.boolean().nullish(),
 });
 
 export type DraftOrderResult =
@@ -138,11 +141,13 @@ export async function priceCart(
 async function ensureCustomer(tenantId: string, phone: string, name: string) {
   const local = toCustomerPhone(phone);
   if (!local) return null;
+  // Com e sem o 9º dígito: o wa_id da Meta pode divergir de como o cliente se cadastrou.
+  const variants = getBrazilianPhoneVariants(phone);
   const find = async () => {
     const [row] = await db
       .select()
       .from(customers)
-      .where(and(eq(customers.tenantId, tenantId), eq(customers.phone, local)))
+      .where(and(eq(customers.tenantId, tenantId), inArray(customers.phone, variants)))
       .limit(1);
     return row;
   };
@@ -210,6 +215,8 @@ export async function saveDraftOrder(ctx: ToolContext, input: unknown): Promise<
   const customer = await ensureCustomer(tenantId, ctx.phone, data.customerName);
   if (!customer) return { ok: false, error: "Telefone inválido." };
 
+  /* Só muda a confirmação quando o modelo a informa; omitida, preserva (evita reabrir a pergunta do endereço). */
+  const confirmed = data.deliveryType === "DELIVERY" ? data.addressConfirmed : false;
   await db
     .insert(whatsappSessions)
     .values({
@@ -218,6 +225,7 @@ export async function saveDraftOrder(ctx: ToolContext, input: unknown): Promise<
       state: "CONFIRMING_ORDER",
       draftCart: items,
       deliveryAddress: snapshot,
+      addressConfirmed: confirmed ?? false,
     })
     .onConflictDoUpdate({
       target: whatsappSessions.phone,
@@ -226,6 +234,7 @@ export async function saveDraftOrder(ctx: ToolContext, input: unknown): Promise<
         state: "CONFIRMING_ORDER",
         draftCart: items,
         deliveryAddress: snapshot,
+        ...(confirmed == null ? {} : { addressConfirmed: confirmed }),
         updatedAt: new Date(),
       },
     });
@@ -334,7 +343,7 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
   /* Reivindica o rascunho de forma atômica: duas finalizações simultâneas não criam dois pedidos. */
   const claimed = await db
     .update(whatsappSessions)
-    .set({ draftCart: null })
+    .set({ draftCart: null, addressConfirmed: false })
     .where(and(eq(whatsappSessions.phone, ctx.phone), isNotNull(whatsappSessions.draftCart)))
     .returning({ phone: whatsappSessions.phone });
   if (claimed.length === 0) return { ok: false, error: "Esse pedido já foi finalizado." };
@@ -460,12 +469,11 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     return base;
   }
 
+  const payUrl = checkoutUrl(created.orderId);
+
   if (paymentMethod === "CREDIT_CARD") {
-    const checkoutUrl = `${appUrl()}/pagamento/${created.orderId}`;
-    ctx.afterReply.push(() =>
-      sendCtaUrlButton(ctx.phone, `Pedido #${created!.orderNumber} - ${base.amountFormatted}. Toque para pagar com cartão com segurança.`, "Pagar com Cartão", checkoutUrl),
-    );
-    return { ...base, checkoutUrl };
+    ctx.cta = { buttonText: "Pagar com Cartão", url: payUrl };
+    return { ...base, checkoutUrl: payUrl };
   }
 
   try {
@@ -480,6 +488,8 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
         cpfCnpj: documentNumber,
       },
     });
+    // Botão do checkout (+ link completo no corpo) na mensagem da resposta; o código Pix vai depois, sozinho.
+    ctx.cta = { buttonText: "Abrir pagamento", url: payUrl, appendUrlToBody: true };
     ctx.afterReply.push(() => sendTextMessage(ctx.phone, charge.pixPayload));
     return { ...base, pixPayload: charge.pixPayload };
   } catch {

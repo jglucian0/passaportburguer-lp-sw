@@ -41,9 +41,15 @@ const MIN_ATTEMPT_MS = 3_000;
 const DEAD_MODEL_TTL_MS = 30 * 60_000;
 
 const deadModels = new Map<string, number>();
+/** Modelos que recusaram `thinkingConfig` (400): passam a ser chamados sem ele. */
+const noThinkingConfig = new Set<string>();
 export function resetDeadModels(): void {
   deadModels.clear();
+  noThinkingConfig.clear();
 }
+
+/** Sem "pensar" (thinkingBudget 0) a resposta sai em ~1 s; temperatura baixa para o tom ficar consistente. */
+const GENERATION_CONFIG = { temperature: 0.35, maxOutputTokens: 1024 };
 
 export type GenerateDeps = {
   sleep?: (ms: number) => Promise<void>;
@@ -70,14 +76,19 @@ export async function generateContent(req: GeminiRequest, deps: GenerateDeps = {
   const now = deps.now ?? Date.now;
   const deadline = now() + TOTAL_BUDGET_MS;
 
-  // Corpo montado uma vez: o payload multimodal é idêntico em todas as tentativas e modelos.
-  const body = JSON.stringify({
-    systemInstruction: { parts: [{ text: req.systemInstruction }] },
-    contents: req.contents,
-    tools: [{ functionDeclarations: req.functionDeclarations }],
-    toolConfig: { functionCallingConfig: { mode: "AUTO" } },
-    generationConfig: { temperature: 0.5, maxOutputTokens: 1024 },
-  });
+  // Corpo montado uma vez por variante (com/sem thinkingConfig): o payload multimodal é idêntico em todos os modelos.
+  const buildBody = (withThinking: boolean) =>
+    JSON.stringify({
+      systemInstruction: { parts: [{ text: req.systemInstruction }] },
+      contents: req.contents,
+      tools: [{ functionDeclarations: req.functionDeclarations }],
+      toolConfig: { functionCallingConfig: { mode: "AUTO" } },
+      generationConfig: withThinking
+        ? { ...GENERATION_CONFIG, thinkingConfig: { thinkingBudget: 0 } }
+        : GENERATION_CONFIG,
+    });
+  const bodyWithThinking = buildBody(true);
+  const bodyWithoutThinking = buildBody(false);
 
   const log: string[] = [];
   const chain = modelChain();
@@ -97,7 +108,7 @@ export async function generateContent(req: GeminiRequest, deps: GenerateDeps = {
         res = await fetch(geminiUrl(model), {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-          body,
+          body: noThinkingConfig.has(model) ? bodyWithoutThinking : bodyWithThinking,
           signal: AbortSignal.timeout(Math.min(ATTEMPT_TIMEOUT_MS, remaining)),
         });
       } catch (error) {
@@ -125,6 +136,13 @@ export async function generateContent(req: GeminiRequest, deps: GenerateDeps = {
         deadModels.set(model, now() + DEAD_MODEL_TTL_MS);
         log.push(`${model}: 404 ${errorBody.slice(0, 120)}`);
         break; // modelo indisponível para a conta: próximo
+      }
+      // Modelo que não aceita desligar o thinking: repete UMA vez, sem thinkingConfig (não é erro do pedido).
+      if (res.status === 400 && /thinking/i.test(errorBody) && !noThinkingConfig.has(model)) {
+        noThinkingConfig.add(model);
+        log.push(`${model}: 400 thinkingConfig recusado, repetindo sem ele`);
+        attempt--; // não consome uma repetição do backoff
+        continue;
       }
       if (!TRANSIENT_STATUSES.has(res.status)) {
         throw httpError; // 400/401/403/...: definitivo, não gasta retries nem modelos

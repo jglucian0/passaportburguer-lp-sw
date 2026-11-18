@@ -206,6 +206,8 @@ export async function sendCtaUrlButton(to: string, bodyText: string, buttonText:
     });
   } catch (error) {
     if (!canFallbackToText(error)) throw error;
+    // Se o corpo já traz o link (Pix), não repete.
+    if (bodyText.includes(url)) return sendTextMessage(to, bodyText);
     // O link nunca é cortado: o corpo é que cede espaço.
     return sendTextMessage(to, `${truncate(bodyText, LIMITS.text - url.length - 4, true)}\n\n${url}`);
   }

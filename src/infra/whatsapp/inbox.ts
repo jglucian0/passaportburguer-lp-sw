@@ -11,7 +11,40 @@ import { markMessageAsRead } from "./client";
 import { errorSummary } from "./log";
 import type { InboundMessage } from "./webhook";
 
-export const DEBOUNCE_MS = 5_000;
+/** Espera para agrupar mensagens em rajada (1,8 s: rápido sem partir "oi" + "queria um burger"). */
+export const DEBOUNCE_MS = 1_800;
+/** Lock atômico do turno por telefone (whatsapp_sessions.processing_lock_until). */
+export const TURN_LOCK_MS = 30_000;
+/** Quantas vezes um turno pode reencadear o seguinte (mensagens que chegaram enquanto respondia). */
+const MAX_FOLLOW_UPS = 3;
+
+/**
+ * Adquire o lock do turno de forma atômica (um único statement):
+ *   INSERT ... ON CONFLICT (phone) DO UPDATE SET processing_lock_until = now()+30s
+ *   WHERE processing_lock_until IS NULL OR processing_lock_until < now()
+ * Sem linha devolvida => outro turno já está respondendo este telefone.
+ */
+async function acquireTurnLock(phone: string): Promise<boolean> {
+  const until = new Date(Date.now() + TURN_LOCK_MS);
+  const rows = await db
+    .insert(whatsappSessions)
+    .values({ phone, processingLockUntil: until })
+    .onConflictDoUpdate({
+      target: whatsappSessions.phone,
+      set: { processingLockUntil: until },
+      setWhere: or(isNull(whatsappSessions.processingLockUntil), lt(whatsappSessions.processingLockUntil, sql`now()`)),
+    })
+    .returning({ phone: whatsappSessions.phone });
+  return rows.length > 0;
+}
+
+async function releaseTurnLock(phone: string): Promise<void> {
+  await db
+    .update(whatsappSessions)
+    .set({ processingLockUntil: null })
+    .where(eq(whatsappSessions.phone, phone))
+    .catch((error) => console.error("[whatsapp-bot] falha ao liberar o lock:", errorSummary(error)));
+}
 
 /**
  * Grava no buffer. `onConflictDoNothing` por wamid => reentrega da Meta é ignorada.
@@ -53,6 +86,7 @@ export async function processAfterDebounce(
   phone: string,
   myLastWamid: string,
   delayMs = DEBOUNCE_MS,
+  followUps = 0,
 ): Promise<void> {
   await sleep(delayMs);
 
@@ -64,6 +98,31 @@ export async function processAfterDebounce(
     .limit(1);
   if (!latest || latest.wamid !== myLastWamid) return; // outra execução assume (ou já processado)
 
+  // Lock atômico por telefone: se outro turno está respondendo, encerra sem duplicar a resposta.
+  // As mensagens novas ficam no buffer; o turno ativo as atende ao terminar (follow-up abaixo).
+  if (!(await acquireTurnLock(phone))) return;
+
+  let handled: string[] = [];
+  try {
+    handled = await claimAndRunBatch(phone);
+  } finally {
+    await releaseTurnLock(phone);
+  }
+
+  // Chegou mensagem enquanto este turno respondia? Atende na sequência, sem esperar outro webhook.
+  if (followUps < MAX_FOLLOW_UPS) {
+    const pending = await db
+      .select({ id: whatsappInboxBuffer.id, wamid: whatsappInboxBuffer.wamid })
+      .from(whatsappInboxBuffer)
+      .where(and(eq(whatsappInboxBuffer.phone, phone), eq(whatsappInboxBuffer.processed, false)))
+      .orderBy(desc(whatsappInboxBuffer.receivedAt), desc(whatsappInboxBuffer.id));
+    const fresh = pending.filter((r) => !handled.includes(r.id));
+    if (fresh.length > 0) await processAfterDebounce(phone, fresh[0].wamid, 0, followUps + 1);
+  }
+}
+
+/** Reserva o lote pendente, roda o turno e atualiza o buffer. Devolve os ids do lote tratado. */
+async function claimAndRunBatch(phone: string): Promise<string[]> {
   // Reserva atômica: só uma execução leva as linhas (as já reservadas e não expiradas ficam de fora).
   const now = new Date();
   const claimed = await db
@@ -82,7 +141,7 @@ export async function processAfterDebounce(
       receivedAt: whatsappInboxBuffer.receivedAt,
       attempts: whatsappInboxBuffer.attempts,
     });
-  if (claimed.length === 0) return;
+  if (claimed.length === 0) return [];
 
   const ordered = [...claimed].sort((a, b) => a.receivedAt.getTime() - b.receivedAt.getTime());
   const ids = ordered.map((r) => r.id);
@@ -100,7 +159,7 @@ export async function processAfterDebounce(
       .update(whatsappInboxBuffer)
       .set({ processed: true, lockedUntil: null })
       .where(inArray(whatsappInboxBuffer.id, ids));
-    return;
+    return ids;
   }
 
   // Falhou: itens que já esgotaram as tentativas são dados como processados; os demais voltam à fila.
@@ -119,6 +178,7 @@ export async function processAfterDebounce(
       .set({ lockedUntil: null })
       .where(inArray(whatsappInboxBuffer.id, retry));
   }
+  return ids;
 }
 
 /** true = lote concluído (resposta entregue ou bot pausado); false = falhou e deve voltar à fila. */

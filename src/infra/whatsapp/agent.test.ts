@@ -44,8 +44,12 @@ vi.mock("@/infra/db", () => {
 });
 
 const catalog = vi.hoisted(() => ({ value: [] as unknown[] }));
+const catalogLoads = vi.hoisted(() => ({ n: 0 }));
 vi.mock("@/infra/db/queries", () => ({
-  loadCatalog: async () => catalog.value,
+  loadCatalog: async () => {
+    catalogLoads.n++;
+    return catalog.value;
+  },
   loadDeliveryZones: async () => [
     { id: "z1", neighborhood: "Demais bairros de Maringá", feeCents: 0, estimatedMinutes: 40, isActive: true },
   ],
@@ -75,12 +79,13 @@ vi.mock("./client", () => ({
   downloadMedia: vi.fn(),
 }));
 
-import { customers, orderItems, orders, tenants, whatsappSessions } from "@/infra/db/schema";
+import { customers, orderItems, orders, tenants, whatsappMessages, whatsappSessions } from "@/infra/db/schema";
 
 import { buildUserParts, runBotTurn, type AgentDeps } from "./agent";
 import type { GeminiContent, GeminiRequest } from "./gemini";
 import type { ToolContext } from "./shared";
-import { executeTool } from "./tools";
+import { executeTool, getAvailableMenu, getCustomerContext, resetMenuCache, TOOL_DECLARATIONS } from "./tools";
+import { checkoutUrl } from "./shared";
 import type { InboundMessage } from "./webhook";
 
 const PHONE = "5543999999999";
@@ -96,7 +101,7 @@ const msg = (over: Partial<InboundMessage> = {}): InboundMessage => ({
   ...over,
 });
 
-const ctx = (): ToolContext => ({ phone: PHONE, afterReply: [] });
+const ctx = (): ToolContext => ({ phone: PHONE, afterReply: [], cta: null });
 
 beforeEach(() => {
   process.env.WHATSAPP_SESSION_SECRET = "test-secret-with-enough-length";
@@ -104,6 +109,8 @@ beforeEach(() => {
   h.rows.clear();
   h.writes.length = 0;
   wa.cta.mockClear();
+  resetMenuCache();
+  catalogLoads.n = 0;
   wa.text.mockReset().mockResolvedValue({});
   pix.fn.mockReset();
   h.rows.set(tenants, [{ id: "t1", minOrderCents: 0 }]);
@@ -138,7 +145,7 @@ beforeEach(() => {
 describe("tools: Cliente Novo vs Cadastrado", () => {
   it("novo: { isRegistered: false }", async () => {
     h.rows.set(customers, []);
-    expect(await executeTool(ctx(), "getCustomerContext")).toEqual({ isRegistered: false });
+    expect(await getCustomerContext(PHONE)).toEqual({ isRegistered: false });
   });
 
   it("cadastrado: nome, endereço e resumo do último pedido concluído", async () => {
@@ -153,7 +160,7 @@ describe("tools: Cliente Novo vs Cadastrado", () => {
       { productId: BURGER, productNameSnapshot: "Nova York", quantity: 1, addonsSnapshot: [] },
       { productId: null, productNameSnapshot: "Batata", quantity: 1, addonsSnapshot: [] },
     ]);
-    const out = await executeTool(ctx(), "getCustomerContext");
+    const out = await getCustomerContext(PHONE);
     expect(out).toMatchObject({
       isRegistered: true,
       firstName: "João",
@@ -162,29 +169,41 @@ describe("tools: Cliente Novo vs Cadastrado", () => {
     });
   });
 
-  it("o modelo não escolhe o telefone: args.phone é ignorado", async () => {
-    h.rows.set(customers, []);
-    await executeTool(ctx(), "getCustomerContext", { phone: "5511000000000" });
-    expect(JSON.stringify(h.writes)).not.toContain("5511000000000");
+  it("cliente com CPF: o contexto marca hasDocument (sem expor o CPF)", async () => {
+    h.rows.set(customers, [{ id: "c1", name: "João", phone: "43996098333", documentNumber: "52998224725" }]);
+    const out = await getCustomerContext("554396098333");
+    expect(out).toMatchObject({ isRegistered: true, hasDocument: true });
+    expect(JSON.stringify(out)).not.toContain("52998224725");
+  });
+
+  it("getCustomerContext e getAvailableMenu NÃO são mais tools (vão no systemInstruction)", async () => {
+    const names = TOOL_DECLARATIONS.map((t) => t.name);
+    expect(names).not.toContain("getCustomerContext");
+    expect(names).not.toContain("getAvailableMenu");
+    expect(await executeTool(ctx(), "getCustomerContext")).toMatchObject({ error: expect.stringContaining("desconhecida") });
   });
 
   it("menu: só disponíveis, com ids e centavos exatos", async () => {
-    const out = (await executeTool(ctx(), "getAvailableMenu")) as {
-      categories: { products: { priceCents: number }[] }[];
-    };
+    const out = await getAvailableMenu();
     expect(out.categories[0].products[0].priceCents).toBe(3500);
   });
 
-  it("link do Cardápio Rápido: token assinado, sem telefone puro, botão enviado após a resposta", async () => {
+  it("menu em cache por 5 minutos (não relê o catálogo a cada mensagem)", async () => {
+    await getAvailableMenu();
+    await getAvailableMenu();
+    expect(catalogLoads.n).toBe(1);
+    await getAvailableMenu(Date.now() + 5 * 60_000 + 1000);
+    expect(catalogLoads.n).toBe(2);
+  });
+
+  it("link do Cardápio Rápido: token assinado, sem telefone puro; vira o botão da MESMA mensagem da resposta", async () => {
     const c = ctx();
     const out = (await executeTool(c, "generateQuickMenuLink")) as { sent: boolean };
     expect(out.sent).toBe(true);
-    expect(c.afterReply).toHaveLength(1);
-    await c.afterReply[0]();
-    const [, , label, url] = wa.cta.mock.calls[0];
-    expect(label).toBe("Abrir Cardápio Rápido");
-    expect(url).toMatch(/^https:\/\/app\.test\/cardapio-rapido\?token=/);
-    expect(url).not.toContain(PHONE);
+    expect(c.afterReply).toHaveLength(0); // nada de mensagem extra depois
+    expect(c.cta?.buttonText).toBe("Cardápio Rápido");
+    expect(c.cta?.url).toMatch(/^https:\/\/app\.test\/cardapio-rapido\?token=/);
+    expect(c.cta?.url).not.toContain(PHONE);
   });
 });
 
@@ -245,6 +264,10 @@ describe("saveDraftOrder / finalizeOrderAndCheckout", () => {
     const out = await executeTool(c, "finalizeOrderAndCheckout", { paymentMethod: "PIX", documentNumber: "52998224725" });
     expect(out).toMatchObject({ ok: true, pixCodeSentSeparately: true });
     expect(JSON.stringify(out)).not.toContain("PIXCODE");
+    // Botão de checkout (mensagem da resposta) + link completo no corpo + código sozinho depois.
+    expect(c.cta).toMatchObject({ appendUrlToBody: true });
+    expect(c.cta?.url).toMatch(/^https:\/\/app\.test\/pedido\/[0-9a-f-]{36}\/pagamento$/);
+    expect(c.afterReply).toHaveLength(1);
     await c.afterReply[0]();
     expect(wa.text).toHaveBeenCalledWith(PHONE, "00020126PIXCODE");
     const claim = h.writes.find((w) => w.op === "update" && w.table === whatsappSessions);
@@ -258,15 +281,44 @@ describe("saveDraftOrder / finalizeOrderAndCheckout", () => {
     expect(pix.fn).not.toHaveBeenCalled();
   });
 
-  it("Cartão: botão 'Pagar com Cartão' apontando para /pagamento/{id}", async () => {
+  it("Cartão: botão 'Pagar com Cartão' apontando para /pedido/{id}/pagamento", async () => {
     sessionWithDraft();
     const c = ctx();
     const out = await executeTool(c, "finalizeOrderAndCheckout", { paymentMethod: "CREDIT_CARD", documentNumber: "52998224725" });
     expect(out).toMatchObject({ ok: true, cardButtonSentSeparately: true });
-    await c.afterReply[0]();
-    const [, , label, url] = wa.cta.mock.calls[0];
-    expect(label).toBe("Pagar com Cartão");
-    expect(url).toMatch(/^https:\/\/app\.test\/pagamento\/[0-9a-f-]{36}$/);
+    expect(c.cta?.buttonText).toBe("Pagar com Cartão");
+    expect(c.cta?.url).toMatch(/^https:\/\/app\.test\/pedido\/[0-9a-f-]{36}\/pagamento$/);
+  });
+
+  it("URL de checkout: sem NEXT_PUBLIC_APP_URL usa o domínio canônico; barra final e esquema ausente são normalizados", () => {
+    const id = "33333333-3333-4333-8333-333333333333";
+    const want = `https://www.passaporteburguer.com.br/pedido/${id}/pagamento`;
+    delete process.env.NEXT_PUBLIC_APP_URL;
+    expect(checkoutUrl(id)).toBe(want);
+    process.env.NEXT_PUBLIC_APP_URL = "https://www.passaporteburguer.com.br/";
+    expect(checkoutUrl(id)).toBe(want);
+    process.env.NEXT_PUBLIC_APP_URL = "www.passaporteburguer.com.br";
+    expect(checkoutUrl(id)).toBe(want);
+    expect(checkoutUrl(id)).not.toContain("undefined");
+  });
+
+  it("cliente já cadastrado com CPF: Pix usa o CPF salvo, sem pedir documento", async () => {
+    sessionWithDraft();
+    h.rows.set(customers, [
+      { id: "cu1", name: "Maria", phone: "43996098333", email: null, asaasCustomerId: null, documentNumber: "52998224725" },
+    ]);
+    pix.fn.mockResolvedValue({ pixPayload: "PIX" });
+    const out = await executeTool(ctx(), "finalizeOrderAndCheckout", { paymentMethod: "PIX" });
+    expect(out).toMatchObject({ ok: true });
+    expect(pix.fn.mock.calls[0][0].customer.cpfCnpj).toBe("52998224725");
+  });
+
+  it("endereço confirmado pelo cliente é gravado na sessão (addressConfirmed)", async () => {
+    h.rows.set(customers, [{ id: "cu1", name: "Maria", phone: "43999999999" }]);
+    const out = await executeTool(ctx(), "saveDraftOrder", draft({ addressConfirmed: true }));
+    expect(out).toMatchObject({ ok: true });
+    const save = h.writes.find((w) => w.op === "insert" && w.table === whatsappSessions);
+    expect(save?.values).toMatchObject({ addressConfirmed: true });
   });
 
   it("sem rascunho não cria pedido", async () => {
@@ -331,6 +383,7 @@ describe("runBotTurn (Gemini mockado)", () => {
   function deps(script: GeminiContent[]) {
     const requests: GeminiRequest[] = [];
     const sent: string[] = [];
+    const ctas: { body: string; button: string; url: string }[] = [];
     const d: AgentDeps = {
       generate: async (req) => {
         requests.push(JSON.parse(JSON.stringify(req)));
@@ -340,40 +393,71 @@ describe("runBotTurn (Gemini mockado)", () => {
       sendText: async (_to, t) => {
         sent.push(t);
       },
+      sendCta: async (_to, body, button, url) => {
+        ctas.push({ body, button, url });
+      },
       download: vi.fn().mockResolvedValue({ buffer: Buffer.from("a"), mimeType: "audio/ogg" }),
     };
-    return { d, requests, sent };
+    return { d, requests, sent, ctas };
   }
 
-  it("Cliente Novo: a tool devolve isRegistered=false ao modelo e a resposta é enviada", async () => {
+  it("Cliente Novo: contexto vem no systemInstruction (sem round-trip de tool) e a resposta é enviada", async () => {
     h.rows.set(customers, []);
-    const { d, requests, sent } = deps([modelCall("getCustomerContext"), modelText("Bem-vindo ao Passaporte Burguer!")]);
+    const { d, requests, sent } = deps([modelText("Bem-vindo ao Passaporte Burguer!")]);
     await runBotTurn(PHONE, [msg()], d);
-    const fr = requests[1].contents.at(-1)!.parts[0].functionResponse!;
-    expect(fr.name).toBe("getCustomerContext");
-    expect(fr.response).toEqual({ isRegistered: false });
+    expect(requests).toHaveLength(1); // uma única chamada ao Gemini
+    expect(requests[0].systemInstruction).toContain('"isRegistered":false');
     expect(sent).toEqual(["Bem-vindo ao Passaporte Burguer!"]);
   });
 
-  it("Cliente Cadastrado: a tool devolve o contexto personalizado", async () => {
-    h.rows.set(customers, [{ id: "c1", name: "João Pedro", phone: "43999999999" }]);
+  it("Cliente Cadastrado: nome, último pedido, cardápio e sessão já vão no systemInstruction", async () => {
+    h.rows.set(customers, [{ id: "c1", name: "João Pedro", phone: "43999999999", documentNumber: "52998224725" }]);
     h.rows.set(orders, [{ id: "o1", addressSnapshot: null }]);
     h.rows.set(orderItems, [{ productId: BURGER, productNameSnapshot: "Nova York", quantity: 1, addonsSnapshot: [] }]);
-    const { d, requests, sent } = deps([modelCall("getCustomerContext"), modelText("E aí, João!")]);
+    h.rows.set(whatsappSessions, [
+      { phone: PHONE, state: "CONFIRMING_ORDER", draftCart: null, deliveryAddress: null, addressConfirmed: true },
+    ]);
+    const { d, requests, sent } = deps([modelText("Fala, João!")]);
     await runBotTurn(PHONE, [msg()], d);
-    const fr = requests[1].contents.at(-1)!.parts[0].functionResponse!;
-    expect(fr.response).toMatchObject({ isRegistered: true, firstName: "João", lastOrderSummary: "1x Nova York" });
-    expect(sent).toEqual(["E aí, João!"]);
+    expect(requests).toHaveLength(1);
+    const sys = requests[0].systemInstruction;
+    expect(sys).toContain('"firstName":"João"');
+    expect(sys).toContain('"hasDocument":true');
+    expect(sys).not.toContain("52998224725"); // CPF nunca vai ao modelo
+    expect(sys).toContain("Nova York");
+    expect(sys).toContain('"addressConfirmed":true');
+    expect(sent).toEqual(["Fala, João!"]);
+    expect(requests[0].functionDeclarations?.map((t) => t.name)).not.toContain("getAvailableMenu");
   });
 
-  it("system prompt contém os dois fluxos e a regra do Pix em mensagem separada", async () => {
+  it("saudação só com histórico vazio", async () => {
+    const first = deps([modelText("oi")]);
+    await runBotTurn(PHONE, [msg()], first.d);
+    expect(first.requests[0].systemInstruction).toContain("HISTÓRICO VAZIO");
+
+    h.rows.set(whatsappMessages, [
+      { role: "user", content: "oi" },
+      { role: "assistant", content: "Fala!" },
+    ]);
+    const next = deps([modelText("beleza")]);
+    await runBotTurn(PHONE, [msg({ wamid: "w2" })], next.d);
+    expect(next.requests[0].systemInstruction).toContain("NÃO cumprimente");
+    expect(next.requests[0].systemInstruction).not.toContain("HISTÓRICO VAZIO");
+  });
+
+  it("system prompt: identidade Passaporte Burguer, tom humano e regras de botão único / CPF / endereço", async () => {
     const { d, requests } = deps([modelText("oi")]);
     await runBotTurn(PHONE, [msg()], d);
     const sys = requests[0].systemInstruction;
-    expect(sys).toContain("FLUXO A");
-    expect(sys).toContain("FLUXO B");
-    expect(sys).toContain("mensagem separada");
+    expect(sys).toContain("Passaporte Burguer");
     expect(sys).toContain("https://app.test");
+    expect(sys).toMatch(/Bora embarcar/);
+    expect(sys).toMatch(/máximo 3 linhas/i);
+    expect(sys).toMatch(/1 emoji/i);
+    expect(sys).toMatch(/NUNCA peça o CPF/i);
+    expect(sys).toContain("addressConfirmed");
+    // Frases proibidas aparecem só como lista de proibições.
+    expect(sys).toMatch(/PROIBIDO[^]*Com certeza/);
   });
 
   it("áudio chega ao Gemini como inlineData audio/ogg", async () => {
@@ -383,25 +467,57 @@ describe("runBotTurn (Gemini mockado)", () => {
     expect(parts.some((p) => p.inlineData?.mimeType === "audio/ogg")).toBe(true);
   });
 
-  it("Pix: texto do modelo primeiro, código Pix depois, sozinho", async () => {
+  it("Pix: UMA mensagem com botão (resumo + link completo no corpo), depois o código Pix sozinho", async () => {
     h.rows.set(whatsappSessions, [
       { phone: PHONE, customerId: "cu1", draftCart: [{ productId: BURGER, quantity: 1, addons: [] }], deliveryAddress: null },
     ]);
     h.rows.set(customers, [{ id: "cu1", name: "Maria", phone: "43999999999", email: null, asaasCustomerId: "cus_1" }]);
     pix.fn.mockResolvedValue({ pixPayload: "PIXCOPIAECOLA" });
     const order: string[] = [];
-    const { d } = deps([
+    const { d, ctas } = deps([
       modelCall("finalizeOrderAndCheckout", { paymentMethod: "PIX" }),
-      modelText("Pedido feito! O código vem a seguir."),
+      modelText("Já mandei pra chapa! Total R$ 35,00."),
     ]);
     d.sendText = async (_t, text) => {
-      order.push(text);
+      order.push(`text:${text}`);
+    };
+    d.sendCta = async (_t, body, button, url) => {
+      order.push("cta");
+      ctas.push({ body, button, url });
     };
     wa.text.mockImplementation(async (_t: string, text: string) => {
-      order.push(text);
+      order.push(`text:${text}`);
     });
     await runBotTurn(PHONE, [msg({ content: "pix" })], d);
-    expect(order).toEqual(["Pedido feito! O código vem a seguir.", "PIXCOPIAECOLA"]);
+    // Nenhum texto solto antes do botão: o convite está DENTRO do corpo do botão.
+    expect(order).toEqual(["cta", "text:PIXCOPIAECOLA"]);
+    expect(ctas).toHaveLength(1);
+    expect(ctas[0].body).toContain("Já mandei pra chapa!");
+    expect(ctas[0].url).toMatch(/^https:\/\/app\.test\/pedido\/[0-9a-f-]{36}\/pagamento$/);
+    expect(ctas[0].body).toContain(ctas[0].url); // link https:// completo também no texto
+    expect(ctas[0].body).not.toContain("PIXCOPIAECOLA");
+  });
+
+  it("botão (Cardápio Rápido): o texto da resposta vira o corpo do botão, sem mensagem de texto separada", async () => {
+    const { d, sent, ctas } = deps([
+      modelCall("generateQuickMenuLink"),
+      modelText("Escolhe teu lanche aqui no cardápio rápido 👇"),
+    ]);
+    expect(await runBotTurn(PHONE, [msg()], d)).toBe(true);
+    expect(sent).toEqual([]);
+    expect(ctas).toHaveLength(1);
+    expect(ctas[0].body).toBe("Escolhe teu lanche aqui no cardápio rápido 👇");
+    expect(ctas[0].button).toBe("Cardápio Rápido");
+  });
+
+  it("botão recusado pela Meta: cai para texto (a resposta não se perde)", async () => {
+    const { d, sent } = deps([modelCall("generateQuickMenuLink"), modelText("Escolhe aqui 👇")]);
+    d.sendCta = async () => {
+      throw new Error("meta recusou");
+    };
+    expect(await runBotTurn(PHONE, [msg()], d)).toBe(true);
+    expect(sent[0]).toContain("Escolhe aqui 👇");
+    expect(sent[0]).toMatch(/cardapio-rapido/);
   });
 
   it("2) falha total do Gemini: mensagem de contingência ao cliente (com o link do cardápio) e retorno false", async () => {

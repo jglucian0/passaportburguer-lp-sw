@@ -72,6 +72,22 @@ describe("notifyPaymentConfirmed", () => {
     expect(wa.cta).not.toHaveBeenCalled();
   });
 
+  it("cliente com CPF já cadastrado (mesmo sem endereço salvo) NÃO recebe o botão 'Completar cadastro'", async () => {
+    f.ctx.rows.set(customers, [{ id: "cu1", name: "Maria", phone: "43999999999", passwordHash: null, documentNumber: "52998224725" }]);
+    f.ctx.rows.set(customerAddresses, []);
+    await notifyPaymentConfirmed(ORDER);
+    expect(wa.text).toHaveBeenCalledTimes(1);
+    expect(wa.cta).not.toHaveBeenCalled();
+  });
+
+  it("9º dígito: cliente salvo COM o 9, wa_id da sessão SEM o 9 => acha a sessão e bloqueia o CTA de cadastro", async () => {
+    f.ctx.rows.set(customers, [{ id: "cu1", name: "João", phone: "43996098333", passwordHash: null, documentNumber: "52998224725" }]);
+    f.ctx.rows.set(whatsappSessions, [{ phone: "554396098333", lastInteractionAt: new Date() }]);
+    await notifyPaymentConfirmed(ORDER);
+    expect(wa.text).toHaveBeenCalledWith("554396098333", expect.stringContaining("Pagamento confirmado"));
+    expect(wa.cta).not.toHaveBeenCalled();
+  });
+
   it("quem tem conta no site (senha) não recebe o convite", async () => {
     f.ctx.rows.set(customers, [{ id: "cu1", name: "Maria", phone: "43999999999", passwordHash: "x", documentNumber: null }]);
     await notifyPaymentConfirmed(ORDER);

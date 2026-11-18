@@ -27,7 +27,7 @@ const req: GeminiRequest = {
       ],
     },
   ],
-  functionDeclarations: [{ name: "getCustomerContext", description: "x" }],
+  functionDeclarations: [{ name: "getDraftCart", description: "x" }],
 };
 
 const okRes = () =>
@@ -108,7 +108,25 @@ describe("generateContent — resiliência", () => {
     expect([1, 2, 3].every((i) => bodyOf(i) === first)).toBe(true);
     expect(first).toContain('"mimeType":"audio/ogg"');
     expect(first).toContain('"mimeType":"image/jpeg"');
-    expect(first).toContain("getCustomerContext");
+    expect(first).toContain("getDraftCart");
+  });
+
+  it("desliga os thinking tokens e usa temperatura 0.35", async () => {
+    fetchMock.mockResolvedValue(okRes());
+    await generateContent(req, { sleep });
+    const cfg = JSON.parse(bodyOf(0)).generationConfig;
+    expect(cfg.temperature).toBe(0.35);
+    expect(cfg.thinkingConfig).toEqual({ thinkingBudget: 0 });
+  });
+
+  it("modelo que recusa thinkingConfig (400): repete o MESMO modelo sem ele, em vez de falhar", async () => {
+    fetchMock
+      .mockResolvedValueOnce(errRes(400, "Thinking budget 0 is invalid for this model. thinkingConfig", "INVALID_ARGUMENT"))
+      .mockResolvedValueOnce(okRes());
+    const out = await generateContent(req, { sleep });
+    expect(out?.parts[0].text).toBe("olá");
+    expect(urlOf(1)).toBe(geminiUrl(M1));
+    expect(JSON.parse(bodyOf(1)).generationConfig.thinkingConfig).toBeUndefined();
   });
 
   it.each([429, 500, 502, 504])("%i também é transitório (repete e depois troca de modelo)", async (status) => {
