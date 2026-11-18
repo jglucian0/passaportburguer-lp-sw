@@ -82,6 +82,7 @@ vi.mock("./client", () => ({
 import { customers, orderItems, orders, tenants, whatsappMessages, whatsappSessions } from "@/infra/db/schema";
 
 import { buildUserParts, runBotTurn, type AgentDeps } from "./agent";
+import { finalizeOrderAndCheckout } from "./order-flow";
 import type { GeminiContent, GeminiRequest } from "./gemini";
 import type { ToolContext } from "./shared";
 import { executeTool, getAvailableMenu, getCustomerContext, resetMenuCache, TOOL_DECLARATIONS } from "./tools";
@@ -198,8 +199,9 @@ describe("tools: Cliente Novo vs Cadastrado", () => {
 
   it("link do Cardápio Rápido: token assinado, sem telefone puro; vira o botão da MESMA mensagem da resposta", async () => {
     const c = ctx();
-    const out = (await executeTool(c, "generateQuickMenuLink")) as { sent: boolean };
+    const out = (await executeTool(c, "sendQuickMenu")) as { sent: boolean };
     expect(out.sent).toBe(true);
+    expect(JSON.stringify(out)).not.toContain("http"); // o modelo nunca vê a URL
     expect(c.afterReply).toHaveLength(0); // nada de mensagem extra depois
     expect(c.cta?.buttonText).toBe("Cardápio Rápido");
     expect(c.cta?.url).toMatch(/^https:\/\/app\.test\/cardapio-rapido\?token=/);
@@ -207,76 +209,184 @@ describe("tools: Cliente Novo vs Cadastrado", () => {
   });
 });
 
-describe("saveDraftOrder / finalizeOrderAndCheckout", () => {
-  const draft = (over: Record<string, unknown> = {}) => ({
+describe("updateCart (carrinho validado no servidor)", () => {
+  const cartArgs = (over: Record<string, unknown> = {}) => ({
     items: [{ productId: BURGER, quantity: 2, addons: [{ addonId: BACON, quantity: 1 }], notes: "sem cebola" }],
-    deliveryType: "DELIVERY",
-    address: { street: "Rua A", number: "10" },
-    customerName: "Maria",
     ...over,
   });
 
-  it("calcula subtotal + frete no servidor (ignora preços enviados)", async () => {
-    h.rows.set(customers, [{ id: "cu1", name: "Maria", phone: "43999999999" }]);
-    const out = (await executeTool(ctx(), "saveDraftOrder", { ...draft(), subtotalCents: 1, totalCents: 1 })) as Record<string, unknown>;
-    expect(out.ok).toBe(true);
-    // 2 x (3500 + 500) = 8000 + frete
-    expect(out.subtotalFormatted).toMatch(/80,00/);
+  it("calcula o subtotal em centavos no servidor (ignora preços enviados) e sobrescreve o draftCart", async () => {
+    const out = (await executeTool(ctx(), "updateCart", { ...cartArgs(), subtotalCents: 1, totalCents: 1 })) as Record<string, unknown>;
+    expect(out).toMatchObject({ ok: true, subtotalCents: 8000, nextStep: "DELIVERY" }); // 2 x (3500 + 500)
     const saved = h.writes.find((w) => w.table === whatsappSessions);
-    expect((saved?.values as { draftCart: unknown[] }).draftCart).toHaveLength(1);
+    expect((saved?.values as { draftCart: unknown[] }).draftCart).toEqual([
+      { productId: BURGER, quantity: 2, notes: "sem cebola", addons: [{ addonId: BACON, quantity: 1 }] },
+    ]);
   });
 
-  it("rejeita produto e adicional inexistentes", async () => {
-    h.rows.set(customers, [{ id: "cu1" }]);
+  it("rejeita produto e adicional inexistentes (nunca inventa item)", async () => {
     const bad = "33333333-3333-4333-8333-333333333333";
-    const a = (await executeTool(ctx(), "saveDraftOrder", draft({ items: [{ productId: bad, quantity: 1 }] }))) as { ok: boolean };
+    const a = (await executeTool(ctx(), "updateCart", { items: [{ productId: bad, quantity: 1 }] })) as { ok: boolean };
     const b = (await executeTool(
       ctx(),
-      "saveDraftOrder",
-      draft({ items: [{ productId: BURGER, quantity: 1, addons: [{ addonId: bad, quantity: 1 }] }] }),
+      "updateCart",
+      { items: [{ productId: BURGER, quantity: 1, addons: [{ addonId: bad, quantity: 1 }] }] },
     )) as { ok: boolean };
     expect(a.ok).toBe(false);
     expect(b.ok).toBe(false);
     expect(h.writes.find((w) => w.table === whatsappSessions)).toBeUndefined();
   });
 
-  it("entrega sem endereço é recusada", async () => {
-    const out = (await executeTool(ctx(), "saveDraftOrder", draft({ address: null }))) as { ok: boolean };
-    expect(out.ok).toBe(false);
+  it("observação geral vale para os itens sem observação própria", async () => {
+    await executeTool(ctx(), "updateCart", {
+      items: [
+        { productId: BURGER, quantity: 1 },
+        { productId: BURGER, quantity: 1, notes: "ao ponto" },
+      ],
+      notes: "troco para 50",
+    });
+    const saved = h.writes.find((w) => w.table === whatsappSessions);
+    expect((saved?.values as { draftCart: { notes: string }[] }).draftCart.map((i) => i.notes)).toEqual(["troco para 50", "ao ponto"]);
   });
 
-  const sessionWithDraft = () => {
+  it("carrinho vazio é recusado", async () => {
+    expect(await executeTool(ctx(), "updateCart", { items: [] })).toMatchObject({ ok: false });
+  });
+});
+
+describe("setDeliveryAndPayment (estado explícito na sessão)", () => {
+  const savedWrite = () => h.writes.find((w) => w.op === "insert" && w.table === whatsappSessions);
+  const cartRow = (over: Record<string, unknown> = {}) => ({
+    phone: PHONE,
+    customerId: "cu1",
+    draftCart: [{ productId: BURGER, quantity: 1, addons: [] }],
+    deliveryAddress: null,
+    addressConfirmed: false,
+    paymentMethod: null,
+    ...over,
+  });
+
+  it("endereço novo confirmado + pagamento: grava endereço, addressConfirmed e paymentMethod e devolve o total oficial", async () => {
+    h.rows.set(customers, [{ id: "cu1", name: "Maria", phone: "43999999999" }]);
+    h.rows.set(whatsappSessions, [cartRow()]);
+    const out = (await executeTool(ctx(), "setDeliveryAndPayment", {
+      deliveryType: "DELIVERY",
+      address: { street: "Rua A", number: "10" },
+      addressConfirmed: true,
+      paymentMethod: "PIX",
+    })) as { ok: boolean; nextStep: string; pricing: { subtotalCents: number; totalFormatted: string } };
+    expect(out).toMatchObject({ ok: true, nextStep: "CHECKOUT", pricing: { subtotalCents: 3500 } });
+    expect(savedWrite()?.values).toMatchObject({ addressConfirmed: true, paymentMethod: "PIX" });
+    expect((savedWrite()?.values as { deliveryAddress: { street: string } }).deliveryAddress.street).toBe("Rua A");
+  });
+
+  it("cliente cadastrado confirma o endereço salvo: usa customer.defaultAddress sem o modelo informar o endereço", async () => {
+    h.rows.set(customers, [{ id: "cu1", name: "João", phone: "43999999999" }]);
+    h.rows.set(orders, [
+      { id: "o1", addressSnapshot: { street: "Rua Salva", number: "77", complement: null, reference: null, neighborhood: "Zona 07", district: "Zona 07" } },
+    ]);
+    h.rows.set(whatsappSessions, [cartRow()]);
+    const out = await executeTool(ctx(), "setDeliveryAndPayment", { deliveryType: "DELIVERY", addressConfirmed: true });
+    expect(out).toMatchObject({ ok: true, nextStep: "PAYMENT" });
+    expect((savedWrite()?.values as { deliveryAddress: { street: string; number: string } }).deliveryAddress).toMatchObject({
+      street: "Rua Salva",
+      number: "77",
+    });
+  });
+
+  it("retirada: sem endereço, já resolvida (addressConfirmed true)", async () => {
+    h.rows.set(customers, [{ id: "cu1", name: "Maria", phone: "43999999999" }]);
+    h.rows.set(whatsappSessions, [cartRow()]);
+    const out = await executeTool(ctx(), "setDeliveryAndPayment", { deliveryType: "PICKUP", addressConfirmed: false, paymentMethod: "CASH" });
+    expect(out).toMatchObject({ ok: true, deliveryType: "PICKUP", addressConfirmed: true, nextStep: "CHECKOUT" });
+    expect(savedWrite()?.values).toMatchObject({ deliveryAddress: null, addressConfirmed: true, paymentMethod: "CASH" });
+  });
+
+  it("entrega sem endereço (e sem endereço salvo) é recusada", async () => {
+    h.rows.set(customers, [{ id: "cu1", name: "Maria", phone: "43999999999" }]);
+    h.rows.set(whatsappSessions, [cartRow()]);
+    const out = await executeTool(ctx(), "setDeliveryAndPayment", { deliveryType: "DELIVERY", addressConfirmed: true });
+    expect(out).toMatchObject({ ok: false });
+    expect(savedWrite()).toBeUndefined();
+  });
+
+  it("cliente novo sem nome: pede o nome e não grava nada", async () => {
+    h.rows.set(customers, []);
+    const out = (await executeTool(ctx(), "setDeliveryAndPayment", { deliveryType: "PICKUP", addressConfirmed: true })) as { ok: boolean; error: string };
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/nome/i);
+  });
+
+  it("CPF informado é validado e salvo no cadastro", async () => {
+    h.rows.set(customers, [{ id: "cu1", name: "Maria", phone: "43999999999" }]);
+    h.rows.set(whatsappSessions, [cartRow()]);
+    const bad = await executeTool(ctx(), "setDeliveryAndPayment", { deliveryType: "PICKUP", addressConfirmed: true, documentNumber: "111" });
+    expect(bad).toMatchObject({ ok: false });
+    await executeTool(ctx(), "setDeliveryAndPayment", { deliveryType: "PICKUP", addressConfirmed: true, documentNumber: "529.982.247-25" });
+    expect(h.writes.find((w) => w.op === "update" && w.table === customers)?.set).toMatchObject({ documentNumber: "52998224725" });
+  });
+});
+
+describe("finalizeOrderAndCheckout (disparado só pelo backend)", () => {
+  it("o fechamento NÃO é tool do modelo", () => {
+    const names = TOOL_DECLARATIONS.map((t) => t.name);
+    expect(names).toEqual(expect.arrayContaining(["updateCart", "setDeliveryAndPayment", "sendQuickMenu"]));
+    expect(names).not.toContain("finalizeOrderAndCheckout");
+    expect(names).not.toContain("saveDraftOrder");
+  });
+
+  const sessionWithDraft = (over: Record<string, unknown> = {}) => {
     h.rows.set(whatsappSessions, [
       {
         phone: PHONE,
         customerId: "cu1",
         draftCart: [{ productId: BURGER, quantity: 1, addons: [] }],
         deliveryAddress: null, // retirada
+        addressConfirmed: true,
+        paymentMethod: null,
+        ...over,
       },
     ]);
     h.rows.set(customers, [{ id: "cu1", name: "Maria", phone: "43999999999", email: null, asaasCustomerId: null }]);
   };
 
-  it("Pix: o modelo nunca vê o código; ele sai como mensagem própria", async () => {
+  it("Pix: devolve o código ao agente (não ao modelo); botão com link completo e código sozinho depois", async () => {
     sessionWithDraft();
     pix.fn.mockResolvedValue({ pixPayload: "00020126PIXCODE" });
     const c = ctx();
-    const out = await executeTool(c, "finalizeOrderAndCheckout", { paymentMethod: "PIX", documentNumber: "52998224725" });
-    expect(out).toMatchObject({ ok: true, pixCodeSentSeparately: true });
-    expect(JSON.stringify(out)).not.toContain("PIXCODE");
-    // Botão de checkout (mensagem da resposta) + link completo no corpo + código sozinho depois.
+    const out = await finalizeOrderAndCheckout(c, { paymentMethod: "PIX", documentNumber: "52998224725" });
+    expect(out).toMatchObject({ ok: true, paymentMethod: "PIX", deliveryType: "PICKUP" });
     expect(c.cta).toMatchObject({ appendUrlToBody: true });
     expect(c.cta?.url).toMatch(/^https:\/\/app\.test\/pedido\/[0-9a-f-]{36}\/pagamento$/);
     expect(c.afterReply).toHaveLength(1);
     await c.afterReply[0]();
     expect(wa.text).toHaveBeenCalledWith(PHONE, "00020126PIXCODE");
-    const claim = h.writes.find((w) => w.op === "update" && w.table === whatsappSessions);
-    expect(claim?.set).toMatchObject({ draftCart: null });
+  });
+
+  it("ao finalizar, isola a sessão: sessionStartedAt novo, carrinho vazio, endereço/pagamento limpos, IDLE", async () => {
+    sessionWithDraft();
+    pix.fn.mockResolvedValue({ pixPayload: "PIX" });
+    const before = Date.now();
+    await finalizeOrderAndCheckout(ctx(), { paymentMethod: "PIX", documentNumber: "52998224725" });
+    const claim = h.writes.find((w) => w.op === "update" && w.table === whatsappSessions && "draftCart" in (w.set as object));
+    expect(claim?.set).toMatchObject({ draftCart: [], addressConfirmed: false, paymentMethod: null, state: "IDLE" });
+    expect((claim?.set as { sessionStartedAt: Date }).sessionStartedAt.getTime()).toBeGreaterThanOrEqual(before);
+  });
+
+  it("usa o paymentMethod gravado na sessão quando não vem argumento", async () => {
+    sessionWithDraft({ paymentMethod: "CASH" });
+    const out = await finalizeOrderAndCheckout(ctx(), {});
+    expect(out).toMatchObject({ ok: true, paymentMethod: "CASH" });
+  });
+
+  it("sem forma de pagamento não cria pedido", async () => {
+    sessionWithDraft();
+    expect(await finalizeOrderAndCheckout(ctx(), {})).toMatchObject({ ok: false });
   });
 
   it("Pix sem CPF (cliente sem Asaas) pede o documento e não cria pedido", async () => {
     sessionWithDraft();
-    const out = await executeTool(ctx(), "finalizeOrderAndCheckout", { paymentMethod: "PIX" });
+    const out = await finalizeOrderAndCheckout(ctx(), { paymentMethod: "PIX" });
     expect(out).toMatchObject({ ok: false, needsDocument: true });
     expect(pix.fn).not.toHaveBeenCalled();
   });
@@ -284,8 +394,8 @@ describe("saveDraftOrder / finalizeOrderAndCheckout", () => {
   it("Cartão: botão 'Pagar com Cartão' apontando para /pedido/{id}/pagamento", async () => {
     sessionWithDraft();
     const c = ctx();
-    const out = await executeTool(c, "finalizeOrderAndCheckout", { paymentMethod: "CREDIT_CARD", documentNumber: "52998224725" });
-    expect(out).toMatchObject({ ok: true, cardButtonSentSeparately: true });
+    const out = await finalizeOrderAndCheckout(c, { paymentMethod: "CREDIT_CARD", documentNumber: "52998224725" });
+    expect(out).toMatchObject({ ok: true });
     expect(c.cta?.buttonText).toBe("Pagar com Cartão");
     expect(c.cta?.url).toMatch(/^https:\/\/app\.test\/pedido\/[0-9a-f-]{36}\/pagamento$/);
   });
@@ -308,23 +418,14 @@ describe("saveDraftOrder / finalizeOrderAndCheckout", () => {
       { id: "cu1", name: "Maria", phone: "43996098333", email: null, asaasCustomerId: null, documentNumber: "52998224725" },
     ]);
     pix.fn.mockResolvedValue({ pixPayload: "PIX" });
-    const out = await executeTool(ctx(), "finalizeOrderAndCheckout", { paymentMethod: "PIX" });
+    const out = await finalizeOrderAndCheckout(ctx(), { paymentMethod: "PIX" });
     expect(out).toMatchObject({ ok: true });
     expect(pix.fn.mock.calls[0][0].customer.cpfCnpj).toBe("52998224725");
   });
 
-  it("endereço confirmado pelo cliente é gravado na sessão (addressConfirmed)", async () => {
-    h.rows.set(customers, [{ id: "cu1", name: "Maria", phone: "43999999999" }]);
-    const out = await executeTool(ctx(), "saveDraftOrder", draft({ addressConfirmed: true }));
-    expect(out).toMatchObject({ ok: true });
-    const save = h.writes.find((w) => w.op === "insert" && w.table === whatsappSessions);
-    expect(save?.values).toMatchObject({ addressConfirmed: true });
-  });
-
   it("sem rascunho não cria pedido", async () => {
-    h.rows.set(whatsappSessions, [{ phone: PHONE, draftCart: null, customerId: null }]);
-    const out = await executeTool(ctx(), "finalizeOrderAndCheckout", { paymentMethod: "CASH" });
-    expect(out).toMatchObject({ ok: false });
+    h.rows.set(whatsappSessions, [{ phone: PHONE, draftCart: [], customerId: null }]);
+    expect(await finalizeOrderAndCheckout(ctx(), { paymentMethod: "CASH" })).toMatchObject({ ok: false });
   });
 });
 
@@ -343,20 +444,49 @@ describe("requestHumanHandoff", () => {
 /* ---------------------------------------------------------------------- */
 
 describe("multimodal: buildUserParts", () => {
-  it("texto, interactive e figurinha viram texto; áudio vira inlineData audio/ogg", async () => {
+  it("texto e interactive viram texto; áudio vira inlineData audio/ogg", async () => {
     const download = vi.fn().mockResolvedValue({ buffer: Buffer.from("OGG"), mimeType: "audio/ogg; codecs=opus" });
     const parts = await buildUserParts(
       [
         msg({ content: "quero um burger" }),
         msg({ wamid: "w2", mediaType: "interactive", content: "Sim" }),
-        msg({ wamid: "w3", mediaType: "sticker", content: "[Cliente enviou uma figurinha/reação positiva]" }),
         msg({ wamid: "w4", mediaType: "audio", content: "[áudio]", mediaId: "m1" }),
       ],
       download,
     );
+    expect(download).toHaveBeenCalledTimes(1);
     expect(download).toHaveBeenCalledWith("m1");
-    expect(parts.map((p) => p.text).filter(Boolean)).toContain("[Cliente enviou uma figurinha/reação positiva]");
+    expect(parts.map((p) => p.text).filter(Boolean)).toEqual(expect.arrayContaining(["quero um burger", "Sim"]));
     expect(parts.at(-1)?.inlineData).toEqual({ mimeType: "audio/ogg", data: Buffer.from("OGG").toString("base64") });
+  });
+
+  it("figurinha: baixa o webp e envia como imagem multimodal (sem texto fixo de 'reação positiva')", async () => {
+    const download = vi.fn().mockResolvedValue({ buffer: Buffer.from("WEBP"), mimeType: "image/webp" });
+    const parts = await buildUserParts(
+      [msg({ mediaType: "sticker", content: "[Cliente enviou uma figurinha]", mediaId: "st1" })],
+      download,
+    );
+    expect(download).toHaveBeenCalledWith("st1");
+    expect(parts).toEqual([
+      { text: "[Figurinha do cliente]" },
+      { inlineData: { mimeType: "image/webp", data: Buffer.from("WEBP").toString("base64") } },
+    ]);
+    expect(JSON.stringify(parts)).not.toMatch(/positiva/);
+  });
+
+  it("figurinha com falha no download: texto neutro, sem derrubar nem presumir sentimento", async () => {
+    const parts = await buildUserParts(
+      [msg({ mediaType: "sticker", content: "[Cliente enviou uma figurinha]", mediaId: "st1" })],
+      vi.fn().mockRejectedValue(new Error("x")),
+    );
+    expect(parts).toEqual([{ text: "[Cliente enviou uma figurinha]" }]);
+  });
+
+  it("reação (sem mídia) vai como texto, sem download", async () => {
+    const download = vi.fn();
+    const parts = await buildUserParts([msg({ mediaType: "sticker", content: "[Cliente reagiu com 👍]" })], download);
+    expect(download).not.toHaveBeenCalled();
+    expect(parts).toEqual([{ text: "[Cliente reagiu com 👍]" }]);
   });
 
   it("imagem vai inline; falha no download vira pedido de reenvio, sem derrubar", async () => {
@@ -379,6 +509,7 @@ describe("runBotTurn (Gemini mockado)", () => {
     parts: [{ functionCall: { name, args } }],
   });
   const modelText = (text: string): GeminiContent => ({ role: "model", parts: [{ text }] });
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
 
   function deps(script: GeminiContent[]) {
     const requests: GeminiRequest[] = [];
@@ -426,38 +557,86 @@ describe("runBotTurn (Gemini mockado)", () => {
     expect(sys).not.toContain("52998224725"); // CPF nunca vai ao modelo
     expect(sys).toContain("Nova York");
     expect(sys).toContain('"addressConfirmed":true');
+    expect(sys).not.toContain("sessionStartedAt");
     expect(sent).toEqual(["Fala, João!"]);
-    expect(requests[0].functionDeclarations?.map((t) => t.name)).not.toContain("getAvailableMenu");
   });
 
-  it("saudação só com histórico vazio", async () => {
-    const first = deps([modelText("oi")]);
+  it("saudação: só sem interação nos últimos 90 minutos", async () => {
+    const first = deps([modelText("Fala!")]);
     await runBotTurn(PHONE, [msg()], first.d);
-    expect(first.requests[0].systemInstruction).toContain("HISTÓRICO VAZIO");
+    expect(first.requests[0].systemInstruction).toContain("shouldGreet = true");
 
     h.rows.set(whatsappMessages, [
-      { role: "user", content: "oi" },
-      { role: "assistant", content: "Fala!" },
+      { role: "assistant", content: "Fala!", createdAt: minutesAgo(10) },
+      { role: "user", content: "oi", createdAt: minutesAgo(11) },
     ]);
-    const next = deps([modelText("beleza")]);
+    const next = deps([modelText("Beleza.")]);
     await runBotTurn(PHONE, [msg({ wamid: "w2" })], next.d);
+    expect(next.requests[0].systemInstruction).toContain("shouldGreet = false");
     expect(next.requests[0].systemInstruction).toContain("NÃO cumprimente");
-    expect(next.requests[0].systemInstruction).not.toContain("HISTÓRICO VAZIO");
+
+    h.rows.set(whatsappMessages, [{ role: "assistant", content: "Fala!", createdAt: minutesAgo(200) }]);
+    const later = deps([modelText("Boa noite!")]);
+    await runBotTurn(PHONE, [msg({ wamid: "w3" })], later.d);
+    expect(later.requests[0].systemInstruction).toContain("shouldGreet = true");
   });
 
-  it("system prompt: identidade Passaporte Burguer, tom humano e regras de botão único / CPF / endereço", async () => {
-    const { d, requests } = deps([modelText("oi")]);
+  it("isolamento: pedido concluído (sessionStartedAt) não contamina o histórico do novo pedido", async () => {
+    h.rows.set(whatsappSessions, [
+      { phone: PHONE, state: "IDLE", draftCart: [], deliveryAddress: null, addressConfirmed: false, paymentMethod: null, sessionStartedAt: minutesAgo(30) },
+    ]);
+    h.rows.set(whatsappMessages, [
+      { role: "user", content: "quero um combo família", createdAt: minutesAgo(125) },
+      { role: "assistant", content: "Anotado: combo família", createdAt: minutesAgo(124) },
+      { role: "assistant", content: "Pedido #101 confirmado", createdAt: minutesAgo(31) },
+      { role: "user", content: "quero uma batata", createdAt: minutesAgo(20) },
+      { role: "assistant", content: "Batata anotada", createdAt: minutesAgo(19) },
+    ]);
+    const { d, requests } = deps([modelText("Pra entrega ou retirada?")]);
+    await runBotTurn(PHONE, [msg({ wamid: "w9", content: "mais um refri" })], d);
+    const sent = JSON.stringify(requests[0].contents);
+    expect(sent).not.toContain("combo família");
+    expect(sent).not.toContain("Pedido #101");
+    expect(sent).toContain("quero uma batata");
+    expect(sent).toContain("mais um refri");
+  });
+
+  it("system prompt: identidade natural, proibições, sem link e fechamento determinístico", async () => {
+    const { d, requests } = deps([modelText("Opa, bem-vindo!")]);
     await runBotTurn(PHONE, [msg()], d);
     const sys = requests[0].systemInstruction;
     expect(sys).toContain("Passaporte Burguer");
-    expect(sys).toContain("https://app.test");
-    expect(sys).toMatch(/Bora embarcar/);
-    expect(sys).toMatch(/máximo 3 linhas/i);
+    expect(sys).not.toContain("https://app.test"); // a IA não conhece nenhuma URL
+    expect(sys).toMatch(/2 a 3 frases curtas/i);
     expect(sys).toMatch(/1 emoji/i);
-    expect(sys).toMatch(/NUNCA peça o CPF/i);
+    expect(sys).toMatch(/NUNCA peça/i);
+    expect(sys).toMatch(/NUNCA escreva URL/i);
+    expect(sys).toMatch(/PROIBIDO:[^\n]*Bora pra mais um[^\n]*Bora embarcar nessa[^\n]*Com certeza[^\n]*Fique à vontade/);
+    expect(sys).toMatch(/PROIBIDO mencionar falha técnica[^\n]*deu tilt[^\n]*deu erro/);
+    expect(sys).toMatch(/PROIBIDO adicionar itens, combos/);
+    expect(sys).toContain("shouldGreet");
     expect(sys).toContain("addressConfirmed");
-    // Frases proibidas aparecem só como lista de proibições.
-    expect(sys).toMatch(/PROIBIDO[^]*Com certeza/);
+  });
+
+  it("a resposta da IA nunca leva link: Markdown e URLs alucinadas são removidos antes do envio", async () => {
+    const { d, sent } = deps([modelText("Escolhe no [Cardápio](https://app.menu-rapido.com/x) ou em www.site.com/menu, tá?")]);
+    await runBotTurn(PHONE, [msg()], d);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toBe("Escolhe no Cardápio ou em, tá?");
+    expect(sent[0]).not.toMatch(/https?:|www\.|\]\(/);
+  });
+
+  it("conversa em andamento (shouldGreet=false): saudação e bordão repetidos são cortados", async () => {
+    h.rows.set(whatsappMessages, [{ role: "assistant", content: "Anotado!", createdAt: minutesAgo(5) }]);
+    const { d, sent } = deps([modelText("Boa noite, Joao! Bora pra mais um! Qual o endereço?")]);
+    await runBotTurn(PHONE, [msg()], d);
+    expect(sent).toEqual(["Qual o endereço?"]);
+  });
+
+  it("primeira mensagem (shouldGreet=true): a saudação é mantida", async () => {
+    const { d, sent } = deps([modelText("Boa noite, Joao! Qual lanche vai ser?")]);
+    await runBotTurn(PHONE, [msg()], d);
+    expect(sent).toEqual(["Boa noite, Joao! Qual lanche vai ser?"]);
   });
 
   it("áudio chega ao Gemini como inlineData audio/ogg", async () => {
@@ -467,40 +646,134 @@ describe("runBotTurn (Gemini mockado)", () => {
     expect(parts.some((p) => p.inlineData?.mimeType === "audio/ogg")).toBe(true);
   });
 
-  it("Pix: UMA mensagem com botão (resumo + link completo no corpo), depois o código Pix sozinho", async () => {
-    h.rows.set(whatsappSessions, [
-      { phone: PHONE, customerId: "cu1", draftCart: [{ productId: BURGER, quantity: 1, addons: [] }], deliveryAddress: null },
-    ]);
-    h.rows.set(customers, [{ id: "cu1", name: "Maria", phone: "43999999999", email: null, asaasCustomerId: "cus_1" }]);
-    pix.fn.mockResolvedValue({ pixPayload: "PIXCOPIAECOLA" });
-    const order: string[] = [];
-    const { d, ctas } = deps([
-      modelCall("finalizeOrderAndCheckout", { paymentMethod: "PIX" }),
-      modelText("Já mandei pra chapa! Total R$ 35,00."),
-    ]);
-    d.sendText = async (_t, text) => {
-      order.push(`text:${text}`);
+  it("figurinha chega ao Gemini como imagem webp para a IA ler o sentimento", async () => {
+    const { d, requests } = deps([modelText("Tudo certo, o que faltou?")]);
+    d.download = vi.fn().mockResolvedValue({ buffer: Buffer.from("W"), mimeType: "image/webp" });
+    await runBotTurn(PHONE, [msg({ mediaType: "sticker", content: "[Cliente enviou uma figurinha]", mediaId: "st1" })], d);
+    const parts = requests[0].contents.at(-1)!.parts;
+    expect(parts.some((p) => p.inlineData?.mimeType === "image/webp")).toBe(true);
+  });
+
+  describe("checkout automático (determinístico no backend)", () => {
+    const savedAddress = {
+      street: "Rua Salva",
+      number: "77",
+      complement: null,
+      reference: null,
+      neighborhood: "Zona 07",
+      district: "Zona 07",
+      deliveryZoneId: "z1",
+      latitude: -23.42,
+      longitude: -51.94,
+      city: "Maringá",
+      postalCode: null,
     };
-    d.sendCta = async (_t, body, button, url) => {
-      order.push("cta");
-      ctas.push({ body, button, url });
-    };
-    wa.text.mockImplementation(async (_t: string, text: string) => {
-      order.push(`text:${text}`);
+    const cart = [{ productId: BURGER, quantity: 1, addons: [] }];
+    const base = { phone: PHONE, customerId: "cu1", state: "CONFIRMING_ORDER", draftCart: cart, sessionStartedAt: new Date(0) };
+
+    function arrange() {
+      h.rows.set(customers, [{ id: "cu1", name: "João", phone: "43999999999", email: null, asaasCustomerId: "cus_1" }]);
+      h.rows.set(orders, [{ id: "o1", addressSnapshot: savedAddress }]);
+      h.rows.set(whatsappSessions, [{ ...base, deliveryAddress: null, addressConfirmed: false, paymentMethod: null }]);
+    }
+    const ready = () =>
+      h.rows.set(whatsappSessions, [{ ...base, deliveryAddress: savedAddress, addressConfirmed: true, paymentMethod: "PIX" }]);
+    const orderWrites = () => h.writes.filter((w) => w.table === orders);
+
+    it('"Sim no mesmo endereço" + "E vou pagar no Pix" no mesmo turno: o backend fecha o pedido sem nova confirmação', async () => {
+      arrange();
+      pix.fn.mockResolvedValue({ pixPayload: "PIXCOPIAECOLA" });
+      const order: string[] = [];
+      const { d, ctas, sent, requests } = deps([
+        modelCall("setDeliveryAndPayment", { deliveryType: "DELIVERY", addressConfirmed: true, paymentMethod: "PIX" }),
+        modelText("Fechado, só confirmo o pedido aqui, ok?"), // texto da IA é descartado: o fechamento é do backend
+      ]);
+      d.runTool = async (c, name, args) => {
+        const out = await executeTool(c, name, args);
+        ready(); // a sessão agora tem carrinho + endereço confirmado + Pix
+        return out;
+      };
+      d.sendCta = async (_t, body, button, url) => {
+        order.push("cta");
+        ctas.push({ body, button, url });
+      };
+      d.sendText = async (_t, text) => {
+        order.push(`text:${text}`);
+        sent.push(text);
+      };
+      wa.text.mockImplementation(async (_t: string, text: string) => {
+        order.push(`text:${text}`);
+      });
+      const ok = await runBotTurn(PHONE, [msg({ content: "Sim no mesmo endereço" }), msg({ wamid: "w2", content: "E vou pagar no Pix" })], d);
+      expect(ok).toBe(true);
+      expect(requests).toHaveLength(2); // sem 3ª rodada pedindo confirmação
+      expect(pix.fn).toHaveBeenCalledTimes(1);
+      // UMA mensagem com botão (texto do backend) e o código Pix sozinho depois.
+      expect(order).toEqual(["cta", "text:PIXCOPIAECOLA"]);
+      expect(ctas[0].body).toMatch(/^Pedido #\d+ confirmado! Total R\$\s?41,99\./); // 35,00 + frete
+      expect(ctas[0].body).not.toContain("só confirmo");
+      expect(ctas[0].body).toContain(ctas[0].url); // link do checkout vem do backend
+      expect(ctas[0].body).not.toContain("PIXCOPIAECOLA");
+      expect(ctas[0].url).toMatch(/^https:\/\/app\.test\/pedido\/[0-9a-f-]{36}\/pagamento$/);
+      // Sessão isolada para o próximo pedido.
+      const claim = h.writes.find((w) => w.op === "update" && w.table === whatsappSessions && "draftCart" in (w.set as object));
+      expect(claim?.set).toMatchObject({ draftCart: [], addressConfirmed: false, paymentMethod: null, state: "IDLE" });
     });
-    await runBotTurn(PHONE, [msg({ content: "pix" })], d);
-    // Nenhum texto solto antes do botão: o convite está DENTRO do corpo do botão.
-    expect(order).toEqual(["cta", "text:PIXCOPIAECOLA"]);
-    expect(ctas).toHaveLength(1);
-    expect(ctas[0].body).toContain("Já mandei pra chapa!");
-    expect(ctas[0].url).toMatch(/^https:\/\/app\.test\/pedido\/[0-9a-f-]{36}\/pagamento$/);
-    expect(ctas[0].body).toContain(ctas[0].url); // link https:// completo também no texto
-    expect(ctas[0].body).not.toContain("PIXCOPIAECOLA");
+
+    it("faltando o pagamento, nada é fechado", async () => {
+      arrange(); // paymentMethod null
+      const { d, sent } = deps([modelText("Como vai pagar: Pix, cartão ou na entrega?")]);
+      await runBotTurn(PHONE, [msg({ content: "sim no mesmo endereço" })], d);
+      expect(orderWrites()).toHaveLength(0);
+      expect(pix.fn).not.toHaveBeenCalled();
+      expect(sent).toEqual(["Como vai pagar: Pix, cartão ou na entrega?"]);
+    });
+
+    it("fechamento recusado (falta CPF): a IA recebe o motivo e explica, sem criar pedido", async () => {
+      ready();
+      h.rows.set(customers, [{ id: "cu1", name: "João", phone: "43999999999", email: null, asaasCustomerId: null }]);
+      const { d, sent, requests } = deps([modelText("Fechado!"), modelText("Pra gerar o Pix preciso do seu CPF.")]);
+      await runBotTurn(PHONE, [msg({ content: "pix" })], d);
+      expect(requests).toHaveLength(2);
+      expect(JSON.stringify(requests[1].contents.at(-1))).toMatch(/\[SISTEMA\][^]*CPF/);
+      expect(orderWrites()).toHaveLength(0);
+      expect(sent).toEqual(["Pra gerar o Pix preciso do seu CPF."]);
+    });
+
+    it("pagamento na entrega: mensagem determinística sem botão nem código", async () => {
+      h.rows.set(customers, [{ id: "cu1", name: "João", phone: "43999999999", email: null, asaasCustomerId: null }]);
+      h.rows.set(whatsappSessions, [{ ...base, deliveryAddress: null, addressConfirmed: true, paymentMethod: "CASH" }]);
+      const { d, sent, ctas } = deps([modelText("ok")]);
+      await runBotTurn(PHONE, [msg({ content: "dinheiro" })], d);
+      expect(ctas).toHaveLength(0);
+      expect(sent[0]).toMatch(/Pedido #\d+ confirmado!.*Já foi pra chapa! Você paga na retirada\./);
+    });
+  });
+
+  describe("encerramento do papo", () => {
+    it('"Já chegou" / "Valeu" sem pedido em andamento abre uma nova sessão (sessionStartedAt = agora)', async () => {
+      const before = Date.now();
+      const { d, sent } = deps([modelText("Boa refeição!")]);
+      await runBotTurn(PHONE, [msg({ content: "Já chegou, valeu!" })], d);
+      expect(sent).toEqual(["Boa refeição!"]);
+      const reset = h.writes.find((w) => w.op === "update" && w.table === whatsappSessions);
+      expect(reset?.set).toMatchObject({ draftCart: [], addressConfirmed: false, paymentMethod: null, state: "IDLE" });
+      expect((reset?.set as { sessionStartedAt: Date }).sessionStartedAt.getTime()).toBeGreaterThanOrEqual(before);
+    });
+
+    it("com pedido em montagem não zera a sessão", async () => {
+      h.rows.set(whatsappSessions, [
+        { phone: PHONE, state: "CONFIRMING_ORDER", draftCart: [{ productId: BURGER, quantity: 1 }], deliveryAddress: null, addressConfirmed: false, paymentMethod: null },
+      ]);
+      const { d } = deps([modelText("Beleza, falta o endereço.")]);
+      await runBotTurn(PHONE, [msg({ content: "valeu" })], d);
+      expect(h.writes.find((w) => w.op === "update" && w.table === whatsappSessions)).toBeUndefined();
+    });
   });
 
   it("botão (Cardápio Rápido): o texto da resposta vira o corpo do botão, sem mensagem de texto separada", async () => {
     const { d, sent, ctas } = deps([
-      modelCall("generateQuickMenuLink"),
+      modelCall("sendQuickMenu"),
       modelText("Escolhe teu lanche aqui no cardápio rápido 👇"),
     ]);
     expect(await runBotTurn(PHONE, [msg()], d)).toBe(true);
@@ -508,16 +781,30 @@ describe("runBotTurn (Gemini mockado)", () => {
     expect(ctas).toHaveLength(1);
     expect(ctas[0].body).toBe("Escolhe teu lanche aqui no cardápio rápido 👇");
     expect(ctas[0].button).toBe("Cardápio Rápido");
+    expect(ctas[0].url).toMatch(/^https:\/\/app\.test\/cardapio-rapido\?token=/);
+  });
+
+  it("botão: se a IA só escreveu o link, o convite padrão vai no corpo do botão", async () => {
+    const { d, ctas } = deps([modelCall("sendQuickMenu"), modelText("https://app.menu-rapido.com/abc")]);
+    expect(await runBotTurn(PHONE, [msg()], d)).toBe(true);
+    expect(ctas[0].body).toBe("Escolhe teu lanche por aqui 👇");
   });
 
   it("botão recusado pela Meta: cai para texto (a resposta não se perde)", async () => {
-    const { d, sent } = deps([modelCall("generateQuickMenuLink"), modelText("Escolhe aqui 👇")]);
+    const { d, sent } = deps([modelCall("sendQuickMenu"), modelText("Escolhe aqui 👇")]);
     d.sendCta = async () => {
       throw new Error("meta recusou");
     };
     expect(await runBotTurn(PHONE, [msg()], d)).toBe(true);
     expect(sent[0]).toContain("Escolhe aqui 👇");
     expect(sent[0]).toMatch(/cardapio-rapido/);
+  });
+
+  it("a resposta é persistida em whatsapp_messages antes de o turno terminar", async () => {
+    const { d } = deps([modelText("Anotado.")]);
+    await runBotTurn(PHONE, [msg()], d);
+    const saved = h.writes.find((w) => w.op === "insert" && w.table === whatsappMessages);
+    expect(saved?.values).toMatchObject({ phone: PHONE, role: "assistant", content: "Anotado." });
   });
 
   it("2) falha total do Gemini: mensagem de contingência ao cliente (com o link do cardápio) e retorno false", async () => {
@@ -539,13 +826,13 @@ describe("runBotTurn (Gemini mockado)", () => {
   });
 
   it("sucesso devolve true e não manda contingência", async () => {
-    const { d, sent } = deps([modelText("Oi!")]);
+    const { d, sent } = deps([modelText("Anotado!")]);
     expect(await runBotTurn(PHONE, [msg()], d)).toBe(true);
-    expect(sent).toEqual(["Oi!"]);
+    expect(sent).toEqual(["Anotado!"]);
   });
 
   it("falha no envio pela Meta: tenta a contingência e retorna false (o lote volta à fila)", async () => {
-    const { d } = deps([modelText("Oi!")]);
+    const { d } = deps([modelText("Anotado!")]);
     const calls: string[] = [];
     d.sendText = async (_t, text) => {
       calls.push(text);

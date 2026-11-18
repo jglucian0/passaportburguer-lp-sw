@@ -1,127 +1,20 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import { db } from "@/infra/db";
 import { loadCatalog } from "@/infra/db/queries";
-import {
-  customerAddresses,
-  customers,
-  orderItems,
-  orders,
-  whatsappMessages,
-  whatsappSessions,
-} from "@/infra/db/schema";
+import { whatsappMessages, whatsappSessions } from "@/infra/db/schema";
 import { formatCents } from "@/lib/utils";
 
 import { sendTextMessage } from "./client";
 import type { GeminiFunctionDeclaration } from "./gemini";
-import { finalizeOrderAndCheckout, saveDraftOrder } from "./order-flow";
+import { setDeliveryAndPaymentTool, updateCartTool } from "./draft-flow";
 import { signWhatsAppToken } from "./session-token";
-import { getBrazilianPhoneVariants } from "./phone";
 import { appUrl, getTenantId, type ToolContext } from "./shared";
 import { errorSummary } from "./log";
 
+export { getCustomerContext, type CustomerContext } from "./customer-context";
+
 export const HANDOFF_MINUTES = 30;
-
-/* ------------------------------------------------------------------ */
-/* 1. Contexto do cliente (pré-carregado no systemInstruction)           */
-/* ------------------------------------------------------------------ */
-
-export type CustomerContext =
-  | { isRegistered: false }
-  | {
-      isRegistered: true;
-      name: string;
-      firstName: string;
-      /** Já tem CPF/CNPJ no cadastro: nunca pedir o documento no chat. (O número não vai ao modelo.) */
-      hasDocument: boolean;
-      defaultAddress: {
-        street: string;
-        number: string;
-        complement: string | null;
-        reference: string | null;
-        neighborhood: string | null;
-      } | null;
-      /** Ex.: "1x Nova York + 1x Batata". Nulo se nunca concluiu um pedido. */
-      lastOrderSummary: string | null;
-      /** Itens do último pedido (ids reais) para repetir via saveDraftOrder. */
-      lastOrderItems: { productId: string | null; name: string; quantity: number; addonIds: string[] }[];
-    };
-
-export async function getCustomerContext(phone: string): Promise<CustomerContext> {
-  const tenantId = await getTenantId();
-  const variants = getBrazilianPhoneVariants(phone);
-  if (!tenantId || variants.length === 0) return { isRegistered: false };
-
-  const [customer] = await db
-    .select()
-    .from(customers)
-    .where(and(eq(customers.tenantId, tenantId), inArray(customers.phone, variants)))
-    .limit(1);
-  if (!customer) return { isRegistered: false };
-
-  /* Vincula a sessão ao cliente (best-effort). */
-  await db
-    .update(whatsappSessions)
-    .set({ customerId: customer.id })
-    .where(eq(whatsappSessions.phone, phone))
-    .catch(() => undefined);
-
-  const [last] = await db
-    .select()
-    .from(orders)
-    .where(and(eq(orders.customerId, customer.id), eq(orders.status, "DELIVERED")))
-    .orderBy(desc(orders.createdAt))
-    .limit(1);
-
-  let lastOrderItems: Extract<CustomerContext, { isRegistered: true }>["lastOrderItems"] = [];
-  if (last) {
-    const items = await db.select().from(orderItems).where(eq(orderItems.orderId, last.id));
-    lastOrderItems = items.map((i) => ({
-      productId: i.productId,
-      name: i.productNameSnapshot,
-      quantity: i.quantity,
-      addonIds: (i.addonsSnapshot ?? []).map((a) => a.addon_id).filter((id): id is string => !!id),
-    }));
-  }
-
-  let defaultAddress: Extract<CustomerContext, { isRegistered: true }>["defaultAddress"] = null;
-  const snap = last?.addressSnapshot;
-  if (snap) {
-    defaultAddress = {
-      street: snap.street,
-      number: snap.number,
-      complement: snap.complement,
-      reference: snap.reference,
-      neighborhood: snap.district ?? snap.neighborhood,
-    };
-  } else {
-    const [addr] = await db
-      .select()
-      .from(customerAddresses)
-      .where(eq(customerAddresses.customerId, customer.id))
-      .limit(1);
-    if (addr) {
-      defaultAddress = {
-        street: addr.street,
-        number: addr.number,
-        complement: addr.complement,
-        reference: addr.reference,
-        neighborhood: null,
-      };
-    }
-  }
-
-  return {
-    isRegistered: true,
-    name: customer.name,
-    firstName: customer.name.trim().split(/\s+/)[0] ?? customer.name,
-    hasDocument: !!customer.documentNumber,
-    defaultAddress,
-    lastOrderSummary:
-      lastOrderItems.length > 0 ? lastOrderItems.map((i) => `${i.quantity}x ${i.name}`).join(" + ") : null,
-    lastOrderItems,
-  };
-}
 
 /* ------------------------------------------------------------------ */
 /* 2. Cardápio (pré-carregado, em cache de 5 min)                       */
@@ -278,7 +171,8 @@ export async function requestHumanHandoff(phone: string, reason: string) {
 
 const itemsSchema = {
   type: "array",
-  description: "Itens do pedido. Use SOMENTE ids do CARDÁPIO ATUAL do prompt (ou de getDraftCart).",
+  description:
+    "Carrinho COMPLETO (sobrescreve o anterior). Só o que o cliente pediu, com ids do CARDÁPIO ATUAL do prompt. NUNCA acrescente itens ou combos que ele não pediu.",
   items: {
     type: "object",
     properties: {
@@ -302,26 +196,37 @@ const itemsSchema = {
 export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
   {
     name: "getDraftCart",
-    description:
-      "Itens que o cliente já escolheu (por exemplo, pelo Cardápio Rápido), com ids reais, para você usar em saveDraftOrder sem remontar o pedido.",
+    description: "Itens que o cliente já escolheu (por exemplo, pelo Cardápio Rápido), com ids reais.",
   },
   {
-    name: "generateQuickMenuLink",
+    name: "sendQuickMenu",
     description:
-      'Gera o link do Cardápio Rápido. O botão "Cardápio Rápido" sai na MESMA mensagem da sua resposta (o texto que você escrever vira o corpo do botão).',
+      'Envia o botão "Cardápio Rápido". O botão sai na MESMA mensagem da sua resposta: escreva só um convite curto, sem link.',
   },
   {
-    name: "saveDraftOrder",
+    name: "updateCart",
     description:
-      "Valida e salva o rascunho do pedido. O servidor calcula subtotal, frete e total (você nunca informa preços). Devolve o resumo com os valores oficiais ou o erro a explicar ao cliente.",
+      "Grava o carrinho da sessão (sobrescreve). O servidor valida contra o catálogo e calcula os valores; você não informa preços. Devolve o subtotal oficial ou o erro a explicar.",
     parameters: {
       type: "object",
       properties: {
         items: itemsSchema,
+        notes: { type: "string", description: "Observação geral do pedido (ex.: troco para R$ 50)." },
+      },
+      required: ["items"],
+    },
+  },
+  {
+    name: "setDeliveryAndPayment",
+    description:
+      "Grava entrega/retirada, endereço e forma de pagamento na sessão. Chame assim que o cliente informar ou confirmar cada um (pode ser tudo de uma vez). Entrega com addressConfirmed=true e sem address usa o endereço salvo do cliente cadastrado. Quando carrinho + endereço + pagamento estiverem prontos o pedido é fechado AUTOMATICAMENTE pelo servidor.",
+    parameters: {
+      type: "object",
+      properties: {
         deliveryType: { type: "string", enum: ["DELIVERY", "PICKUP"] },
         address: {
           type: "object",
-          description: "Obrigatório se DELIVERY (Maringá-PR).",
+          description: "Endereço novo em Maringá-PR. Omita ao usar o endereço salvo.",
           properties: {
             street: { type: "string" },
             number: { type: "string" },
@@ -331,32 +236,15 @@ export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
           },
           required: ["street", "number"],
         },
-        customerName: { type: "string" },
         addressConfirmed: {
           type: "boolean",
-          description:
-            "true quando o cliente CONFIRMOU o endereço de entrega (ex.: 'sim', 'isso mesmo', 'pode mandar') ou acabou de informá-lo. Depois disso nunca pergunte o endereço de novo.",
+          description: "true quando o cliente CONFIRMOU o endereço ('sim', 'no mesmo endereço') ou acabou de informá-lo. Retirada: true.",
         },
-      },
-      required: ["items", "deliveryType", "customerName"],
-    },
-  },
-  {
-    name: "finalizeOrderAndCheckout",
-    description:
-      "Cria o pedido oficial a partir do rascunho salvo e prepara o pagamento. Só chame depois do cliente confirmar o resumo e escolher a forma de pagamento. Pix e cartão: o botão de pagamento sai na mesma mensagem da sua resposta e, no Pix, o código Copia e Cola vai logo depois, sozinho.",
-    parameters: {
-      type: "object",
-      properties: {
         paymentMethod: { type: "string", enum: ["PIX", "CREDIT_CARD", "CARD_ON_DELIVERY", "CASH"] },
-        documentNumber: {
-          type: "string",
-          description:
-            "CPF do cliente. SÓ informe se o resultado pedir (needsDocument). Cliente com hasDocument=true já tem CPF salvo: não informe.",
-        },
-        changeForCents: { type: "integer", description: "Só para CASH: valor da nota para troco, em centavos." },
+        customerName: { type: "string", description: "Só para cliente novo." },
+        documentNumber: { type: "string", description: "CPF, SOMENTE se o sistema pedir. Quem tem hasDocument=true nunca informa." },
       },
-      required: ["paymentMethod"],
+      required: ["deliveryType", "addressConfirmed"],
     },
   },
   {
@@ -373,32 +261,25 @@ export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
 
 type Args = Record<string, unknown>;
 
-/**
- * Executa uma tool no servidor. O resultado devolvido ao modelo nunca inclui o código Pix
- * (ele é enviado por outra via, como mensagem isolada).
- */
+/** Gera o token assinado e arma o botão nativo cta_url (a URL nunca vai ao texto nem ao modelo). */
+export function sendQuickMenuTool(ctx: ToolContext): { sent: true; note: string } {
+  const { url } = generateQuickMenuLink(ctx.phone);
+  ctx.cta = { buttonText: "Cardápio Rápido", url };
+  return { sent: true, note: "O botão sai na mesma mensagem da sua resposta: escreva só o convite curto, sem link." };
+}
+
+/** Executa uma tool no servidor. O fechamento do pedido NÃO é tool: o backend o dispara no fim do turno. */
 export async function executeTool(ctx: ToolContext, name: string, args: Args = {}): Promise<Record<string, unknown>> {
   try {
     switch (name) {
       case "getDraftCart":
         return { ...(await getDraftCart(ctx.phone)) };
-      case "generateQuickMenuLink": {
-        const { url } = generateQuickMenuLink(ctx.phone);
-        ctx.cta = { buttonText: "Cardápio Rápido", url };
-        return { sent: true, note: "O botão do Cardápio Rápido sai na mesma mensagem da sua resposta: escreva só o convite curto." };
-      }
-      case "saveDraftOrder":
-        return { ...(await saveDraftOrder(ctx, args)) };
-      case "finalizeOrderAndCheckout": {
-        const result = await finalizeOrderAndCheckout(ctx, args);
-        if (!result.ok) return { ...result };
-        const { pixPayload, checkoutUrl, ...rest } = result;
-        return {
-          ...rest,
-          ...(pixPayload ? { pixCodeSentSeparately: true } : {}),
-          ...(checkoutUrl ? { cardButtonSentSeparately: true } : {}),
-        };
-      }
+      case "sendQuickMenu":
+        return sendQuickMenuTool(ctx);
+      case "updateCart":
+        return { ...(await updateCartTool(ctx, args)) };
+      case "setDeliveryAndPayment":
+        return { ...(await setDeliveryAndPaymentTool(ctx, args)) };
       case "requestHumanHandoff":
         return { ...(await requestHumanHandoff(ctx.phone, String(args.reason ?? ""))) };
       default:
@@ -406,6 +287,6 @@ export async function executeTool(ctx: ToolContext, name: string, args: Args = {
     }
   } catch (error) {
     console.error("[whatsapp-bot] falha na ferramenta", name, errorSummary(error));
-    return { error: "Falha interna ao executar a ferramenta. Peça desculpas e tente de novo ou chame um atendente." };
+    return { error: "Falha interna ao executar a ferramenta. Tente de novo ou chame um atendente." };
   }
 }

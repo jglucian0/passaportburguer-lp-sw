@@ -27,8 +27,8 @@ export function verifyMetaSignature(
   );
 }
 
-/** Figurinha e reação são tratadas igual: gesto positivo, sem conteúdo a interpretar. */
-export const STICKER_TEXT = "[Cliente enviou uma figurinha/reação positiva]";
+/** Texto neutro: o sentido da figurinha (raiva, dúvida, aprovação) vem da imagem, lida pela IA. */
+export const STICKER_TEXT = "[Cliente enviou uma figurinha]";
 
 export type InboundMessage = {
   wamid: string;
@@ -100,7 +100,7 @@ function toInbound(m: RawMessage): InboundMessage | null {
     case "reaction":
       // Reação removida (sem emoji) não é mensagem do cliente.
       return typeof m.reaction?.emoji === "string" && m.reaction.emoji
-        ? { ...base, mediaType: "sticker", content: STICKER_TEXT }
+        ? { ...base, mediaType: "sticker", content: `[Cliente reagiu com ${m.reaction.emoji}]` }
         : null;
     case "interactive": {
       const r = m.interactive?.button_reply ?? m.interactive?.list_reply;

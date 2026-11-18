@@ -106,4 +106,30 @@ describe("lock atômico por telefone (processingLockUntil)", () => {
     await processAfterDebounce(PHONE, "w1", 0);
     expect(agent.run).toHaveBeenCalledTimes(2);
   });
+
+  it("fila sequencial: o turno seguinte roda AINDA com o lock; o lock só é liberado depois do último turno", async () => {
+    f.ctx.rows.set(whatsappSessions, [{ botPausedUntil: null }]);
+    let started = false;
+    f.ctx.rows.set(whatsappInboxBuffer, () => (started ? [row({ id: "r2", wamid: "w2" }), row()] : [row()]));
+    const events: string[] = [];
+    agent.run.mockImplementation(async () => {
+      started = true;
+      events.push(`turn${agent.run.mock.calls.length}`);
+      return true;
+    });
+    // Registra a liberação do lock na ordem em que acontece.
+    const originalUpdate = f.ctx.db.update;
+    f.ctx.db.update = ((t: unknown) => {
+      const chain = originalUpdate(t) as { set: (v: unknown) => unknown };
+      const set = chain.set.bind(chain);
+      chain.set = (v: unknown) => {
+        if (t === whatsappSessions && (v as { processingLockUntil?: unknown }).processingLockUntil === null) events.push("release");
+        return set(v);
+      };
+      return chain;
+    }) as typeof f.ctx.db.update;
+
+    await processAfterDebounce(PHONE, "w1", 0);
+    expect(events).toEqual(["turn1", "turn2", "release"]);
+  });
 });

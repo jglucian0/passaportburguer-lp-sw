@@ -1,10 +1,9 @@
-import { and, eq, inArray, isNotNull, max } from "drizzle-orm";
+import { and, eq, inArray, max, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import { calculateCart, type CalculateCartResult } from "@/core/cart/calculate-cart";
 import { calculateDeliveryQuote, resolveDeliveryZone, withQuotedFee } from "@/core/delivery/quote";
-import { cartItemInputSchema } from "@/core/schemas/cart";
-import { deliveryTypeSchema, isOnlinePaymentMethod } from "@/core/schemas/common";
+import { isOnlinePaymentMethod } from "@/core/schemas/common";
 import type { CatalogDeliveryZone } from "@/core/schemas/product";
 import { effectiveMinOrderCents } from "@/core/store/min-order";
 import { OTHER_ZONE_NAME } from "@/core/store/maringa-zones";
@@ -31,48 +30,10 @@ import { sendOrderToSaipos } from "@/lib/saipos";
 import { formatCents } from "@/lib/utils";
 
 import { sendTextMessage } from "./client";
-import { geocodeAddress } from "./geocode";
 import { getBrazilianPhoneVariants } from "./phone";
 import { checkoutUrl, getTenantId, toCustomerPhone, type ToolContext } from "./shared";
 
-/* ------------------------------------------------------------------ */
-/* Rascunho                                                            */
-/* ------------------------------------------------------------------ */
-
-const draftInputSchema = z.object({
-  items: z
-    .array(cartItemInputSchema.extend({ notes: z.string().trim().max(200).nullish() }))
-    .min(1, "Carrinho vazio.")
-    .max(30),
-  deliveryType: deliveryTypeSchema,
-  address: z
-    .object({
-      street: z.string().trim().min(2).max(120),
-      number: z.string().trim().min(1).max(20),
-      complement: z.string().trim().max(80).nullish(),
-      reference: z.string().trim().max(120).nullish(),
-      neighborhood: z.string().trim().max(80).nullish(),
-    })
-    .nullish(),
-  customerName: z.string().trim().min(2, "Informe o nome.").max(80),
-  /** O cliente confirmou (ou acabou de informar) o endereço: não perguntar de novo. */
-  addressConfirmed: z.boolean().nullish(),
-});
-
-export type DraftOrderResult =
-  | {
-      ok: true;
-      lines: { quantity: number; name: string; addons: string[]; totalItemCents: number }[];
-      subtotalFormatted: string;
-      deliveryFeeFormatted: string;
-      totalFormatted: string;
-      deliveryType: "DELIVERY" | "PICKUP";
-      addressLabel: string | null;
-      estimatedMinutes: number | null;
-    }
-  | { ok: false; error: string };
-
-type Coords = { lat: number; lon: number; city: string };
+export type Coords = { lat: number; lon: number; city: string };
 
 type Priced =
   | {
@@ -138,7 +99,7 @@ export async function priceCart(
 }
 
 /** Cliente por telefone; cria (sem senha, telefone já provado pelo próprio WhatsApp) se não existir. */
-async function ensureCustomer(tenantId: string, phone: string, name: string) {
+export async function ensureCustomer(tenantId: string, phone: string, name: string | null) {
   const local = toCustomerPhone(phone);
   if (!local) return null;
   // Com e sem o 9º dígito: o wa_id da Meta pode divergir de como o cliente se cadastrou.
@@ -152,7 +113,7 @@ async function ensureCustomer(tenantId: string, phone: string, name: string) {
     return row;
   };
   const existing = await find();
-  if (existing) return existing;
+  if (existing || !name) return existing ?? null;
   await db
     .insert(customers)
     .values({ tenantId, name, phone: local, phoneVerifiedAt: new Date() })
@@ -160,108 +121,13 @@ async function ensureCustomer(tenantId: string, phone: string, name: string) {
   return (await find()) ?? null;
 }
 
-export async function saveDraftOrder(ctx: ToolContext, input: unknown): Promise<DraftOrderResult> {
-  const parsed = draftInputSchema.safeParse(input);
-  if (!parsed.success) return { ok: false, error: parsed.error.issues.map((i) => i.message).join(" ") };
-  const data = parsed.data;
-
-  const tenantId = await getTenantId();
-  if (!tenantId) return { ok: false, error: "Loja não encontrada." };
-
-  if (data.deliveryType === "DELIVERY" && !data.address) {
-    return { ok: false, error: "Falta o endereço (rua e número) para a entrega." };
-  }
-
-  /* Endereço: geocodifica no servidor (o frete é por distância). */
-  let coords: Coords | null = null;
-  let neighborhood: string | null = data.address?.neighborhood ?? null;
-  let postalCode: string | null = null;
-  if (data.deliveryType === "DELIVERY" && data.address) {
-    const geo = await geocodeAddress(data.address.street, data.address.number);
-    if (!geo) return { ok: false, error: "Não consegui localizar esse endereço. Confirme rua e número." };
-    coords = { lat: geo.lat, lon: geo.lon, city: geo.city };
-    neighborhood = geo.neighborhood ?? neighborhood;
-    postalCode = geo.postalCode;
-  }
-
-  const items: WhatsAppDraftCartItem[] = data.items.map((i) => ({
-    productId: i.productId,
-    quantity: i.quantity,
-    notes: i.notes ?? null,
-    addons: i.addons.map((a) => ({ addonId: a.addonId, quantity: a.quantity })),
-  }));
-
-  const priced = await priceCart(tenantId, items, data.deliveryType, coords, neighborhood);
-  if (!priced.ok) return priced;
-  const { calc, zone } = priced;
-
-  let snapshot: AddressSnapshot | null = null;
-  if (data.deliveryType === "DELIVERY" && data.address && zone && coords) {
-    snapshot = {
-      neighborhood: zone.neighborhood,
-      street: data.address.street,
-      number: data.address.number,
-      complement: data.address.complement ?? null,
-      reference: data.address.reference ?? null,
-      deliveryZoneId: zone.id,
-      latitude: coords.lat,
-      longitude: coords.lon,
-      city: coords.city,
-      district: neighborhood,
-      postalCode,
-    };
-  }
-
-  const customer = await ensureCustomer(tenantId, ctx.phone, data.customerName);
-  if (!customer) return { ok: false, error: "Telefone inválido." };
-
-  /* Só muda a confirmação quando o modelo a informa; omitida, preserva (evita reabrir a pergunta do endereço). */
-  const confirmed = data.deliveryType === "DELIVERY" ? data.addressConfirmed : false;
-  await db
-    .insert(whatsappSessions)
-    .values({
-      phone: ctx.phone,
-      customerId: customer.id,
-      state: "CONFIRMING_ORDER",
-      draftCart: items,
-      deliveryAddress: snapshot,
-      addressConfirmed: confirmed ?? false,
-    })
-    .onConflictDoUpdate({
-      target: whatsappSessions.phone,
-      set: {
-        customerId: customer.id,
-        state: "CONFIRMING_ORDER",
-        draftCart: items,
-        deliveryAddress: snapshot,
-        ...(confirmed == null ? {} : { addressConfirmed: confirmed }),
-        updatedAt: new Date(),
-      },
-    });
-
-  return {
-    ok: true,
-    lines: calc.lines.map((l) => ({
-      quantity: l.quantity,
-      name: l.productName,
-      addons: l.addons.map((a) => `${a.quantity > 1 ? `${a.quantity}x ` : ""}${a.name}`),
-      totalItemCents: l.totalItemCents,
-    })),
-    subtotalFormatted: formatCents(calc.subtotalCents),
-    deliveryFeeFormatted: formatCents(calc.deliveryFeeCents),
-    totalFormatted: formatCents(calc.totalCents),
-    deliveryType: data.deliveryType,
-    addressLabel: snapshot ? `${snapshot.street}, ${snapshot.number} - ${snapshot.district ?? snapshot.neighborhood}` : null,
-    estimatedMinutes: zone?.estimatedMinutes ?? null,
-  };
-}
-
 /* ------------------------------------------------------------------ */
 /* Finalização                                                         */
 /* ------------------------------------------------------------------ */
 
 const finalizeInputSchema = z.object({
-  paymentMethod: z.enum(["PIX", "CREDIT_CARD", "CARD_ON_DELIVERY", "CASH"]),
+  /** Omitido: usa a forma de pagamento já gravada na sessão. */
+  paymentMethod: z.enum(["PIX", "CREDIT_CARD", "CARD_ON_DELIVERY", "CASH"]).nullish(),
   /** CPF/CNPJ: obrigatório para pagar online na primeira vez (exigência do Asaas). */
   documentNumber: z.string().trim().max(18).nullish(),
   changeForCents: z.number().int().positive().nullish(),
@@ -274,6 +140,7 @@ export type FinalizeResult =
       orderNumber: number;
       amountFormatted: string;
       paymentMethod: PaymentMethod;
+      deliveryType: "DELIVERY" | "PICKUP";
       /** Pix: código Copia e Cola. O agente o envia como mensagem própria; o modelo nunca o vê. */
       pixPayload?: string;
       /** Cartão: página segura de pagamento. */
@@ -291,7 +158,7 @@ function isUniqueViolation(error: unknown): boolean {
 export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown): Promise<FinalizeResult> {
   const parsed = finalizeInputSchema.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Forma de pagamento inválida." };
-  const { paymentMethod, changeForCents } = parsed.data;
+  const { changeForCents } = parsed.data;
   const providedDocument = parsed.data.documentNumber ? onlyDigits(parsed.data.documentNumber) : null;
 
   const tenantId = await getTenantId();
@@ -302,6 +169,7 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     .from(whatsappSessions)
     .where(eq(whatsappSessions.phone, ctx.phone))
     .limit(1);
+  const paymentMethod = parsed.data.paymentMethod ?? session?.paymentMethod ?? null;
   const draft = session?.draftCart;
   if (!session || !draft || draft.length === 0 || !session.customerId) {
     return { ok: false, error: "Não há pedido em rascunho. Monte o pedido antes de finalizar." };
@@ -313,6 +181,7 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     .where(and(eq(customers.id, session.customerId), eq(customers.tenantId, tenantId)))
     .limit(1);
   if (!customer) return { ok: false, error: "Cliente não encontrado." };
+  if (!paymentMethod) return { ok: false, error: "Falta a forma de pagamento." };
 
   /* CPF informado agora ou já salvo no cadastro pós-pagamento. */
   const documentNumber = providedDocument ?? customer.documentNumber ?? null;
@@ -327,7 +196,7 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
 
   /* Recalcula tudo agora (preço/loja podem ter mudado desde o rascunho). Nada vem do modelo. */
   const address = session.deliveryAddress;
-  const deliveryType = address ? "DELIVERY" : "PICKUP";
+  const deliveryType = address ? ("DELIVERY" as const) : ("PICKUP" as const);
   const coords: Coords | null =
     address && address.latitude != null && address.longitude != null
       ? { lat: address.latitude, lon: address.longitude, city: address.city ?? "" }
@@ -340,16 +209,35 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     return { ok: false, error: "O troco precisa ser maior que o total do pedido." };
   }
 
-  /* Reivindica o rascunho de forma atômica: duas finalizações simultâneas não criam dois pedidos. */
+  /*
+   * Reivindica o rascunho de forma atômica (duas finalizações simultâneas não criam dois pedidos) e já
+   * isola a sessão: novo sessionStartedAt, carrinho vazio, endereço/pagamento limpos, estado IDLE.
+   */
   const claimed = await db
     .update(whatsappSessions)
-    .set({ draftCart: null, addressConfirmed: false })
-    .where(and(eq(whatsappSessions.phone, ctx.phone), isNotNull(whatsappSessions.draftCart)))
+    .set({
+      draftCart: [],
+      addressConfirmed: false,
+      paymentMethod: null,
+      state: "IDLE",
+      sessionStartedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(and(eq(whatsappSessions.phone, ctx.phone), sql`jsonb_array_length(${whatsappSessions.draftCart}) > 0`))
     .returning({ phone: whatsappSessions.phone });
   if (claimed.length === 0) return { ok: false, error: "Esse pedido já foi finalizado." };
 
   const restoreDraft = () =>
-    db.update(whatsappSessions).set({ draftCart: draft }).where(eq(whatsappSessions.phone, ctx.phone));
+    db
+      .update(whatsappSessions)
+      .set({
+        draftCart: draft,
+        addressConfirmed: session.addressConfirmed,
+        paymentMethod: session.paymentMethod,
+        state: session.state,
+        sessionStartedAt: session.sessionStartedAt,
+      })
+      .where(eq(whatsappSessions.phone, ctx.phone));
 
   const addressSnapshot: AddressSnapshot | null = address && zone ? { ...address, deliveryZoneId: zone.id, neighborhood: zone.neighborhood } : null;
 
@@ -450,17 +338,13 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     dedupeKey: `${created.orderId}:created`,
   });
 
-  await db
-    .update(whatsappSessions)
-    .set({ state: online ? "AWAITING_PAYMENT" : "COMPLETED", updatedAt: new Date() })
-    .where(eq(whatsappSessions.phone, ctx.phone));
-
   const base = {
     ok: true as const,
     orderId: created.orderId,
     orderNumber: created.orderNumber,
     amountFormatted: formatCents(calc.totalCents),
     paymentMethod,
+    deliveryType,
   };
 
   if (!online) {

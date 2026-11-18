@@ -785,6 +785,7 @@ export const paymentEvents = pgTable(
 /* ------------------------------------------------------------------ */
 
 export type WhatsAppSessionState =
+  | "IDLE"
   | "GREETING"
   | "BROWSING"
   | "CONFIRMING_ORDER"
@@ -816,6 +817,10 @@ export const whatsappSessions = pgTable(
     processingLockUntil: timestamp("processing_lock_until", { withTimezone: true }),
     /** O cliente já confirmou o endereço de entrega: não perguntar de novo. */
     addressConfirmed: boolean("address_confirmed").notNull().default(false),
+    /** Forma de pagamento já escolhida neste pedido (null = ainda não escolheu). */
+    paymentMethod: text("payment_method").$type<PaymentMethod>(),
+    /** Início do pedido atual: o histórico enviado à IA só considera mensagens a partir daqui. */
+    sessionStartedAt: timestamp("session_started_at", { withTimezone: true }).notNull().defaultNow(),
     lastInteractionAt: timestamp("last_interaction_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

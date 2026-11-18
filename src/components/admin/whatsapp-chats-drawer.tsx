@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { actionErrorMessage } from "./use-run-action";
 
 const STATE_LABELS: Record<WhatsAppChatView["state"], string> = {
+  IDLE: "Ocioso",
   GREETING: "Saudação",
   BROWSING: "Escolhendo",
   CONFIRMING_ORDER: "Confirmando pedido",
@@ -23,6 +24,7 @@ const STATE_LABELS: Record<WhatsAppChatView["state"], string> = {
 };
 
 const STATE_STYLES: Record<WhatsAppChatView["state"], string> = {
+  IDLE: "bg-slate-100 text-slate-600",
   GREETING: "bg-slate-100 text-slate-700",
   BROWSING: "bg-sky-100 text-sky-800",
   CONFIRMING_ORDER: "bg-amber-100 text-amber-800",

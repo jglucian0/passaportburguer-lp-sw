@@ -77,9 +77,17 @@ describe("extractInboundMessages", () => {
       ["w1", "text", "oi"],
       ["w2", "audio", "[áudio]"],
       ["w3", "interactive", "Sim"],
-      ["w4", "sticker", "[Cliente enviou uma figurinha/reação positiva]"],
+      ["w4", "sticker", "[Cliente reagiu com 👍]"],
     ]);
     expect(out[1].mediaId).toBe("m1");
+  });
+
+  it("figurinha: texto neutro (sem presumir sentimento) e mediaId para a IA ler a imagem", () => {
+    const [m] = extractInboundMessages(
+      wrap({ messages: [{ id: "s1", from: "5543999999999", type: "sticker", sticker: { id: "st1" } }] }),
+    );
+    expect(m).toMatchObject({ mediaType: "sticker", content: "[Cliente enviou uma figurinha]", mediaId: "st1" });
+    expect(m.content).not.toMatch(/positiva/);
   });
 
   it("só statuses => vazio; lixo => vazio", () => {

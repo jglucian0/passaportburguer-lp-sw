@@ -50,6 +50,8 @@ async function main() {
   await sql`ALTER TABLE whatsapp_inbox_buffer ADD COLUMN IF NOT EXISTS locked_until timestamptz`;
   await sql`ALTER TABLE whatsapp_sessions ADD COLUMN IF NOT EXISTS processing_lock_until timestamptz`;
   await sql`ALTER TABLE whatsapp_sessions ADD COLUMN IF NOT EXISTS address_confirmed boolean NOT NULL DEFAULT false`;
+  await sql`ALTER TABLE whatsapp_sessions ADD COLUMN IF NOT EXISTS payment_method text`;
+  await sql`ALTER TABLE whatsapp_sessions ADD COLUMN IF NOT EXISTS session_started_at timestamptz NOT NULL DEFAULT now()`;
   console.log("whatsapp ok.");
 }
 

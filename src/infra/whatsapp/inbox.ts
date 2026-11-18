@@ -38,6 +38,15 @@ async function acquireTurnLock(phone: string): Promise<boolean> {
   return rows.length > 0;
 }
 
+/** Turnos encadeados podem passar de 30 s: renova o lock a cada turno. */
+async function renewTurnLock(phone: string): Promise<void> {
+  await db
+    .update(whatsappSessions)
+    .set({ processingLockUntil: new Date(Date.now() + TURN_LOCK_MS) })
+    .where(eq(whatsappSessions.phone, phone))
+    .catch((error) => console.error("[whatsapp-bot] falha ao renovar o lock:", errorSummary(error)));
+}
+
 async function releaseTurnLock(phone: string): Promise<void> {
   await db
     .update(whatsappSessions)
@@ -99,26 +108,43 @@ export async function processAfterDebounce(
   if (!latest || latest.wamid !== myLastWamid) return; // outra execução assume (ou já processado)
 
   // Lock atômico por telefone: se outro turno está respondendo, encerra sem duplicar a resposta.
-  // As mensagens novas ficam no buffer; o turno ativo as atende ao terminar (follow-up abaixo).
+  // As mensagens novas ficam no buffer (processed = false); o turno ativo as atende em fila, sem atropelar.
   if (!(await acquireTurnLock(phone))) return;
 
-  let handled: string[] = [];
+  const seen = new Set<string>();
   try {
-    handled = await claimAndRunBatch(phone);
+    let handled = await claimAndRunBatch(phone);
+    handled.forEach((id) => seen.add(id));
+
+    // O turno acima já PERSISTIU a resposta em whatsapp_messages. Só então olha o que chegou enquanto
+    // respondia e encadeia o próximo turno AINDA com o lock (nenhum outro turno entra no meio).
+    for (let i = followUps; i < MAX_FOLLOW_UPS; i++) {
+      if ((await pendingWamids(phone, seen)).length === 0) break;
+      await renewTurnLock(phone);
+      handled = await claimAndRunBatch(phone);
+      if (handled.length === 0) break;
+      handled.forEach((id) => seen.add(id));
+    }
   } finally {
     await releaseTurnLock(phone);
   }
 
-  // Chegou mensagem enquanto este turno respondia? Atende na sequência, sem esperar outro webhook.
+  // Corrida na borda: mensagem que entrou depois da última checagem e antes de liberar o lock
+  // não conseguiu o lock; sem webhook novo ela ficaria encalhada.
   if (followUps < MAX_FOLLOW_UPS) {
-    const pending = await db
-      .select({ id: whatsappInboxBuffer.id, wamid: whatsappInboxBuffer.wamid })
-      .from(whatsappInboxBuffer)
-      .where(and(eq(whatsappInboxBuffer.phone, phone), eq(whatsappInboxBuffer.processed, false)))
-      .orderBy(desc(whatsappInboxBuffer.receivedAt), desc(whatsappInboxBuffer.id));
-    const fresh = pending.filter((r) => !handled.includes(r.id));
-    if (fresh.length > 0) await processAfterDebounce(phone, fresh[0].wamid, 0, followUps + 1);
+    const fresh = await pendingWamids(phone, seen);
+    if (fresh.length > 0) await processAfterDebounce(phone, fresh[0], 0, followUps + 1);
   }
+}
+
+/** wamids (mais recente primeiro) das mensagens ainda não processadas, fora as que este turno já tratou. */
+async function pendingWamids(phone: string, seen: Set<string>): Promise<string[]> {
+  const pending = await db
+    .select({ id: whatsappInboxBuffer.id, wamid: whatsappInboxBuffer.wamid })
+    .from(whatsappInboxBuffer)
+    .where(and(eq(whatsappInboxBuffer.phone, phone), eq(whatsappInboxBuffer.processed, false)))
+    .orderBy(desc(whatsappInboxBuffer.receivedAt), desc(whatsappInboxBuffer.id));
+  return pending.filter((r) => !seen.has(r.id)).map((r) => r.wamid);
 }
 
 /** Reserva o lote pendente, roda o turno e atualiza o buffer. Devolve os ids do lote tratado. */
