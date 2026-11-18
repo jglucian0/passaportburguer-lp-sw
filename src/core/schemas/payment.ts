@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { validateCardExpiry } from "../validation/card-expiry";
 import { documentError, onlyDigits } from "../validation/document";
 
 /** Luhn: valida o número do cartão antes de gastar uma chamada ao gateway. */
@@ -19,10 +20,8 @@ export function passesLuhn(digits: string): boolean {
 }
 
 function expiryOk(month: string, year: string, now = new Date()): boolean {
-  const m = Number(month);
-  const y = Number(year);
-  if (!Number.isInteger(m) || m < 1 || m > 12 || !Number.isInteger(y)) return false;
-  return y > now.getFullYear() || (y === now.getFullYear() && m >= now.getMonth() + 1);
+  // Mesma regra do frontend: mês 01..12, não vencido e no máximo 20 anos à frente.
+  return validateCardExpiry(`${month}${year.slice(-2)}`, now).valid && year.length === 4;
 }
 
 /** Dados de cartão: usados só em memória no servidor; mensagens de erro nunca ecoam o valor. */

@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Input } from "@/components/ui/input";
+import { validateCardExpiry } from "@/core/validation/card-expiry";
 import { formatDocument } from "@/core/validation/document";
 import { cn, formatCents } from "@/lib/utils";
 
@@ -80,6 +81,7 @@ export function PaymentView({
   const router = useRouter();
   const endpoint = `/api/orders/${orderId}/payment`;
 
+  const [expiryTouched, setExpiryTouched] = useState(false);
   const [pix, setPix] = useState<PixData | null>(initialPix);
   const [pixError, setPixError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -232,12 +234,18 @@ export function PaymentView({
     event.preventDefault();
     if (submitting) return;
     setCardError(null);
+
+    const expiry = validateCardExpiry(card.expiry);
+    if (!expiry.valid) {
+      setExpiryTouched(true);
+      return;
+    }
     submittingRef.current = true;
 
     const [expiryMonth = "", expiryYear = ""] = card.expiry.split("/");
 
     /* Cobrança = entrega (valores do pedido, enviados sem aparecer na tela) ou campos preenchidos. */
-    const postalCode = (sameAddress && billingKnown ? defaults.postalCode : card.postalCode).replace(/D/g, "");
+    const postalCode = (sameAddress && billingKnown ? defaults.postalCode : card.postalCode).replace(/\D/g, "");
     const addressNumber = (sameAddress && billingKnown ? defaults.addressNumber : card.addressNumber).trim();
     if (postalCode.length !== 8) {
       setCardError("Informe o CEP de cobrança com 8 dígitos.");
@@ -352,6 +360,11 @@ export function PaymentView({
     );
   }
 
+  /* Validade: avaliada a cada digitação; o erro aparece com 4 dígitos ou ao sair do campo. */
+  const expiryCheck = validateCardExpiry(card.expiry);
+  const showExpiryError =
+    !expiryCheck.valid && (expiryTouched || card.expiry.replace(/\D/g, "").length === 4);
+
   const field = (key: keyof typeof EMPTY_CARD, mask?: (v: string) => string) => ({
     value: card[key],
     onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
@@ -454,14 +467,17 @@ export function PaymentView({
               />
               <div className="grid grid-cols-2 gap-3">
                 <Input
-                  className={inputClass}
                   placeholder="Validade MM/AA"
                   inputMode="numeric"
                   autoComplete="cc-exp"
                   aria-label="Validade (MM/AA)"
                   maxLength={5}
                   required
+                  aria-invalid={showExpiryError}
+                  aria-describedby={showExpiryError ? "card-expiry-error" : undefined}
                   {...field("expiry", maskExpiry)}
+                  className={cn(inputClass, showExpiryError && "border-red-500 focus:border-red-500 focus:ring-red-500/30")}
+                  onBlur={() => setExpiryTouched(true)}
                 />
                 <Input
                   className={inputClass}
@@ -474,6 +490,11 @@ export function PaymentView({
                   {...field("ccv", (v) => v.replace(/\D/g, "").slice(0, 4))}
                 />
               </div>
+              {showExpiryError && !expiryCheck.valid ? (
+                <p id="card-expiry-error" role="alert" className="-mt-1 text-sm text-red-600">
+                  {expiryCheck.message}
+                </p>
+              ) : null}
               <Input
                 className={inputClass}
                 placeholder="CPF do titular"
@@ -551,7 +572,7 @@ export function PaymentView({
 
               <button
                 type="submit"
-                disabled={submitting}
+                disabled={submitting || !expiryCheck.valid}
                 className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#F59E0B] font-semibold text-[#071329] transition-colors hover:bg-[#d98a09] disabled:opacity-60"
               >
                 {submitting ? <Loader2 className="h-5 w-5 animate-spin" /> : <Lock className="h-4 w-4" />}

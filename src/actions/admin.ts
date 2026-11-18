@@ -55,6 +55,7 @@ import {
   deliveryZones,
   orderItems,
   orders,
+  paymentEvents,
   products,
   storeSettings,
   tenants,
@@ -237,6 +238,15 @@ export async function advanceOrder(input: unknown): Promise<ActionResult<{ statu
         "[audit] liberação manual de pedido com pagamento online",
         JSON.stringify({ orderId: order.id, adminUserId: session.userId, role: session.role, method: order.paymentMethod }),
       );
+      // Trilha durável (o log da plataforma é efêmero): quem liberou e qual pedido.
+      await db
+        .insert(paymentEvents)
+        .values({
+          eventId: `manual-release:${crypto.randomUUID()}`,
+          eventType: `MANUAL_RELEASE_BY_${session.role}:${session.userId}`,
+          orderId: order.id,
+        })
+        .catch(() => console.error("[audit] falha ao gravar a trilha de liberação manual", { orderId: order.id }));
       // Evita pagamento em duplicidade: a cobrança pendente deixa de existir no Asaas.
       after(() => cancelPendingCharges(order.id).catch(() => undefined));
     }

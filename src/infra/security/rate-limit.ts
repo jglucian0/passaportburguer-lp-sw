@@ -25,6 +25,8 @@ export async function checkRateLimit(opts: {
   route: string;
   limit: number;
   windowSeconds: number;
+  /** Falha fechada (nega) se o banco cair: para limites antifraude, como tentativas de cartão. */
+  failClosed?: boolean;
 }): Promise<RateLimitResult> {
   const key = `${opts.route}:${opts.identifier}`;
   const windowMs = opts.windowSeconds * 1000;
@@ -59,6 +61,7 @@ export async function checkRateLimit(opts: {
     };
   } catch (error) {
     console.error("[rate-limit] falha ao consultar o banco:", error);
+    if (opts.failClosed) return { allowed: false, remaining: 0, retryAfterSeconds: 30 };
     return { allowed: true, remaining: opts.limit, retryAfterSeconds: 0 };
   }
 }

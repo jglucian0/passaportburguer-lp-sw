@@ -150,6 +150,7 @@ export async function POST(request: NextRequest, { params }: Ctx) {
       route: "pay-card",
       limit: 5,
       windowSeconds: 600,
+      failClosed: true,
     });
     if (!cardLimit.allowed) return tooManyRequests(cardLimit.retryAfterSeconds);
   }

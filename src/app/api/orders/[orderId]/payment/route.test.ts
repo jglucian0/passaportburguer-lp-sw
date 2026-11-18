@@ -32,7 +32,7 @@ const card = {
   holderName: "MARIA S SILVA",
   number: "4111111111111111",
   expiryMonth: "12",
-  expiryYear: "2099",
+  expiryYear: String(new Date().getFullYear() + 3),
   ccv: "123",
   holderCpfCnpj: "52998224725",
   postalCode: "87020025",
