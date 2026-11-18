@@ -10,15 +10,21 @@ export function safeEqual(a: string | null | undefined, b: string): boolean {
   return timingSafeEqual(ha, hb);
 }
 
-/** Valida `x-hub-signature-256` (`sha256=<hex>`) sobre o corpo bruto. */
+/**
+ * Valida `x-hub-signature-256` (`sha256=<hex>`) sobre o corpo bruto.
+ * Aceita mais de um App Secret (um webhook compartilhado por dois apps da Meta); segredos vazios são ignorados.
+ */
 export function verifyMetaSignature(
   rawBody: string,
   header: string | null,
-  appSecret: string | undefined,
+  appSecret: string | undefined | (string | undefined)[],
 ): boolean {
-  if (!header || !appSecret || !header.startsWith("sha256=")) return false;
-  const expected = "sha256=" + createHmac("sha256", appSecret).update(rawBody).digest("hex");
-  return safeEqual(header, expected);
+  if (!header || !header.startsWith("sha256=")) return false;
+  const secrets = (Array.isArray(appSecret) ? appSecret : [appSecret]).filter((s): s is string => !!s);
+  // Sem nenhum segredo configurado: falha fechada.
+  return secrets.some((secret) =>
+    safeEqual(header, "sha256=" + createHmac("sha256", secret).update(rawBody).digest("hex")),
+  );
 }
 
 /** Figurinha e reação são tratadas igual: gesto positivo, sem conteúdo a interpretar. */
@@ -32,6 +38,8 @@ export type InboundMessage = {
   content: string;
   /** Id da mídia na Meta (áudio/imagem/sticker), para `downloadMedia`. */
   mediaId?: string;
+  /** Número da empresa que recebeu a mensagem (metadata.phone_number_id). */
+  phoneNumberId?: string;
   timestamp?: number;
   raw: unknown;
 };
@@ -114,11 +122,14 @@ export function extractInboundMessages(body: unknown): InboundMessage[] {
     const changes = (entry as { changes?: unknown })?.changes;
     if (!Array.isArray(changes)) continue;
     for (const change of changes) {
-      const messages = (change as { value?: { messages?: unknown } })?.value?.messages;
+      const value = (change as { value?: { messages?: unknown; metadata?: { phone_number_id?: unknown } } })?.value;
+      const messages = value?.messages;
       if (!Array.isArray(messages)) continue;
+      const phoneNumberId =
+        typeof value?.metadata?.phone_number_id === "string" ? value.metadata.phone_number_id : undefined;
       for (const m of messages) {
         const parsed = toInbound(m as RawMessage);
-        if (parsed) out.push(parsed);
+        if (parsed) out.push({ ...parsed, phoneNumberId });
       }
     }
   }

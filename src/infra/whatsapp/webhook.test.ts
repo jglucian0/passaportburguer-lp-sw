@@ -20,7 +20,38 @@ describe("verifyMetaSignature", () => {
   });
 });
 
+describe("verifyMetaSignature com dois apps (mesmo webhook)", () => {
+  const body = '{"a":1}';
+  it("aceita a assinatura de qualquer um dos segredos configurados", () => {
+    expect(verifyMetaSignature(body, sign(body, "app1"), ["app1", "app2"])).toBe(true);
+    expect(verifyMetaSignature(body, sign(body, "app2"), ["app1", "app2"])).toBe(true);
+  });
+  it("rejeita segredo desconhecido e falha fechada sem nenhum segredo", () => {
+    expect(verifyMetaSignature(body, sign(body, "outro"), ["app1", "app2"])).toBe(false);
+    expect(verifyMetaSignature(body, sign(body, ""), [undefined, ""])).toBe(false);
+    expect(verifyMetaSignature(body, sign(body, "app1"), [])).toBe(false);
+  });
+});
+
 describe("extractInboundMessages", () => {
+  it("anexa o phone_number_id do número que recebeu", () => {
+    const out = extractInboundMessages({
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                metadata: { phone_number_id: "999" },
+                messages: [{ id: "w1", from: "5543999999999", type: "text", text: { body: "oi" } }],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    expect(out[0].phoneNumberId).toBe("999");
+  });
+
   const wrap = (value: unknown) => ({ entry: [{ changes: [{ value }] }] });
 
   it("extrai texto, áudio e botão; ignora statuses", () => {

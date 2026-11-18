@@ -77,6 +77,31 @@ describe("webhook WhatsApp — bot", () => {
     expect(m.afterCbs).toHaveLength(0);
   });
 
+  it("aceita assinatura do segundo app (WHATSAPP_APP_SECRET_2) no mesmo webhook", async () => {
+    vi.stubEnv("WHATSAPP_APP_SECRET_2", "segundo-app");
+    const raw = JSON.stringify(wrap([text("w1", "oi")]));
+    const res = await POST(
+      new Request("http://localhost/x", {
+        method: "POST",
+        body: raw,
+        headers: { "x-hub-signature-256": "sha256=" + createHmac("sha256", "segundo-app").update(raw).digest("hex") },
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(m.buffer).toHaveBeenCalled();
+  });
+
+  it("o bot ignora mensagens recebidas em outro número (phone_number_id diferente)", async () => {
+    vi.stubEnv("WHATSAPP_PHONE_NUMBER_ID", "BOT-ID");
+    const msgs = (id: string) => ({
+      entry: [{ changes: [{ value: { metadata: { phone_number_id: id }, messages: [text("w9", "oi")] } }] }],
+    });
+    await POST(req(msgs("OUTRO-NUMERO")));
+    expect(m.buffer).not.toHaveBeenCalled();
+    await POST(req(msgs("BOT-ID")));
+    expect(m.buffer).toHaveBeenCalledTimes(1);
+  });
+
   it("GET: challenge com token correto; 403 com errado", async () => {
     const ok = await GET(new Request("http://x/?hub.mode=subscribe&hub.verify_token=vt&hub.challenge=123"));
     expect(ok.status).toBe(200);

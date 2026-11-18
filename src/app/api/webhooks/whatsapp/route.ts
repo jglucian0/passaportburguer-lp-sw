@@ -1,5 +1,3 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
-
 import { and, eq, gt } from "drizzle-orm";
 import { after } from "next/server";
 
@@ -9,7 +7,7 @@ import { maskPhone } from "@/infra/security/mask";
 import { whatsappOtps } from "@/infra/db/schema";
 import { bufferInbound, processAfterDebounce } from "@/infra/whatsapp/inbox";
 import { errorSummary } from "@/infra/whatsapp/log";
-import { extractInboundMessages, safeEqual } from "@/infra/whatsapp/webhook";
+import { extractInboundMessages, safeEqual, verifyMetaSignature } from "@/infra/whatsapp/webhook";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -32,12 +30,9 @@ export function GET(request: Request) {
 }
 
 function validSignature(raw: string, header: string | null): boolean {
-  const secret = process.env.WHATSAPP_APP_SECRET;
-  /* Falha fechada: sem segredo ou sem assinatura, nada é aceito (em nenhum ambiente). */
-  if (!secret || !header?.startsWith("sha256=")) return false;
-  const expected = createHmac("sha256", secret).update(raw).digest();
-  const received = Buffer.from(header.slice(7), "hex");
-  return received.length === expected.length && timingSafeEqual(received, expected);
+  /* Falha fechada: sem segredo ou sem assinatura, nada é aceito (em nenhum ambiente).
+     WHATSAPP_APP_SECRET_2: segundo app da Meta apontando para o mesmo webhook (cada app tem o seu segredo). */
+  return verifyMetaSignature(raw, header, [process.env.WHATSAPP_APP_SECRET, process.env.WHATSAPP_APP_SECRET_2]);
 }
 
 type MetaPayload = {
@@ -127,8 +122,12 @@ export async function POST(request: Request) {
 
   /* Bot: tudo que não é código OTP vai para o buffer (dedupe por wamid) e é processado após o debounce. */
   try {
+    /* O bot só atende o número dele: mensagens recebidas em outro número (ex.: o do login por OTP) não entram. */
+    const botNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
     const botMessages = extractInboundMessages(payload).filter(
-      (m) => !(m.mediaType === "text" && CODE_REGEX.test(m.content)),
+      (m) =>
+        !(m.mediaType === "text" && CODE_REGEX.test(m.content)) &&
+        (!botNumberId || !m.phoneNumberId || m.phoneNumberId === botNumberId),
     );
     if (botMessages.length > 0) {
       const fresh = await bufferInbound(botMessages);
