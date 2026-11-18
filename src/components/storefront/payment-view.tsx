@@ -1,0 +1,512 @@
+"use client";
+
+import { Check, Copy, Loader2, Lock } from "lucide-react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import { Input } from "@/components/ui/input";
+import { formatDocument } from "@/core/validation/document";
+import { cn, formatCents } from "@/lib/utils";
+
+type PixData = { payload: string; qrCodeBase64: string; expiresAt: string | null };
+
+type Props = {
+  orderId: string;
+  method: "PIX" | "CREDIT_CARD";
+  totalCents: number;
+  customerEmail: string;
+  initialPix: PixData | null;
+};
+
+const POLL_MS = 4000;
+
+const inputClass =
+  "h-12 rounded-xl border-slate-300 bg-white text-base text-slate-900 placeholder:text-slate-400 focus:border-[#F59E0B] focus:ring-2 focus:ring-[#F59E0B]/30";
+const cardClass = "space-y-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm";
+
+/* Máscaras (apenas apresentação; o servidor valida tudo de novo). */
+const maskCardNumber = (v: string) =>
+  v
+    .replace(/\D/g, "")
+    .slice(0, 19)
+    .replace(/(\d{4})(?=\d)/g, "$1 ");
+const maskExpiry = (v: string) => {
+  const d = v.replace(/\D/g, "").slice(0, 4);
+  return d.length > 2 ? `${d.slice(0, 2)}/${d.slice(2)}` : d;
+};
+const maskCep = (v: string) => {
+  const d = v.replace(/\D/g, "").slice(0, 8);
+  return d.length > 5 ? `${d.slice(0, 5)}-${d.slice(5)}` : d;
+};
+
+/* Estado do cartão só em memória (useState): nada vai para localStorage/sessionStorage/URL. */
+const EMPTY_CARD = {
+  holderName: "",
+  number: "",
+  expiry: "",
+  ccv: "",
+  holderCpfCnpj: "",
+  postalCode: "",
+  addressNumber: "",
+};
+
+const RISK_MESSAGE =
+  "Pagamento em análise de segurança. Assim que aprovado, seu pedido será enviado para a cozinha.";
+
+export function PaymentView({
+  orderId,
+  method: initialMethod,
+  totalCents,
+  customerEmail,
+  initialPix,
+}: Props) {
+  /* O cliente pode trocar Pix <-> cartão no mesmo pedido (ex.: cartão recusado). */
+  const [method, setMethod] = useState<"PIX" | "CREDIT_CARD">(initialMethod);
+  const router = useRouter();
+  const endpoint = `/api/orders/${orderId}/payment`;
+
+  const [pix, setPix] = useState<PixData | null>(initialPix);
+  const [pixError, setPixError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [canceled, setCanceled] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
+
+  const [card, setCard] = useState(EMPTY_CARD);
+  const [email, setEmail] = useState(customerEmail);
+  const [submitting, setSubmitting] = useState(false);
+  const [cardError, setCardError] = useState<string | null>(null);
+  const [waitingGateway, setWaitingGateway] = useState(false);
+  const [switching, setSwitching] = useState(false);
+
+  /* ---------------- Pix: gera/recupera a cobrança ---------------- */
+  const requestedPix = useRef(false);
+  const loadPix = useCallback(async () => {
+    setPixError(null);
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "pix" }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { pix?: PixData; error?: string };
+      if (!res.ok || !data.pix) {
+        setPixError(data.error ?? "Não foi possível gerar o Pix. Tente novamente.");
+        return;
+      }
+      setPix(data.pix);
+    } catch {
+      setPixError("Sem conexão. Tente novamente.");
+    }
+  }, [endpoint]);
+
+  useEffect(() => {
+    if (method !== "PIX" || pix || requestedPix.current) return;
+    // (o guard evita dupla chamada em StrictMode; trocar de método passa por switchMethod)
+    requestedPix.current = true;
+    void loadPix();
+  }, [method, pix, loadPix]);
+
+  /* ---------------- Polling do status (webhook confirma) ---------------- */
+  useEffect(() => {
+    if (confirmed || canceled) return;
+    let stopped = false;
+
+    async function tick() {
+      if (stopped || document.hidden) return;
+      try {
+        const res = await fetch(endpoint, { cache: "no-store" });
+        if (!res.ok) return;
+        const data = (await res.json()) as { orderStatus: string; paymentStatus: string | null };
+        if (stopped) return;
+        if (data.orderStatus === "AWAITING_PAYMENT") {
+          if (data.paymentStatus === "RISK_ANALYSIS") setWaitingGateway(true);
+          if (data.paymentStatus === "FAILED") {
+            // Recusa assíncrona (captura/análise de risco): libera o formulário para nova tentativa.
+            setWaitingGateway(false);
+            setCardError((prev) => prev ?? "Cartão recusado. Tente outro cartão ou pague com Pix.");
+          }
+          return;
+        }
+        stopped = true;
+        if (data.orderStatus === "CANCELED") {
+          setCanceled(true);
+        } else {
+          setConfirmed(true);
+          router.replace("/meus-pedidos");
+        }
+      } catch {
+        /* tenta no próximo ciclo */
+      }
+    }
+
+    const timer = window.setInterval(() => void tick(), POLL_MS);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [endpoint, router, confirmed, canceled]);
+
+  /* ---------------- Ações ---------------- */
+  async function switchMethod(next: "PIX" | "CREDIT_CARD") {
+    if (next === method || switching) return;
+    setCardError(null);
+    setPixError(null);
+    if (next === "CREDIT_CARD") {
+      // O servidor troca o método do pedido quando o cartão for enviado (cobrança Pix pendente é cancelada).
+      setMethod("CREDIT_CARD");
+      return;
+    }
+    setSwitching(true);
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "pix" }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { pix?: PixData; error?: string };
+      if (!res.ok || !data.pix) {
+        setCardError(data.error ?? "Não foi possível gerar o Pix. Tente novamente.");
+        return;
+      }
+      setPix(data.pix);
+      setMethod("PIX");
+    } catch {
+      setCardError("Sem conexão. Tente novamente.");
+    } finally {
+      setSwitching(false);
+    }
+  }
+
+  async function copyPix() {
+    if (!pix) return;
+    try {
+      await navigator.clipboard.writeText(pix.payload);
+    } catch {
+      // Fallback para navegadores sem Clipboard API.
+      const area = document.createElement("textarea");
+      area.value = pix.payload;
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.select();
+      document.execCommand("copy");
+      area.remove();
+    }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 2500);
+  }
+
+  async function submitCard(event: React.FormEvent) {
+    event.preventDefault();
+    if (submitting) return;
+    setCardError(null);
+
+    const [expiryMonth = "", expiryYear = ""] = card.expiry.split("/");
+    setSubmitting(true);
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "card",
+          card: {
+            holderName: card.holderName,
+            number: card.number,
+            expiryMonth,
+            expiryYear,
+            ccv: card.ccv,
+            holderCpfCnpj: card.holderCpfCnpj,
+            postalCode: card.postalCode,
+            addressNumber: card.addressNumber,
+            email,
+          },
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        status?: string;
+        released?: boolean;
+      };
+      if (res.status === 409 && data.error) {
+        // Já existe pagamento em análise para este pedido.
+        setWaitingGateway(true);
+        return;
+      }
+      if (!res.ok || !data.ok) {
+        setCardError(data.error ?? "Pagamento recusado. Confira os dados ou tente outro cartão.");
+        // Descarta número/CVV da memória ao falhar: o cliente redigita.
+        setCard((c) => ({ ...c, number: "", ccv: "" }));
+        return;
+      }
+      // Aceito: descarta tudo da memória.
+      setCard(EMPTY_CARD);
+      if (data.released) {
+        // Aprovação imediata: o pedido já foi para a cozinha.
+        setConfirmed(true);
+        router.replace("/meus-pedidos");
+        return;
+      }
+      // PENDING / análise de risco: aguarda o webhook (polling) com mensagem clara.
+      setWaitingGateway(true);
+    } catch {
+      setCardError("Sem conexão. Tente novamente.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function openHostedInvoice() {
+    setCardError(null);
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "hosted" }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { invoiceUrl?: string; error?: string };
+      if (!res.ok || !data.invoiceUrl?.startsWith("https://")) {
+        setCardError(data.error ?? "Não foi possível abrir a página de pagamento.");
+        return;
+      }
+      window.location.assign(data.invoiceUrl);
+    } catch {
+      setCardError("Sem conexão. Tente novamente.");
+    }
+  }
+
+  /* ---------------- Render ---------------- */
+  if (canceled) {
+    return (
+      <div className={cardClass} role="alert">
+        <h2 className="font-bold">Pedido cancelado</h2>
+        <p className="text-sm text-slate-600">
+          O pagamento não foi confirmado a tempo e o pedido foi cancelado. Você pode fazer um novo pedido.
+        </p>
+        <Link href="/" className="inline-block font-semibold text-[#B45309] underline">
+          Voltar ao cardápio
+        </Link>
+      </div>
+    );
+  }
+
+  if (confirmed) {
+    return (
+      <div className={cardClass}>
+        <p className="flex items-center gap-2 font-semibold text-emerald-700">
+          <Check className="h-5 w-5" /> Pagamento confirmado! Redirecionando…
+        </p>
+      </div>
+    );
+  }
+
+  const field = (key: keyof typeof EMPTY_CARD, mask?: (v: string) => string) => ({
+    value: card[key],
+    onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
+      setCard((c) => ({ ...c, [key]: mask ? mask(e.target.value) : e.target.value })),
+  });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <span className="text-sm text-slate-500">Total a pagar</span>
+        <span className="text-xl font-bold">{formatCents(totalCents)}</span>
+      </div>
+
+      {method === "PIX" ? (
+        <section className={cardClass}>
+          <h2 className="font-bold">Pague com Pix</h2>
+
+          {pix ? (
+            <>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={`data:image/png;base64,${pix.qrCodeBase64}`}
+                alt="QR Code Pix"
+                width={224}
+                height={224}
+                className="mx-auto h-56 w-56 rounded-lg border border-slate-200"
+              />
+              <p className="text-center text-sm text-slate-600">
+                Abra o app do seu banco, escolha Pix e leia o QR Code ou use o Pix Copia e Cola.
+              </p>
+              <button
+                type="button"
+                onClick={copyPix}
+                className={cn(
+                  "flex h-12 w-full items-center justify-center gap-2 rounded-xl font-semibold transition-colors",
+                  copied ? "bg-emerald-600 text-white" : "bg-[#F59E0B] text-[#071329] hover:bg-[#d98a09]",
+                )}
+              >
+                {copied ? <Check className="h-5 w-5" /> : <Copy className="h-5 w-5" />}
+                {copied ? "Código copiado!" : "Copiar código Pix"}
+              </button>
+              <p className="flex items-center justify-center gap-2 text-xs text-slate-500" aria-live="polite">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Aguardando a confirmação do pagamento…
+              </p>
+            </>
+          ) : pixError ? (
+            <div className="space-y-3" role="alert">
+              <p className="text-sm font-medium text-red-700">{pixError}</p>
+              <button
+                type="button"
+                onClick={() => void loadPix()}
+                className="h-11 w-full rounded-xl border border-slate-300 font-semibold"
+              >
+                Tentar novamente
+              </button>
+            </div>
+          ) : (
+            <p className="flex items-center justify-center gap-2 py-8 text-sm text-slate-500">
+              <Loader2 className="h-4 w-4 animate-spin" /> Gerando seu QR Code…
+            </p>
+          )}
+          <button
+            type="button"
+            onClick={() => void switchMethod("CREDIT_CARD")}
+            className="w-full text-center text-sm font-medium text-slate-600 underline"
+          >
+            Prefiro pagar com cartão de crédito
+          </button>
+        </section>
+      ) : (
+        <section className={cardClass}>
+          <h2 className="flex items-center gap-2 font-bold">
+            <Lock className="h-4 w-4" /> Cartão de crédito
+          </h2>
+
+          {waitingGateway ? (
+            <p className="flex items-start gap-2 text-sm text-slate-700" aria-live="polite">
+              <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" /> {RISK_MESSAGE}
+            </p>
+          ) : (
+            <form onSubmit={submitCard} className="space-y-3" autoComplete="on">
+              <Input
+                className={inputClass}
+                placeholder="Nome impresso no cartão"
+                autoComplete="cc-name"
+                aria-label="Nome impresso no cartão"
+                maxLength={60}
+                required
+                {...field("holderName")}
+              />
+              <Input
+                className={inputClass}
+                placeholder="Número do cartão"
+                inputMode="numeric"
+                autoComplete="cc-number"
+                aria-label="Número do cartão"
+                maxLength={23}
+                required
+                {...field("number", maskCardNumber)}
+              />
+              <div className="grid grid-cols-2 gap-3">
+                <Input
+                  className={inputClass}
+                  placeholder="Validade MM/AA"
+                  inputMode="numeric"
+                  autoComplete="cc-exp"
+                  aria-label="Validade (MM/AA)"
+                  maxLength={5}
+                  required
+                  {...field("expiry", maskExpiry)}
+                />
+                <Input
+                  className={inputClass}
+                  placeholder="CVV"
+                  inputMode="numeric"
+                  autoComplete="cc-csc"
+                  aria-label="Código de segurança (CVV)"
+                  maxLength={4}
+                  required
+                  {...field("ccv", (v) => v.replace(/\D/g, "").slice(0, 4))}
+                />
+              </div>
+              <Input
+                className={inputClass}
+                placeholder="CPF do titular"
+                inputMode="numeric"
+                autoComplete="off"
+                aria-label="CPF do titular"
+                maxLength={18}
+                required
+                {...field("holderCpfCnpj", formatDocument)}
+              />
+              <div className="grid grid-cols-2 gap-3">
+                <Input
+                  className={inputClass}
+                  placeholder="CEP"
+                  inputMode="numeric"
+                  autoComplete="postal-code"
+                  aria-label="CEP do titular"
+                  maxLength={9}
+                  required
+                  {...field("postalCode", maskCep)}
+                />
+                <Input
+                  className={inputClass}
+                  placeholder="Nº do endereço"
+                  autoComplete="off"
+                  aria-label="Número do endereço"
+                  maxLength={10}
+                  required
+                  {...field("addressNumber")}
+                />
+              </div>
+              <Input
+                className={inputClass}
+                type="email"
+                placeholder="E-mail do titular"
+                autoComplete="email"
+                aria-label="E-mail do titular"
+                maxLength={120}
+                required
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+
+              {cardError ? (
+                <div role="alert" className="space-y-2 rounded-lg bg-red-50 p-3">
+                  <p className="text-sm font-medium text-red-700">{cardError}</p>
+                  <p className="text-xs text-red-700/80">
+                    Seu pedido continua guardado: tente outro cartão abaixo ou pague com Pix.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void switchMethod("PIX")}
+                    disabled={switching}
+                    className="h-10 w-full rounded-lg border border-red-300 bg-white text-sm font-semibold text-red-800 disabled:opacity-60"
+                  >
+                    {switching ? "Gerando Pix…" : "Pagar com Pix"}
+                  </button>
+                </div>
+              ) : null}
+
+              <button
+                type="submit"
+                disabled={submitting}
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#F59E0B] font-semibold text-[#071329] transition-colors hover:bg-[#d98a09] disabled:opacity-60"
+              >
+                {submitting ? <Loader2 className="h-5 w-5 animate-spin" /> : <Lock className="h-4 w-4" />}
+                {submitting ? "Processando…" : `Pagar ${formatCents(totalCents)}`}
+              </button>
+              <button
+                type="button"
+                onClick={() => void openHostedInvoice()}
+                className="w-full text-center text-sm font-medium text-slate-600 underline"
+              >
+                Prefiro pagar na página segura do Asaas
+              </button>
+            </form>
+          )}
+        </section>
+      )}
+
+      <p className="text-center text-xs text-slate-500">
+        O pedido é enviado à cozinha assim que o pagamento é confirmado. Sem pagamento em 30 minutos,
+        ele é cancelado automaticamente.
+      </p>
+    </div>
+  );
+}

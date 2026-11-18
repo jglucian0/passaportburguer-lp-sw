@@ -193,12 +193,15 @@ async function buildPayload(orderId: string, config: SaiposConfig) {
   };
 }
 
-function buildPayment(method: "PIX" | "CARD_ON_DELIVERY" | "CASH", totalCents: number, changeForCents: number | null) {
+function buildPayment(method: "PIX" | "CREDIT_CARD" | "CARD_ON_DELIVERY" | "CASH", totalCents: number, changeForCents: number | null) {
   const amount = toReais(totalCents);
   switch (method) {
     case "PIX":
       // PIX é pago online no nosso site; só é enviado após a confirmação do pagamento.
       return { code: "PARTNER_PAYMENT", amount, change_for: 0, complement: "pix", type: "ONLINE" };
+    case "CREDIT_CARD":
+      // Cartão pago online (Asaas); só é enviado após a confirmação do pagamento.
+      return { code: "PARTNER_PAYMENT", amount, change_for: 0, complement: "cartao", type: "ONLINE" };
     case "CARD_ON_DELIVERY":
       return { code: "CARD", amount, change_for: 0, type: "OFFLINE" };
     case "CASH":

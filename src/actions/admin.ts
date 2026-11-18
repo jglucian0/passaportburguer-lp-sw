@@ -31,7 +31,8 @@ import {
   toggleAvailabilitySchema,
   type CatalogDeliveryZone,
 } from "@/core/schemas/product";
-import { uuidSchema } from "@/core/schemas/common";
+import { isOnlinePaymentMethod, uuidSchema } from "@/core/schemas/common";
+import { cancelPendingCharges } from "@/infra/payments/asaas";
 import { calculateCart } from "@/core/cart/calculate-cart";
 import { canCancel, getNextStatus } from "@/core/orders/state-machine";
 import { getStoreStatus, type StoreStatusReason } from "@/core/store/opening-hours";
@@ -177,12 +178,27 @@ export async function advanceOrder(input: unknown): Promise<ActionResult<{ statu
     if (!parsed.success) return fromZod(parsed.error);
 
     const [order] = await db
-      .select({ id: orders.id, status: orders.status, deliveryType: orders.deliveryType })
+      .select({
+        id: orders.id,
+        status: orders.status,
+        deliveryType: orders.deliveryType,
+        paymentMethod: orders.paymentMethod,
+      })
       .from(orders)
       .where(and(eq(orders.id, parsed.data.orderId), eq(orders.tenantId, session.tenantId)))
       .limit(1);
 
     if (!order) return failure("Pedido não encontrado.");
+
+    /* Anti-fraude interna: pagamento online (Pix/cartão) só é confirmado pelo gateway (webhook).
+       A liberação manual é exclusiva do proprietário e fica registrada em log de auditoria. */
+    const manualOnlineRelease =
+      order.status === "AWAITING_PAYMENT" && isOnlinePaymentMethod(order.paymentMethod);
+    if (manualOnlineRelease && session.role !== "OWNER") {
+      return failure(
+        "O pagamento online é confirmado automaticamente. Somente o proprietário pode liberar manualmente.",
+      );
+    }
 
     const next = getNextStatus(order.status, order.deliveryType);
     if (!next) return failure("Este pedido já foi finalizado.");
@@ -205,9 +221,18 @@ export async function advanceOrder(input: unknown): Promise<ActionResult<{ statu
 
     if (updated.length === 0) return failure("O pedido foi alterado por outra pessoa. Atualize a tela.");
 
-    // Pagamento (PIX) confirmado pelo operador: só agora o pedido segue para o Saipos.
+    // Pagamento confirmado pelo operador: só agora o pedido segue para o Saipos.
     if (order.status === "AWAITING_PAYMENT") {
       after(() => sendOrderToSaipos(order.id));
+    }
+
+    if (manualOnlineRelease) {
+      console.warn(
+        "[audit] liberação manual de pedido com pagamento online",
+        JSON.stringify({ orderId: order.id, adminUserId: session.userId, role: session.role, method: order.paymentMethod }),
+      );
+      // Evita pagamento em duplicidade: a cobrança pendente deixa de existir no Asaas.
+      after(() => cancelPendingCharges(order.id).catch(() => undefined));
     }
 
     return success({ status: next });
@@ -243,6 +268,9 @@ export async function cancelOrder(input: unknown): Promise<ActionResult<{ status
       .returning({ id: orders.id });
 
     if (updated.length === 0) return failure("O pedido foi alterado por outra pessoa. Atualize a tela.");
+
+    // Pedido cancelado não pode mais ser pago: remove a cobrança pendente no Asaas.
+    after(() => cancelPendingCharges(order.id).catch(() => undefined));
 
     return success({ status: "CANCELED" as const });
   });

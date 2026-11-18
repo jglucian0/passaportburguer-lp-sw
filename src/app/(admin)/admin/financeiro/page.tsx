@@ -23,6 +23,7 @@ export const dynamic = "force-dynamic";
  */
 const PAYMENT_ROWS: { method: PaymentMethod; label: string }[] = [
   { method: "PIX", label: "PIX" },
+  { method: "CREDIT_CARD", label: "Cartão de crédito (online)" },
   { method: "CARD_ON_DELIVERY", label: "Cartão (crédito/débito)" },
   { method: "CASH", label: "Dinheiro" },
 ];

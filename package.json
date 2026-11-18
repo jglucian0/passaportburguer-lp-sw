@@ -21,6 +21,7 @@
     "db:migrate-delivery": "tsx --env-file=.env.local src/infra/db/migrate-delivery-team.ts",
     "db:migrate-coupons": "tsx --env-file=.env.local src/infra/db/migrate-coupons.ts",
     "db:migrate-payment-events": "tsx --env-file=.env.local src/infra/db/migrate-payment-events.ts",
+    "db:migrate-asaas": "tsx --env-file=.env.local src/infra/db/migrate-asaas.ts",
     "db:migrate-saipos": "tsx --env-file=.env.local src/infra/db/migrate-saipos.ts",
     "db:sync-images": "tsx --env-file=.env.local src/infra/db/sync-images.ts",
     "db:seed-zones": "tsx --env-file=.env.local src/infra/db/seed-zones.ts"

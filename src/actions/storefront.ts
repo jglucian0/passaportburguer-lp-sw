@@ -13,6 +13,8 @@ import { onlyDigits } from "@/core/validation/document";
 import { OTHER_ZONE_NAME } from "@/core/store/maringa-zones";
 import type { DeliveryType, OrderStatus, PaymentMethod } from "@/core/schemas/common";
 import { checkoutSchema } from "@/core/schemas/checkout";
+import { isOnlinePaymentMethod } from "@/core/schemas/common";
+import { createPixCharge } from "@/infra/payments/asaas";
 import type { CatalogDeliveryZone } from "@/core/schemas/product";
 import { getStoreStatus, type OpeningHours, type StoreStatus } from "@/core/store/opening-hours";
 import { getAuthSession } from "@/infra/auth/customer-session";
@@ -162,6 +164,30 @@ function isUniqueViolation(error: unknown): boolean {
   return e?.code === "23505" || e?.cause?.code === "23505";
 }
 
+type KeyedOrder = { id: string; paymentMethod: PaymentMethod; status: OrderStatus };
+
+async function findOrderByKey(
+  tenantId: string,
+  customerId: string,
+  key: string,
+): Promise<KeyedOrder | null> {
+  const [row] = await db
+    .select({ id: orders.id, paymentMethod: orders.paymentMethod, status: orders.status })
+    .from(orders)
+    .where(
+      and(eq(orders.tenantId, tenantId), eq(orders.customerId, customerId), eq(orders.idempotencyKey, key)),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+/** Pedido online aguardando pagamento vai para a tela de pagamento; o resto, para Meu Passaporte. */
+function afterOrderPath(order: KeyedOrder): string {
+  return isOnlinePaymentMethod(order.paymentMethod) && order.status === "AWAITING_PAYMENT"
+    ? `/pagamento/${order.id}`
+    : "/meus-pedidos";
+}
+
 export async function createOrder(input: unknown): Promise<ActionFailure> {
   const limit = await checkRateLimit({
     identifier: getClientIp(await headers()),
@@ -184,6 +210,12 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
   const parsed = checkoutSchema.safeParse(input);
   if (!parsed.success) return fromZod(parsed.error);
   const data = parsed.data;
+
+  /* Idempotência: a mesma chave (duplo clique/reenvio) devolve o pedido já criado. */
+  if (data.idempotencyKey) {
+    const existing = await findOrderByKey(ref.id, session.customerId, data.idempotencyKey);
+    if (existing) redirect(afterOrderPath(existing));
+  }
 
   // Dados frescos do banco (nunca do cache) para validar horário e pedido mínimo.
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, ref.id)).limit(1);
@@ -288,7 +320,7 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
 
   /* Pedido + itens em lote atômico, com retry em conflito do order_number. */
   const initialStatus: OrderStatus =
-    data.paymentMethod === "PIX" ? "AWAITING_PAYMENT" : settings.autoAcceptOrders ? "PREPARING" : "RECEIVED";
+    isOnlinePaymentMethod(data.paymentMethod) ? "AWAITING_PAYMENT" : settings.autoAcceptOrders ? "PREPARING" : "RECEIVED";
   let created: { orderId: string; orderNumber: number } | null = null;
 
   for (let attempt = 0; attempt < 5 && !created; attempt++) {
@@ -311,6 +343,7 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
           deliveryType: data.deliveryType,
           addressSnapshot,
           paymentMethod: data.paymentMethod,
+          idempotencyKey: data.idempotencyKey ?? null,
           changeForCents: data.paymentMethod === "CASH" ? (data.changeForCents ?? null) : null,
           subtotalCents: calc.subtotalCents,
           deliveryFeeCents: calc.deliveryFeeCents,
@@ -339,6 +372,11 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
       created = { orderId, orderNumber };
     } catch (error) {
       if (!isUniqueViolation(error)) throw error;
+      // Corrida de duplo clique: outra requisição já gravou o pedido com a mesma chave.
+      if (data.idempotencyKey) {
+        const existing = await findOrderByKey(tenant.id, customer.id, data.idempotencyKey);
+        if (existing) redirect(afterOrderPath(existing));
+      }
     }
   }
 
@@ -348,6 +386,31 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
   if (initialStatus !== "AWAITING_PAYMENT") {
     const orderIdToSync = created.orderId;
     after(() => sendOrderToSaipos(orderIdToSync));
+  }
+
+  if (isOnlinePaymentMethod(data.paymentMethod)) {
+    /* Pix: gera a cobrança já aqui para a tela abrir com o QR Code. Se o Asaas falhar, o pedido
+       segue aguardando pagamento e a tela de pagamento tenta de novo. */
+    if (data.paymentMethod === "PIX") {
+      try {
+        await createPixCharge({
+          order: { id: created.orderId, totalCents: calc.totalCents },
+          customer: {
+            id: customer.id,
+            name: customer.name,
+            phone: customer.phone,
+            email: customer.email,
+            asaasCustomerId: customer.asaasCustomerId,
+            cpfCnpj: data.documentNumber ? onlyDigits(data.documentNumber) : null,
+          },
+        });
+      } catch {
+        console.error("[checkout] cobrança Pix não criada; a tela de pagamento tentará novamente", {
+          orderId: created.orderId,
+        });
+      }
+    }
+    redirect(`/pagamento/${created.orderId}`);
   }
 
   redirect("/meus-pedidos");

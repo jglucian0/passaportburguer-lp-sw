@@ -8,6 +8,7 @@ export const runtime = "nodejs";
 
 const PAYMENT_LABELS: Record<string, string> = {
   PIX: "PIX",
+  CREDIT_CARD: "Cartão de crédito (online)",
   CARD_ON_DELIVERY: "Cartão (crédito/débito)",
   CASH: "Dinheiro",
 };

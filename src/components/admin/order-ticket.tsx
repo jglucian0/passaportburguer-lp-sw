@@ -11,6 +11,7 @@ import { formatCents, formatPhone } from "@/lib/utils";
 
 export const PAYMENT_LABELS: Record<PaymentMethod, string> = {
   PIX: "PIX",
+  CREDIT_CARD: "Cartão online",
   CARD_ON_DELIVERY: "Cartão na entrega",
   CASH: "Dinheiro",
 };

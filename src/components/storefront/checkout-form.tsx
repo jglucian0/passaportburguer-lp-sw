@@ -17,7 +17,7 @@ import {
 import { OTHER_ZONE_NAME } from "@/core/store/maringa-zones";
 import { minOrderMessage } from "@/core/store/min-order";
 import { documentError, formatDocument, onlyDigits } from "@/core/validation/document";
-import type { DeliveryType, PaymentMethod } from "@/core/schemas/common";
+import { isOnlinePaymentMethod, type DeliveryType, type PaymentMethod } from "@/core/schemas/common";
 import type {
   CatalogDeliveryZone,
   CatalogProduct,
@@ -33,8 +33,20 @@ import {
   ORDER_PLACED_FLAG,
 } from "./cart-storage";
 
+/** UUID v4 da tentativa de checkout (idempotência no servidor). */
+function newIdempotencyKey(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
 const PAYMENT_LABELS: Record<PaymentMethod, string> = {
   PIX: "PIX",
+  CREDIT_CARD: "Cartão de crédito (online)",
   CARD_ON_DELIVERY: "Cartão na entrega",
   CASH: "Dinheiro",
 };
@@ -100,6 +112,9 @@ export function CheckoutForm({
   const [includeDocument, setIncludeDocument] = useState(false);
   const [documentValue, setDocumentValue] = useState("");
   const [documentTouched, setDocumentTouched] = useState(false);
+  /* Muda só quando um envio falha (nenhum pedido criado); reenvio/duplo clique reaproveita a chave. */
+  const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
+  const onlinePayment = isOnlinePaymentMethod(paymentMethod);
 
   /* Frete por distância: o servidor recalcula o mesmo valor ao criar o pedido. */
   const quote = useMemo(
@@ -176,7 +191,7 @@ export function CheckoutForm({
 
   /* CPF/CNPJ na nota. */
   const docDigits = onlyDigits(documentValue);
-  const docError = includeDocument ? documentError(documentValue) : null;
+  const docError = includeDocument || onlinePayment ? documentError(documentValue) : null;
   const showDocError = !!docError && (documentTouched || docDigits.length >= 11);
 
 
@@ -243,12 +258,14 @@ export function CheckoutForm({
         paymentMethod,
         changeForCents,
         notes: combinedNotes || null,
-        documentNumber: includeDocument ? docDigits : null,
+        documentNumber: includeDocument || onlinePayment ? docDigits : null,
+        idempotencyKey,
         items,
       });
 
       // Em sucesso o servidor redireciona; só chegamos aqui em caso de erro.
       if (result && !result.ok) {
+        setIdempotencyKey(newIdempotencyKey());
         try {
           window.sessionStorage.removeItem(ORDER_PLACED_FLAG);
         } catch {
@@ -445,7 +462,7 @@ export function CheckoutForm({
         {/* Pagamento */}
         <section className={cardClass}>
           <h2 className="font-bold">Pagamento</h2>
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {(Object.keys(PAYMENT_LABELS) as PaymentMethod[]).map((method) => (
               <button
                 key={method}
@@ -454,7 +471,10 @@ export function CheckoutForm({
                   optionClass(paymentMethod === method),
                   "h-14 px-1 text-center text-xs leading-tight",
                 )}
-                onClick={() => setPaymentMethod(method)}
+                onClick={() => {
+                  setPaymentMethod(method);
+                  if (isOnlinePaymentMethod(method)) setIncludeDocument(true);
+                }}
               >
                 {PAYMENT_LABELS[method]}
               </button>
@@ -502,14 +522,22 @@ export function CheckoutForm({
             </p>
           ) : null}
 
+          {paymentMethod === "CREDIT_CARD" ? (
+            <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
+              Você informa os dados do cartão na próxima tela, em ambiente seguro. Eles não ficam
+              salvos no nosso sistema.
+            </p>
+          ) : null}
+
           <div className="space-y-3 rounded-xl bg-slate-50 p-3">
             <div className="flex items-center justify-between gap-3">
               <label htmlFor="checkout-doc-switch" className="text-sm font-medium text-slate-700">
-                Incluir CPF/CNPJ na nota
+                {onlinePayment ? "CPF/CNPJ (obrigatório para pagar online)" : "Incluir CPF/CNPJ na nota"}
               </label>
               <Switch
                 id="checkout-doc-switch"
-                checked={includeDocument}
+                checked={includeDocument || onlinePayment}
+                disabled={onlinePayment}
                 onCheckedChange={(on) => {
                   setIncludeDocument(on);
                   if (!on) {
@@ -520,7 +548,7 @@ export function CheckoutForm({
                 className="bg-slate-300 focus-visible:ring-[#F59E0B] data-[state=checked]:bg-[#F59E0B]"
               />
             </div>
-            {includeDocument ? (
+            {includeDocument || onlinePayment ? (
               <div className="space-y-1.5">
                 <Input
                   className={inputClass}

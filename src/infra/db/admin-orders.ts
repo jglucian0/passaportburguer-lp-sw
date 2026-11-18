@@ -2,6 +2,8 @@ import { and, desc, eq, gte, inArray, notInArray, or } from "drizzle-orm";
 
 import type { DeliveryType, OrderStatus, PaymentMethod } from "@/core/schemas/common";
 
+import { expireAbandonedOrders } from "@/infra/payments/expire-orders";
+
 import { db } from "./index";
 import {
   customers,
@@ -55,6 +57,9 @@ export function startOfStoreDay(now: Date = new Date()): Date {
 /** Pedidos em andamento + concluídos/cancelados hoje (para o KDS e o endpoint de polling). */
 export async function loadAdminOrders(tenantId: string): Promise<AdminOrderView[]> {
   const since = startOfStoreDay();
+
+  /* Limpeza oportunista: pedidos online sem pagamento há mais de 30 min são cancelados. */
+  await expireAbandonedOrders({ tenantId }).catch(() => undefined);
 
   const rows = await db
     .select({

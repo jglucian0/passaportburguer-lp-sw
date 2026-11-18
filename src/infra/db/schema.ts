@@ -84,7 +84,12 @@ export const orderStatusEnum = pgEnum("order_status", [
 
 export const deliveryTypeEnum = pgEnum("delivery_type", ["DELIVERY", "PICKUP"]);
 
-export const paymentMethodEnum = pgEnum("payment_method", ["PIX", "CARD_ON_DELIVERY", "CASH"]);
+export const paymentMethodEnum = pgEnum("payment_method", [
+  "PIX",
+  "CREDIT_CARD",
+  "CARD_ON_DELIVERY",
+  "CASH",
+]);
 
 /* ------------------------------------------------------------------ */
 /* 1. tenants                                                          */
@@ -303,6 +308,8 @@ export const customers = pgTable(
     phoneVerifiedAt: timestamp("phone_verified_at", { withTimezone: true }),
     /** E-mail de recuperação de senha (minúsculo). */
     email: text("email"),
+    /** Id do cliente no Asaas (cus_xxx): reaproveitado para não duplicar cadastro a cada pedido. */
+    asaasCustomerId: text("asaas_customer_id"),
     /** Hash bcrypt da senha; nulo enquanto o cadastro não foi concluído. */
     passwordHash: text("password_hash"),
     /** Senhas erradas consecutivas; zera ao acertar ou ao bloquear. */
@@ -456,6 +463,8 @@ export const orders = pgTable(
     /** CPF (11) ou CNPJ (14) na nota fiscal, só dígitos. Opcional. */
     documentNumber: text("document_number"),
     cancelReason: text("cancel_reason"),
+    /** Chave gerada no checkout: impede pedido duplicado por duplo clique/reenvio (única por tenant). */
+    idempotencyKey: text("idempotency_key"),
     /** Integração Saipos: id do pedido no Saipos, estado do envio e último erro. */
     saiposOrderId: text("saipos_order_id"),
     saiposSyncStatus: text("saipos_sync_status")
@@ -477,6 +486,7 @@ export const orders = pgTable(
     index("orders_tenant_updated_idx").on(t.tenantId, t.updatedAt),
     index("orders_saipos_order_idx").on(t.saiposOrderId),
     index("orders_customer_idx").on(t.customerId, t.createdAt),
+    uniqueIndex("orders_tenant_idempotency_uq").on(t.tenantId, t.idempotencyKey),
   ],
 );
 
@@ -641,19 +651,77 @@ export type PaymentMethod = (typeof paymentMethodEnum.enumValues)[number];
 export type AdminRole = (typeof adminRoleEnum.enumValues)[number];
 
 /* ------------------------------------------------------------------ */
+/* payments (cobranças no Asaas; trilha de auditoria)                  */
+/* Nunca armazenar PAN, CVV ou validade do cartão: só ids/tokens do    */
+/* gateway (PCI-DSS / LGPD).                                           */
+/* ------------------------------------------------------------------ */
+
+export type PaymentProvider = "asaas";
+export type OnlinePaymentMethod = "PIX" | "CREDIT_CARD";
+export type PaymentStatus =
+  | "PENDING"
+  /** Cartão aguardando análise de risco do Asaas. */
+  | "RISK_ANALYSIS"
+  | "CONFIRMED"
+  | "RECEIVED"
+  | "OVERDUE"
+  | "REFUNDED"
+  | "FAILED";
+
+export const payments = pgTable(
+  "payments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    provider: text("provider").$type<PaymentProvider>().notNull().default("asaas"),
+    /** Id da cobrança no gateway (pay_xxx). */
+    providerPaymentId: text("provider_payment_id").notNull(),
+    /** Id do cliente no gateway (cus_xxx). */
+    providerCustomerId: text("provider_customer_id").notNull(),
+    method: text("method").$type<OnlinePaymentMethod>().notNull(),
+    amountCents: integer("amount_cents").notNull(),
+    status: text("status").$type<PaymentStatus>().notNull().default("PENDING"),
+    pixPayload: text("pix_payload"),
+    pixQrCodeBase64: text("pix_qr_code_base64"),
+    pixExpirationDate: timestamp("pix_expiration_date", { withTimezone: true }),
+    invoiceUrl: text("invoice_url"),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (t) => [
+    uniqueIndex("payments_provider_payment_uq").on(t.providerPaymentId),
+    index("payments_order_idx").on(t.orderId),
+  ],
+);
+
+export type Payment = typeof payments.$inferSelect;
+export type NewPayment = typeof payments.$inferInsert;
+
+/* ------------------------------------------------------------------ */
 /* payment_events (idempotência de webhooks de pagamento)              */
 /* ------------------------------------------------------------------ */
 
 export const paymentEvents = pgTable(
   "payment_events",
   {
-    /** ID único do evento/transação enviado pelo gateway. */
+    /** ID único do evento enviado pelo gateway (evt_xxx no Asaas). */
     eventId: text("event_id").primaryKey(),
-    orderId: uuid("order_id")
-      .notNull()
-      .references(() => orders.id, { onDelete: "cascade" }),
-    amountCents: integer("amount_cents").notNull(),
-    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+    eventType: text("event_type").notNull().default("UNKNOWN"),
+    providerPaymentId: text("provider_payment_id"),
+    orderId: uuid("order_id").references(() => orders.id, { onDelete: "cascade" }),
+    /** Legado (webhook PIX genérico). */
+    amountCents: integer("amount_cents"),
+    /** Coluna física `received_at` mantida por compatibilidade com o webhook PIX genérico. */
+    processedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("payment_events_order_idx").on(t.orderId)],
+  (t) => [
+    index("payment_events_order_idx").on(t.orderId),
+    index("payment_events_provider_payment_idx").on(t.providerPaymentId),
+  ],
 );

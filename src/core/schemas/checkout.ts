@@ -4,6 +4,7 @@ import { documentError } from "../validation/document";
 import { cartInputSchema } from "./cart";
 import {
   centsSchema,
+  isOnlinePaymentMethod,
   deliveryTypeSchema,
   paymentMethodSchema,
   phoneSchema,
@@ -30,6 +31,8 @@ export const checkoutSchema = z
     /** CPF/CNPJ na nota (opcional). Chega com ou sem máscara; é validado e guardado só com dígitos. */
     documentNumber: z.string().trim().max(18).nullish(),
     items: cartInputSchema,
+    /** Gerada no checkout (UUID): reenvios/duplo clique devolvem o mesmo pedido. */
+    idempotencyKey: z.string().uuid().nullish(),
   })
   .superRefine((data, ctx) => {
     if (data.deliveryType === "DELIVERY") {
@@ -46,6 +49,13 @@ export const checkoutSchema = z
     if (data.documentNumber) {
       const message = documentError(data.documentNumber);
       if (message) ctx.addIssue({ code: "custom", path: ["documentNumber"], message });
+    }
+    if (isOnlinePaymentMethod(data.paymentMethod) && !data.documentNumber) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["documentNumber"],
+        message: "Informe o CPF para pagar online.",
+      });
     }
     if (data.paymentMethod !== "CASH" && data.changeForCents != null) {
       ctx.addIssue({

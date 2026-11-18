@@ -30,7 +30,12 @@ export const ORDER_STATUSES = [
 ] as const;
 
 export const DELIVERY_TYPES = ["DELIVERY", "PICKUP"] as const;
-export const PAYMENT_METHODS = ["PIX", "CARD_ON_DELIVERY", "CASH"] as const;
+export const PAYMENT_METHODS = ["PIX", "CREDIT_CARD", "CARD_ON_DELIVERY", "CASH"] as const;
+/** Meios pagos online (Asaas): o pedido nasce em AWAITING_PAYMENT e só avança pelo gateway. */
+export const ONLINE_PAYMENT_METHODS = ["PIX", "CREDIT_CARD"] as const;
+export const isOnlinePaymentMethod = (m: string): boolean =>
+  (ONLINE_PAYMENT_METHODS as readonly string[]).includes(m);
+
 export const ADMIN_ROLES = ["OWNER", "KITCHEN"] as const;
 export type AdminRole = (typeof ADMIN_ROLES)[number];
 
