@@ -3,8 +3,9 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { and, eq, gt } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
-import { CODE_REGEX, getWhatsappAuthMode, samePhone } from "@/infra/auth/otp";
+import { CODE_REGEX, samePhone } from "@/infra/auth/otp";
 import { db } from "@/infra/db";
+import { maskPhone } from "@/infra/security/mask";
 import { whatsappOtps } from "@/infra/db/schema";
 
 export const dynamic = "force-dynamic";
@@ -25,8 +26,8 @@ export function GET(request: Request) {
 
 function validSignature(raw: string, header: string | null): boolean {
   const secret = process.env.WHATSAPP_APP_SECRET;
-  if (!secret) return getWhatsappAuthMode() === "sandbox"; // sem segredo só é aceitável em sandbox
-  if (!header?.startsWith("sha256=")) return false;
+  /* Falha fechada: sem segredo ou sem assinatura, nada é aceito (em nenhum ambiente). */
+  if (!secret || !header?.startsWith("sha256=")) return false;
   const expected = createHmac("sha256", secret).update(raw).digest();
   const received = Buffer.from(header.slice(7), "hex");
   return received.length === expected.length && timingSafeEqual(received, expected);
@@ -46,13 +47,14 @@ type MetaPayload = {
 /** Resposta automática (best-effort): nunca lança erro nem atrasa o webhook por mais de 4s. */
 async function sendConfirmation(phoneNumberId: string | undefined, to: string) {
   const token = process.env.WHATSAPP_ACCESS_TOKEN;
-  if (!token) {
-    console.warn("[WhatsApp Reply] WHATSAPP_ACCESS_TOKEN ausente; resposta automática não enviada");
+  const numberId = phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
+  if (!token || !numberId) {
+    console.warn("[WhatsApp Reply] WHATSAPP_ACCESS_TOKEN/WHATSAPP_PHONE_NUMBER_ID ausente; resposta automática não enviada");
     return;
   }
   try {
     const res = await fetch(
-      `https://graph.facebook.com/v21.0/${phoneNumberId || "1466936689833496"}/messages`,
+      `https://graph.facebook.com/v21.0/${numberId}/messages`,
       {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -67,10 +69,10 @@ async function sendConfirmation(phoneNumberId: string | undefined, to: string) {
         signal: AbortSignal.timeout(4000),
       },
     );
-    const resText = await res.text();
-    console.log("[WhatsApp Reply]", res.status, resText);
+    /* Sem o corpo da resposta da Meta: ele ecoa o telefone do cliente (wa_id). */
+    console.log("[WhatsApp Reply]", res.status, maskPhone(to));
   } catch (error) {
-    console.warn("[WhatsApp Reply] erro ao enviar:", error);
+    console.warn("[WhatsApp Reply] erro ao enviar:", (error as Error).name, maskPhone(to));
   }
 }
 

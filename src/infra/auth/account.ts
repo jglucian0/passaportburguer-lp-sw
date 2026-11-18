@@ -7,6 +7,7 @@ import { z } from "zod";
 import { buildPasswordRecoveryEmail } from "@/emails/password-recovery-email";
 import { phoneVariants } from "@/infra/auth/otp";
 import { db } from "@/infra/db";
+import { maskEmail } from "@/infra/security/mask";
 import { customers } from "@/infra/db/schema";
 
 
@@ -69,7 +70,7 @@ export async function sendResetEmail(to: string, name: string, code: string): Pr
     if (process.env.NODE_ENV === "production") {
       console.error("[recover] RESEND_API_KEY não configurada; e-mail de recuperação não enviado.");
     } else {
-      console.log(`[recover] (dev) código de recuperação para ${to}: ${code}`);
+      console.log(`[recover] (dev) código de recuperação para ${maskEmail(to)}: ${code}`);
     }
     return;
   }
@@ -87,6 +88,7 @@ export async function sendResetEmail(to: string, name: string, code: string): Pr
     }),
   });
   if (!res.ok) {
-    console.error("[recover] Resend falhou:", res.status, await res.text().catch(() => ""));
+    /* Sem o corpo da resposta: o Resend pode ecoar o e-mail do destinatário. */
+    console.error("[recover] Resend falhou:", res.status);
   }
 }

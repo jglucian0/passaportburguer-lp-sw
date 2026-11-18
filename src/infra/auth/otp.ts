@@ -3,9 +3,16 @@ import { randomInt } from "node:crypto";
 /** Validade do código de embarque (fluxo invertido via wa.me). */
 export const OTP_TTL_MS = 10 * 60 * 1000;
 
-/** "sandbox": o cliente confirma no site; "meta": só o Webhook oficial confirma. */
+/**
+ * "meta" (padrão): só o Webhook oficial confirma o código.
+ * "sandbox": o cliente confirma no site, sem prova — só vale fora de produção e
+ * somente se WHATSAPP_AUTH_MODE="sandbox" for definido explicitamente.
+ */
 export function getWhatsappAuthMode(): "sandbox" | "meta" {
-  return process.env.WHATSAPP_AUTH_MODE === "meta" ? "meta" : "sandbox";
+  if (process.env.NODE_ENV !== "production" && process.env.WHATSAPP_AUTH_MODE === "sandbox") {
+    return "sandbox";
+  }
+  return "meta";
 }
 
 /**

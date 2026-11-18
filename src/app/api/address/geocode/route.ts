@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { addressGeocodeQuery } from "@/core/schemas/auth";
+import { enforceRateLimit } from "@/infra/security/rate-limit";
 import { parseQuery } from "@/infra/security/validate";
 
 import { normalizeCity, SERVICE_CITY_KEY } from "@/core/delivery/quote";
@@ -24,6 +25,9 @@ type NominatimHit = {
  * `precise` indica que a fonte reconheceu o número predial (e não só a rua).
  */
 export async function GET(request: NextRequest) {
+  const limited = await enforceRateLimit(request, "address", 30, 60);
+  if (limited) return limited;
+
   const query = parseQuery(request.nextUrl.searchParams, addressGeocodeQuery);
   if (query.error) return query.error;
   const street = query.data.street.trim();

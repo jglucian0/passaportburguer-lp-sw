@@ -1,5 +1,5 @@
 import bcrypt from "bcryptjs";
-import { eq } from "drizzle-orm";
+import { and, eq, gt, lt, sql } from "drizzle-orm";
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 
@@ -43,25 +43,28 @@ export async function POST(request: Request) {
   const customer = await findCustomerByPhone(ref.id, phone);
   if (!customer || !isRegistered(customer)) return reject();
 
+  /* Cada tentativa é "gasta" antes da comparação, num único UPDATE atômico condicionado ao limite:
+     requisições paralelas não conseguem exceder RESET_MAX_ATTEMPTS. */
   const [reset] = await db
-    .select()
-    .from(passwordResets)
-    .where(eq(passwordResets.customerId, customer.id))
-    .limit(1);
-  if (!reset || reset.expiresAt.getTime() < Date.now() || reset.attempts >= RESET_MAX_ATTEMPTS) {
-    if (reset) await db.delete(passwordResets).where(eq(passwordResets.id, reset.id));
+    .update(passwordResets)
+    .set({ attempts: sql`${passwordResets.attempts} + 1` })
+    .where(
+      and(
+        eq(passwordResets.customerId, customer.id),
+        lt(passwordResets.attempts, RESET_MAX_ATTEMPTS),
+        gt(passwordResets.expiresAt, new Date()),
+      ),
+    )
+    .returning();
+  if (!reset) {
+    /* Sem código, expirado ou com tentativas esgotadas: descarta o que sobrou. */
+    await db.delete(passwordResets).where(eq(passwordResets.customerId, customer.id));
     return reject();
   }
 
   const expected = Buffer.from(reset.tokenHash, "hex");
   const given = Buffer.from(hashResetCode(customer.id, code), "hex");
-  if (expected.length !== given.length || !timingSafeEqual(expected, given)) {
-    await db
-      .update(passwordResets)
-      .set({ attempts: reset.attempts + 1 })
-      .where(eq(passwordResets.id, reset.id));
-    return reject();
-  }
+  if (expected.length !== given.length || !timingSafeEqual(expected, given)) return reject();
 
   /* Consumo único: só quem apagar a linha segue (evita reuso concorrente). */
   const consumed = await db

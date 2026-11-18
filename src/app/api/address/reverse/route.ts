@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { addressReverseQuery } from "@/core/schemas/auth";
+import { enforceRateLimit } from "@/infra/security/rate-limit";
 import { parseQuery } from "@/infra/security/validate";
 
 import { buildLabel, type AddressSuggestion } from "@/core/delivery/address";
@@ -31,6 +32,9 @@ type NominatimAddress = {
 
 /** Coordenadas do GPS -> endereço estruturado (Nominatim). Só latitude/longitude saem do servidor. */
 export async function GET(request: NextRequest) {
+  const limited = await enforceRateLimit(request, "address", 30, 60);
+  if (limited) return limited;
+
   const query = parseQuery(request.nextUrl.searchParams, addressReverseQuery);
   if (query.error) return query.error;
   const { lat, lon } = query.data;

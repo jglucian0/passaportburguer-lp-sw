@@ -2,12 +2,14 @@
 
 import bcrypt from "bcryptjs";
 import { and, eq } from "drizzle-orm";
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { loginSchema } from "@/core/schemas/admin";
 import { clearAdminSessionCookie, setAdminSessionCookie } from "@/infra/auth/session";
 import { db } from "@/infra/db";
 import { adminUsers } from "@/infra/db/schema";
+import { checkRateLimit, getClientIp } from "@/infra/security/rate-limit";
 import { getTenantRef } from "@/infra/tenant/resolve";
 
 import { failure, fromZod, type ActionFailure } from "./result";
@@ -27,6 +29,18 @@ export async function loginAdmin(
     password: formData.get("password"),
   });
   if (!parsed.success) return fromZod(parsed.error);
+
+  /* Força bruta: limite por IP e por e-mail (o do e-mail protege contra ataques distribuídos). */
+  const ip = getClientIp(await headers());
+  const [byIp, byEmail] = await Promise.all([
+    checkRateLimit({ identifier: ip, route: "admin:login-ip", limit: 10, windowSeconds: 300 }),
+    checkRateLimit({ identifier: parsed.data.email, route: "admin:login-email", limit: 5, windowSeconds: 900 }),
+  ]);
+  if (!byIp.allowed || !byEmail.allowed) {
+    const seconds = Math.max(byIp.allowed ? 0 : byIp.retryAfterSeconds, byEmail.allowed ? 0 : byEmail.retryAfterSeconds);
+    const minutes = Math.max(1, Math.ceil(seconds / 60));
+    return failure(`Muitas tentativas. Tente novamente em ${minutes} min.`);
+  }
 
   const ref = await getTenantRef();
   if (!ref) return failure("Loja não encontrada.");

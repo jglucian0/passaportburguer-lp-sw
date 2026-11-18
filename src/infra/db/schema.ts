@@ -639,3 +639,21 @@ export type OrderStatus = (typeof orderStatusEnum.enumValues)[number];
 export type DeliveryType = (typeof deliveryTypeEnum.enumValues)[number];
 export type PaymentMethod = (typeof paymentMethodEnum.enumValues)[number];
 export type AdminRole = (typeof adminRoleEnum.enumValues)[number];
+
+/* ------------------------------------------------------------------ */
+/* payment_events (idempotência de webhooks de pagamento)              */
+/* ------------------------------------------------------------------ */
+
+export const paymentEvents = pgTable(
+  "payment_events",
+  {
+    /** ID único do evento/transação enviado pelo gateway. */
+    eventId: text("event_id").primaryKey(),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    amountCents: integer("amount_cents").notNull(),
+    receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("payment_events_order_idx").on(t.orderId)],
+);

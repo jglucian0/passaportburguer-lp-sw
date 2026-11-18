@@ -1,47 +1,54 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual } from "node:crypto";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, notExists, sql } from "drizzle-orm";
 import { after, NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
 import { db } from "@/infra/db";
-import { orders } from "@/infra/db/schema";
-import { sendOrderToSaipos } from "@/lib/saipos";
+import { orders, paymentEvents } from "@/infra/db/schema";
 import { loadStoreSettings } from "@/infra/db/store-settings";
+import { sendOrderToSaipos } from "@/lib/saipos";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 /**
- * Payload genérico (adapte o gateway para enviar neste formato ou converta antes):
- * { "orderId": "<uuid>", "status": "PAID" }
- * Autenticação: header `x-webhook-secret` igual a PIX_WEBHOOK_SECRET.
+ * Payload genérico (adapte o gateway ou converta antes de chegar aqui):
+ * { "eventId": "<id único do evento/transação>", "orderId": "<uuid>", "amountCents": 4590, "status": "PAID" }
+ *
+ * Autenticação: header `x-signature` = "sha256=" + HMAC-SHA256(corpo bruto, PIX_WEBHOOK_SECRET).
+ * Ajuste o nome do header/algoritmo conforme o gateway escolhido.
  */
-const payloadSchema = z.object({
-  orderId: z.string().uuid(),
-  status: z.literal("PAID"),
-});
+const payloadSchema = z
+  .object({
+    eventId: z.string().min(1).max(120),
+    orderId: z.string().uuid(),
+    amountCents: z.number().int().positive(),
+    status: z.literal("PAID"),
+  })
+  .strict();
 
-function secretMatches(received: string | null, expected: string): boolean {
-  if (!received) return false;
-  const a = Buffer.from(received);
-  const b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
+function validSignature(raw: string, header: string | null, secret: string): boolean {
+  if (!header?.startsWith("sha256=")) return false;
+  const expected = createHmac("sha256", secret).update(raw).digest();
+  const received = Buffer.from(header.slice(7), "hex");
+  return received.length === expected.length && timingSafeEqual(received, expected);
 }
 
 export async function POST(request: NextRequest) {
-  const expectedSecret = process.env.PIX_WEBHOOK_SECRET;
-  if (!expectedSecret) {
+  const secret = process.env.PIX_WEBHOOK_SECRET;
+  if (!secret) {
     return NextResponse.json({ error: "Webhook não configurado." }, { status: 503 });
   }
 
-  if (!secretMatches(request.headers.get("x-webhook-secret"), expectedSecret)) {
+  const raw = await request.text();
+  if (!validSignature(raw, request.headers.get("x-signature"), secret)) {
     return NextResponse.json({ error: "Não autorizado." }, { status: 401 });
   }
 
   let body: unknown;
   try {
-    body = await request.json();
+    body = JSON.parse(raw);
   } catch {
     return NextResponse.json({ error: "JSON inválido." }, { status: 400 });
   }
@@ -50,30 +57,60 @@ export async function POST(request: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Payload inválido." }, { status: 400 });
   }
+  const { eventId, orderId, amountCents } = parsed.data;
 
-  // Idempotente: só confirma pedidos PIX ainda aguardando pagamento.
   const [target] = await db
-    .select({ tenantId: orders.tenantId })
+    .select({
+      tenantId: orders.tenantId,
+      status: orders.status,
+      paymentMethod: orders.paymentMethod,
+      totalCents: orders.totalCents,
+    })
     .from(orders)
-    .where(eq(orders.id, parsed.data.orderId))
+    .where(eq(orders.id, orderId))
     .limit(1);
-  const settings = target ? await loadStoreSettings(target.tenantId) : null;
 
-  const updated = await db
-    .update(orders)
-    .set({ status: settings?.autoAcceptOrders ? "PREPARING" : "RECEIVED", updatedAt: new Date() })
-    .where(
-      and(
-        eq(orders.id, parsed.data.orderId),
-        eq(orders.paymentMethod, "PIX"),
-        eq(orders.status, "AWAITING_PAYMENT"),
-      ),
-    )
-    .returning({ id: orders.id });
+  if (!target || target.paymentMethod !== "PIX") {
+    return NextResponse.json({ error: "Pedido não encontrado." }, { status: 404 });
+  }
+  if (amountCents !== target.totalCents) {
+    console.error(`[pix-webhook] valor divergente no pedido ${orderId} (evento ${eventId})`);
+    return NextResponse.json({ error: "Valor divergente." }, { status: 422 });
+  }
+  if (target.status !== "AWAITING_PAYMENT") {
+    // Já confirmado (reenvio do gateway) ou cancelado: responde 200 para cessar retentativas.
+    return NextResponse.json({ ok: true, updated: 0, reason: "not_awaiting_payment" });
+  }
+
+  const settings = await loadStoreSettings(target.tenantId);
+
+  /* Lote atômico: confirma o pedido (só se o evento ainda não existe) e grava o evento.
+     Evento repetido => ambos viram no-op (UPDATE barrado pelo NOT EXISTS; INSERT por ON CONFLICT). */
+  const [updated] = await db.batch([
+    db
+      .update(orders)
+      .set({ status: settings?.autoAcceptOrders ? "PREPARING" : "RECEIVED", updatedAt: new Date() })
+      .where(
+        and(
+          eq(orders.id, orderId),
+          eq(orders.paymentMethod, "PIX"),
+          eq(orders.status, "AWAITING_PAYMENT"),
+          eq(orders.totalCents, amountCents),
+          notExists(
+            db.select({ one: sql`1` }).from(paymentEvents).where(eq(paymentEvents.eventId, eventId)),
+          ),
+        ),
+      )
+      .returning({ id: orders.id }),
+    db
+      .insert(paymentEvents)
+      .values({ eventId, orderId, amountCents })
+      .onConflictDoNothing({ target: paymentEvents.eventId }),
+  ]);
 
   // Pagamento confirmado: agora o pedido PIX pode ir para o Saipos (falhas ficam registradas no pedido).
   if (updated.length > 0) {
-    after(() => sendOrderToSaipos(parsed.data.orderId));
+    after(() => sendOrderToSaipos(orderId));
   }
 
   return NextResponse.json({ ok: true, updated: updated.length });

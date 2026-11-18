@@ -30,7 +30,7 @@ export const phoneInput = z
 
 export const passwordInput = z
   .string()
-  .min(6, "A senha deve ter no mínimo 6 caracteres.")
+  .min(8, "A senha deve ter no mínimo 8 caracteres.")
   .max(72, "A senha deve ter no máximo 72 caracteres.");
 
 export const emailInput = z

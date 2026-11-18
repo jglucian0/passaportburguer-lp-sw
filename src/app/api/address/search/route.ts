@@ -4,6 +4,7 @@ import { buildLabel, extractAddressNumber, type AddressSuggestion } from "@/core
 import { normalizeCity } from "@/core/delivery/quote";
 
 import { addressSearchQuery } from "@/core/schemas/auth";
+import { enforceRateLimit } from "@/infra/security/rate-limit";
 import { parseQuery } from "@/infra/security/validate";
 
 import { photonSearch, UA } from "../_lib";
@@ -89,6 +90,9 @@ async function searchByCep(digits: string): Promise<AddressSuggestion[]> {
 }
 
 export async function GET(request: NextRequest) {
+  const limited = await enforceRateLimit(request, "address", 30, 60);
+  if (limited) return limited;
+
   const query = parseQuery(request.nextUrl.searchParams, addressSearchQuery);
   if (query.error) return query.error;
   const q = query.data.q.trim();

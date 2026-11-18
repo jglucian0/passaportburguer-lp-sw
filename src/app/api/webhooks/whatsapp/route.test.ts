@@ -1,3 +1,5 @@
+import { createHmac } from "node:crypto";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
@@ -20,6 +22,17 @@ vi.mock("@/infra/db", () => ({
 
 import { POST } from "./route";
 
+const APP_SECRET = "test-app-secret";
+const sign = (raw: string) => `sha256=${createHmac("sha256", APP_SECRET).update(raw).digest("hex")}`;
+
+function signedRequest(raw: string) {
+  return new Request("http://localhost/api/webhooks/whatsapp", {
+    method: "POST",
+    body: raw,
+    headers: { "x-hub-signature-256": sign(raw) },
+  });
+}
+
 function webhook(from: string, body = "Olá! Meu código de embarque é: PASS-AB23") {
   const payload = {
     entry: [
@@ -35,7 +48,7 @@ function webhook(from: string, body = "Olá! Meu código de embarque é: PASS-AB
       },
     ],
   };
-  return new Request("http://localhost/api/webhooks/whatsapp", { method: "POST", body: JSON.stringify(payload) });
+  return signedRequest(JSON.stringify(payload));
 }
 
 describe("POST /api/webhooks/whatsapp", () => {
@@ -46,9 +59,9 @@ describe("POST /api/webhooks/whatsapp", () => {
     state.updates = [];
     fetchMock.mockReset().mockResolvedValue(new Response('{"messages":[{"id":"x"}]}', { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
-    vi.stubEnv("WHATSAPP_APP_SECRET", "");
-    vi.stubEnv("WHATSAPP_AUTH_MODE", "sandbox");
+    vi.stubEnv("WHATSAPP_APP_SECRET", APP_SECRET);
     vi.stubEnv("WHATSAPP_ACCESS_TOKEN", "tok");
+    vi.stubEnv("WHATSAPP_PHONE_NUMBER_ID", "1466936689833496");
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
@@ -75,18 +88,18 @@ describe("POST /api/webhooks/whatsapp", () => {
     expect(url).toBe("https://graph.facebook.com/v21.0/999/messages");
     expect(init.headers.Authorization).toBe("Bearer tok");
     expect(JSON.parse(init.body)).toMatchObject({ messaging_product: "whatsapp", to: from, type: "text" });
-    expect(console.log).toHaveBeenCalledWith("[WhatsApp Reply]", 200, expect.any(String));
+    expect(console.log).toHaveBeenCalledWith("[WhatsApp Reply]", 200, expect.not.stringContaining(from));
   });
 
-  it("usa o phone_number_id de fallback quando o payload não traz metadata", async () => {
+  it("usa WHATSAPP_PHONE_NUMBER_ID quando o payload não traz metadata", async () => {
     state.otp = { id: "1", phone: "5543996142131" };
-    const req = new Request("http://localhost/x", {
-      method: "POST",
-      body: JSON.stringify({
-        entry: [{ changes: [{ value: { messages: [{ from: "5543996142131", text: { body: "PASS-AB23" } }] } }] }],
-      }),
-    });
-    await POST(req);
+    await POST(
+      signedRequest(
+        JSON.stringify({
+          entry: [{ changes: [{ value: { messages: [{ from: "5543996142131", text: { body: "PASS-AB23" } }] } }] }],
+        }),
+      ),
+    );
     expect(fetchMock.mock.calls[0][0]).toBe("https://graph.facebook.com/v21.0/1466936689833496/messages");
   });
 
@@ -106,6 +119,28 @@ describe("POST /api/webhooks/whatsapp", () => {
     expect(state.updates).toEqual([{ verified: true }]);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(console.warn).toHaveBeenCalled();
+  });
+
+  it("rejeita com 401 requisição sem assinatura", async () => {
+    state.otp = { id: "1", phone: "5543996142131" };
+    const req = new Request("http://localhost/x", { method: "POST", body: "{}" });
+    expect((await POST(req)).status).toBe(401);
+    expect(state.updates).toEqual([]);
+  });
+
+  it("rejeita com 401 assinatura inválida", async () => {
+    const req = new Request("http://localhost/x", {
+      method: "POST",
+      body: "{}",
+      headers: { "x-hub-signature-256": "sha256=" + "0".repeat(64) },
+    });
+    expect((await POST(req)).status).toBe(401);
+  });
+
+  it("rejeita com 401 quando WHATSAPP_APP_SECRET está ausente", async () => {
+    vi.stubEnv("WHATSAPP_APP_SECRET", "");
+    expect((await POST(webhook("5543996142131"))).status).toBe(401);
+    expect(state.updates).toEqual([]);
   });
 
   it("retorna 200 e mantém verified quando a Graph API falha", async () => {
