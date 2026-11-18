@@ -18,6 +18,7 @@ const TITLE = "Passaporte Burguer | Maringá";
 const SLOGAN = "Não precisa de visto, só de vontade de saborear! ✈️";
 const ADDRESS = "Av. São Paulo, 123 - Zona 07, Maringá - PR";
 
+const MENU_URL = "https://pedido.anota.ai/loja/hamburgueria-passaporte-burguer?f=msa";
 const INSTAGRAM_URL = "https://www.instagram.com/passaporteburguer";
 const MAPS_URL = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`Passaporte Burguer ${ADDRESS}`)}`;
 const GOOGLE_PLACE_ID = "ChIJXdJk2CbR7JQRPkk5dxkCbH8";
@@ -66,9 +67,9 @@ export default async function LinksPage() {
     {
       label: "Cardápio Online",
       hint: "Pedir pelo site",
-      href: "/",
+      href: MENU_URL,
       icon: UtensilsCrossed,
-      external: false,
+      external: true,
       primary: true,
     },
     ...(phone
