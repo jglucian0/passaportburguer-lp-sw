@@ -7,6 +7,6 @@ export function errorSummary(error: unknown): string {
   if (!(error instanceof Error)) return "erro desconhecido";
   const e = error as Error & { code?: string; cause?: { code?: string } };
   const code = e.code ?? e.cause?.code;
-  const firstLine = error.message.split("\n")[0].slice(0, 200);
+  const firstLine = error.message.split("\n")[0].slice(0, 600);
   return `${error.name}${code ? ` [${code}]` : ""}: ${firstLine}`;
 }
