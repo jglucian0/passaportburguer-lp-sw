@@ -1,9 +1,9 @@
-import { eq, lt } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, lt } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
 import { whatsappInitBody } from "@/core/schemas/auth";
 import { fail, findCustomerByPhone, isRegistered, parseBody } from "@/infra/auth/account";
-import { buildWaUrl, generateEmbarkCode, getWhatsappAuthMode, OTP_TTL_MS } from "@/infra/auth/otp";
+import { buildWaUrl, generateEmbarkCode, getWhatsappAuthMode, OTP_TTL_MS, phoneVariants } from "@/infra/auth/otp";
 import { db } from "@/infra/db";
 import { whatsappOtps } from "@/infra/db/schema";
 import { enforceRateLimit } from "@/infra/security/rate-limit";
@@ -34,9 +34,39 @@ export async function POST(request: Request) {
   }
 
   const now = new Date();
-  /* Higiene: expirados somem; um único código ativo por número. */
+  /* Higiene: expirados somem. */
   await db.delete(whatsappOtps).where(lt(whatsappOtps.expiresAt, now));
-  await db.delete(whatsappOtps).where(eq(whatsappOtps.phone, phone));
+
+  /* Idempotência: se já há código ativo (não verificado, dentro da validade) para o número
+     (com/sem 9º dígito), devolve o mesmo — a aba pode ter sido recarregada ao voltar do WhatsApp. */
+  const phones = phoneVariants(local).map((v) => `55${v}`);
+  const [active] = await db
+    .select({ code: whatsappOtps.code, expiresAt: whatsappOtps.expiresAt })
+    .from(whatsappOtps)
+    .where(
+      and(
+        inArray(whatsappOtps.phone, phones),
+        eq(whatsappOtps.verified, false),
+        gt(whatsappOtps.expiresAt, now),
+      ),
+    )
+    .orderBy(desc(whatsappOtps.createdAt))
+    .limit(1);
+  if (active) {
+    return NextResponse.json(
+      {
+        code: active.code,
+        waUrl: buildWaUrl(active.code),
+        mode: getWhatsappAuthMode(),
+        expiresIn: Math.max(1, Math.round((active.expiresAt.getTime() - now.getTime()) / 1000)),
+        expiresAt: active.expiresAt.getTime(),
+      },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
+  /* Sem código ativo: limpa resíduos (ex.: verificados não consumidos) e cria um novo. */
+  await db.delete(whatsappOtps).where(inArray(whatsappOtps.phone, phones));
 
   const expiresAt = new Date(now.getTime() + OTP_TTL_MS);
   for (let attempt = 0; attempt < 5; attempt++) {
@@ -53,6 +83,7 @@ export async function POST(request: Request) {
           waUrl: buildWaUrl(code),
           mode: getWhatsappAuthMode(),
           expiresIn: OTP_TTL_MS / 1000,
+          expiresAt: expiresAt.getTime(),
         },
         { headers: { "Cache-Control": "no-store" } },
       );

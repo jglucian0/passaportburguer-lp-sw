@@ -17,7 +17,12 @@ export const productInputSchema = z.object({
   name: z.string().trim().min(2, "Nome muito curto.").max(80),
   description: z.string().trim().max(400).nullish(),
   priceCents: centsSchema,
-  imageUrl: z.string().url().nullish(),
+  /* URL absoluta (upload) ou caminho local em /public (ex: /combos/x.webp, vindo de applyLocalImages). */
+  imageUrl: z
+    .string()
+    .max(2048)
+    .refine((v) => /^\/(?!\/)[^\s]*$/.test(v) || z.string().url().safeParse(v).success, "Invalid url")
+    .nullish(),
   isAvailable: z.boolean().default(true),
   isFeatured: z.boolean().default(false),
   sortOrder: z.coerce.number().int().min(0).max(9999).default(0),

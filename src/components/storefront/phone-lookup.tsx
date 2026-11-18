@@ -12,6 +12,47 @@ import { saveCustomer } from "./use-customer";
 type Step = "phone" | "password" | "send" | "register" | "forgot" | "reset";
 
 const POLL_MS = 3000;
+const PENDING_OTP_KEY = "pb_pending_otp";
+
+type PendingOtp = { phone: string; code: string; expiresAt: number; returnTo: string; waUrl: string; sandbox: boolean };
+
+function readPendingOtp(): PendingOtp | null {
+  try {
+    const raw = window.localStorage.getItem(PENDING_OTP_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw) as Partial<PendingOtp>;
+    if (
+      typeof p.phone === "string" &&
+      typeof p.code === "string" &&
+      typeof p.waUrl === "string" &&
+      typeof p.expiresAt === "number" &&
+      Date.now() < p.expiresAt
+    ) {
+      return { returnTo: "", sandbox: false, ...p } as PendingOtp;
+    }
+    window.localStorage.removeItem(PENDING_OTP_KEY);
+  } catch {
+    /* armazenamento indisponível */
+  }
+  return null;
+}
+
+function writePendingOtp(value: PendingOtp): void {
+  try {
+    window.localStorage.setItem(PENDING_OTP_KEY, JSON.stringify(value));
+  } catch {
+    /* ignorar */
+  }
+}
+
+function clearPendingOtp(): void {
+  try {
+    window.localStorage.removeItem(PENDING_OTP_KEY);
+  } catch {
+    /* ignorar */
+  }
+}
+
 const digitsOf = (value: string) => value.replace(/\D/g, "");
 
 const inputClass =
@@ -62,7 +103,20 @@ export function PhoneLookup({
   const [busy, setBusy] = useState(false);
   const checking = useRef(false);
 
+  /* Restaura o fluxo OTP se o navegador descartou/recarregou a aba ao ir para o WhatsApp. */
+  useEffect(() => {
+    if (startAtRegister) return;
+    const pending = readPendingOtp();
+    if (!pending) return;
+    setPhone(formatPhone(pending.phone));
+    setCode(pending.code);
+    setWaUrl(pending.waUrl);
+    setSandbox(pending.sandbox);
+    setStep("send");
+  }, [startAtRegister]);
+
   const goTo = (next: Step) => {
+    if (next === "phone") clearPendingOtp();
     setStep(next);
     setError(null);
     setNotice(null);
@@ -70,6 +124,7 @@ export function PhoneLookup({
 
   const enter = useCallback(
     (data: Identity) => {
+      clearPendingOtp();
       saveCustomer({ phone: data.phone, name: data.name });
       router.refresh();
     },
@@ -89,11 +144,19 @@ export function PhoneLookup({
         });
         if (!ok) {
           setError(data.error ?? "Não foi possível verificar agora.");
-          if (status === 410) setStep("phone"); // expirado: recomeça
-          if (status === 409) setStep("password"); // conta já verificada: só senha
+          if (status === 410) {
+            clearPendingOtp();
+            setStep("phone"); // expirado: recomeça
+          }
+          if (status === 409) {
+            clearPendingOtp();
+            setStep("password"); // conta já verificada: só senha
+          }
           return;
         }
         if (data.status === "verified") {
+          clearPendingOtp(); // código consumido no servidor
+
           saveCustomer({ phone: data.phone });
           setError(null);
           setStep("register");
@@ -113,8 +176,18 @@ export function PhoneLookup({
   /* Polling leve enquanto o cliente está no WhatsApp. */
   useEffect(() => {
     if (step !== "send") return;
+    void check(false); // checagem imediata (ex.: aba restaurada após o WhatsApp)
     const id = setInterval(() => void check(false), POLL_MS);
-    return () => clearInterval(id);
+    const onReturn = () => {
+      if (document.visibilityState === "visible") void check(false);
+    };
+    document.addEventListener("visibilitychange", onReturn);
+    window.addEventListener("focus", onReturn);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onReturn);
+      window.removeEventListener("focus", onReturn);
+    };
   }, [step, check]);
 
   /** Envolve um envio de formulário: bloqueia duplo clique e trata falha de rede. */
@@ -150,7 +223,14 @@ export function PhoneLookup({
         return;
       }
 
-      const init = await postJson<{ error?: string; code?: string; waUrl?: string; mode?: string }>(
+      const init = await postJson<{
+        error?: string;
+        code?: string;
+        waUrl?: string;
+        mode?: string;
+        expiresAt?: number;
+        expiresIn?: number;
+      }>(
         "/api/auth/whatsapp/init",
         { phone },
       );
@@ -164,7 +244,16 @@ export function PhoneLookup({
       }
       setCode(init.data.code);
       setWaUrl(init.data.waUrl);
-      setSandbox(init.data.mode === "sandbox");
+      const isSandbox = init.data.mode === "sandbox";
+      setSandbox(isSandbox);
+      writePendingOtp({
+        phone: digitsOf(phone),
+        code: init.data.code,
+        waUrl: init.data.waUrl,
+        sandbox: isSandbox,
+        expiresAt: init.data.expiresAt ?? Date.now() + (init.data.expiresIn ?? 600) * 1000,
+        returnTo: window.location.pathname,
+      });
       setStep("send");
     });
 

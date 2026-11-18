@@ -6,6 +6,8 @@ import type {
   CatalogDeliveryZone,
 } from "@/core/schemas/product";
 
+import { sortMenuCategories } from "@/core/store/sort-menu-categories";
+
 import { db } from "./index";
 import { addonGroups, addons, categories, deliveryZones, products } from "./schema";
 
@@ -77,7 +79,9 @@ export async function loadCatalog(
     });
   }
 
-  return [...result.values()];
+  const list = [...result.values()];
+  /* Público: Combos primeiro. Admin mantém a ordem real (sortOrder) para reordenar sem confusão. */
+  return options.includeInactiveCategories ? list : sortMenuCategories(list);
 }
 
 export async function loadDeliveryZones(
