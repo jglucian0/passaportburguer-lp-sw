@@ -62,25 +62,30 @@ export default async function LinksPage() {
   ];
 
   return (
-    <main className="min-h-screen bg-[#0B132B] text-slate-100">
-      <div className="mx-auto flex min-h-screen w-full max-w-md flex-col items-center justify-between px-4 py-8">
+    <main className="relative min-h-dvh overflow-hidden bg-[#0B132B] text-slate-100">
+      {/* Brilho dourado atrás da logo: ancora o centro visual da página. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute left-1/2 top-1/2 h-[42rem] w-[42rem] max-w-[140vw] -translate-x-1/2 -translate-y-1/2 rounded-full bg-[radial-gradient(circle,rgba(245,158,11,0.14)_0%,rgba(245,158,11,0)_65%)]"
+      />
+      <div className="relative mx-auto flex min-h-dvh w-full max-w-md flex-col items-center justify-center gap-8 px-4 py-10 sm:gap-10 sm:py-12 lg:max-w-lg">
         <header className="flex flex-col items-center text-center">
           <Image
-            src="/logo_passaporteburguer.webp"
+            src="/logo_passaporteburguer_links.min.webp"
             alt="Logo do Passaporte Burguer"
-            width={112}
-            height={112}
+            width={512}
+            height={512}
             priority
-            className="h-28 w-28 rounded-full border-2 border-amber-400/60 object-cover shadow-lg"
+            className="h-32 w-32 object-contain sm:h-40 sm:w-40 lg:h-48 lg:w-48"
           />
-          <h1 className="mt-5 text-2xl font-extrabold tracking-tight text-white">{TITLE}</h1>
+          <h1 className="mt-5 text-2xl font-extrabold sm:text-3xl tracking-tight text-white">{TITLE}</h1>
           <p className="mt-2 text-sm font-medium text-amber-400">{SLOGAN}</p>
           <p className="mt-2 flex items-center gap-1.5 text-xs text-slate-400">
             <MapPin className="h-3.5 w-3.5" aria-hidden /> Av. São Paulo, 123 - Zona 07
           </p>
         </header>
 
-        <nav aria-label="Links do Passaporte Burguer" className="my-8 flex w-full flex-col gap-3">
+        <nav aria-label="Links do Passaporte Burguer" className="flex w-full flex-col gap-3">
           {links.map(({ label, hint, href, icon: Icon, external, primary }) => {
             const content = (
               <>
