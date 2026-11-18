@@ -484,6 +484,8 @@ export async function runBotTurn(
         content = await deps.generate(request);
       }
       if (!content) break;
+      // O Gemini pode devolver { role: "model" } sem `parts` (resposta vazia/bloqueada/cortada).
+      if (!Array.isArray(content.parts)) content = { ...content, parts: [] };
 
       const calls = content.parts.filter((p) => p.functionCall);
       if (calls.length === 0) {
