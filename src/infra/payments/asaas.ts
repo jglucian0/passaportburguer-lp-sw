@@ -349,6 +349,47 @@ async function findReusablePix(orderId: string): Promise<Payment | null> {
   return row;
 }
 
+type PixQr = { encodedImage: string; payload: string; expirationDate?: string };
+
+/** Pausas (ms) entre as tentativas de buscar o QR Code: logo após criar a cobrança o Asaas às vezes ainda não o entrega. */
+const QR_RETRY_DELAYS_MS = [0, 700, 1500] as const;
+
+async function fetchPixQr(providerPaymentId: string): Promise<PixQr> {
+  let lastError: unknown;
+  for (const delay of QR_RETRY_DELAYS_MS) {
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+    try {
+      return await asaasRequest<PixQr>("GET", `/payments/${encodeURIComponent(providerPaymentId)}/pixQrCode`);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
+/** Cobrança Pix pendente SEM QR Code (a busca do QR falhou antes): é reaproveitada em vez de criar outra. */
+async function findPixAwaitingQr(orderId: string): Promise<Payment | null> {
+  const [row] = await db
+    .select()
+    .from(payments)
+    .where(and(eq(payments.orderId, orderId), eq(payments.method, "PIX"), eq(payments.status, "PENDING")))
+    .orderBy(desc(payments.createdAt))
+    .limit(1);
+  if (!row || row.method !== "PIX" || row.pixPayload) return null;
+  // Só se for recente: cobrança antiga sem QR vira lixo e é substituída.
+  if (!row.createdAt || Date.now() - row.createdAt.getTime() > 30 * 60_000) return null;
+  return row;
+}
+
+async function saveQr(row: { providerPaymentId: string }, qr: PixQr) {
+  const expiration = parseAsaasDateTime(qr.expirationDate);
+  await db
+    .update(payments)
+    .set({ pixPayload: qr.payload, pixQrCodeBase64: qr.encodedImage, pixExpirationDate: expiration })
+    .where(eq(payments.providerPaymentId, row.providerPaymentId));
+  return expiration;
+}
+
 export async function createPixCharge({
   order,
   customer,
@@ -371,6 +412,21 @@ export async function createPixCharge({
     };
   }
 
+  // A tentativa anterior criou a cobrança mas não conseguiu o QR Code: tenta só o QR da mesma cobrança.
+  const awaitingQr = await findPixAwaitingQr(order.id);
+  if (awaitingQr) {
+    const qr = await fetchPixQr(awaitingQr.providerPaymentId);
+    const expiration = await saveQr(awaitingQr, qr);
+    return {
+      paymentId: awaitingQr.providerPaymentId,
+      status: awaitingQr.status,
+      pixPayload: qr.payload,
+      pixQrCodeBase64: qr.encodedImage,
+      pixExpirationDate: expiration,
+      invoiceUrl: awaitingQr.invoiceUrl,
+    };
+  }
+
   await clearPreviousCharges(order.id);
   const asaasCustomerId = await getOrCreateAsaasCustomer(customer);
 
@@ -382,15 +438,10 @@ export async function createPixCharge({
     externalReference: order.id,
     description: `Pedido ${order.id.slice(0, 8)}`,
   });
-
-  const qr = await asaasRequest<{ encodedImage: string; payload: string; expirationDate?: string }>(
-    "GET",
-    `/payments/${encodeURIComponent(charge.id)}/pixQrCode`,
-  );
-
-  const expiration = parseAsaasDateTime(qr.expirationDate);
   const status = mapAsaasStatus(charge.status);
 
+  // Registra a cobrança ANTES de buscar o QR Code: se a busca falhar, a próxima tentativa reaproveita
+  // esta cobrança (e o cancelamento/limpeza a enxerga) em vez de deixar cobranças órfãs no Asaas.
   await db
     .insert(payments)
     .values({
@@ -401,12 +452,22 @@ export async function createPixCharge({
       method: "PIX",
       amountCents: order.totalCents,
       status,
-      pixPayload: qr.payload,
-      pixQrCodeBase64: qr.encodedImage,
-      pixExpirationDate: expiration,
       invoiceUrl: charge.invoiceUrl ?? null,
     })
     .onConflictDoNothing({ target: payments.providerPaymentId });
+
+  let qr: PixQr;
+  try {
+    qr = await fetchPixQr(charge.id);
+  } catch (error) {
+    console.error("[asaas] cobrança Pix criada, mas o QR Code não veio", {
+      orderId: order.id,
+      httpStatus: error instanceof AsaasError ? error.httpStatus : "unknown",
+      codes: error instanceof AsaasError ? error.codes : undefined,
+    });
+    throw error;
+  }
+  const expiration = await saveQr({ providerPaymentId: charge.id }, qr);
 
   return {
     paymentId: charge.id,
