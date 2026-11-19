@@ -34,3 +34,10 @@ export function greetingForHour(now: Date): "Bom dia" | "Boa tarde" | "Boa noite
   if (hour >= 12 && hour < 18) return "Boa tarde";
   return "Boa noite";
 }
+
+/** Meia-noite (Brasília, UTC-3 fixo) do próximo dia: fim do "silêncio de hoje". */
+export function endOfTodaySaoPaulo(now: Date = new Date()): Date {
+  const local = new Date(now.getTime() - 3 * 3_600_000); // relógio de Brasília lido em UTC
+  const nextMidnightLocal = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate() + 1);
+  return new Date(nextMidnightLocal + 3 * 3_600_000);
+}

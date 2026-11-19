@@ -17,6 +17,8 @@ export type ToolContext = {
    * nunca sai uma mensagem de texto separada antes dele.
    */
   cta: CtaButton | null;
+  /** O bot escalou para um humano neste turno: NADA é enviado ao cliente (ele fica em silêncio até o fim do dia). */
+  silent?: boolean;
 };
 
 export type CtaButton = {

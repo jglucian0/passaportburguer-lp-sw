@@ -9,7 +9,7 @@ import type { GeminiFunctionDeclaration } from "./gemini";
 import { sendTextMessage } from "./client";
 import { cancelUnpaidOrderTool } from "./cancel-order";
 import { setDeliveryAndPaymentTool, updateCartTool } from "./draft-flow";
-import { requestHumanHandoff } from "./handoff";
+import { escalateForToday, requestHumanHandoff } from "./handoff";
 import { stripUrlsAndMarkdownLinks } from "./sanitizer";
 import { signWhatsAppToken } from "./session-token";
 import { appUrl, getTenantId, GOOGLE_REVIEW_URL, type ToolContext } from "./shared";
@@ -135,29 +135,6 @@ export function generateQuickMenuLink(phone: string, validMinutes = 30): { url: 
 /* Declarações para o Gemini + despacho                                */
 /* ------------------------------------------------------------------ */
 
-const itemsSchema = {
-  type: "array",
-  description:
-    "Carrinho COMPLETO (sobrescreve o anterior). Só o que o cliente pediu, com ids do CARDÁPIO ATUAL do prompt. NUNCA acrescente itens ou combos que ele não pediu.",
-  items: {
-    type: "object",
-    properties: {
-      productId: { type: "string", description: "UUID do produto." },
-      quantity: { type: "integer" },
-      addons: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: { addonId: { type: "string" }, quantity: { type: "integer" } },
-          required: ["addonId", "quantity"],
-        },
-      },
-      notes: { type: "string", description: 'Observação do item, ex.: "sem cebola", "ponto da carne: ao ponto".' },
-    },
-    required: ["productId", "quantity"],
-  },
-};
-
 /** O telefone NUNCA é parâmetro exposto ao modelo: vem da conversa (evita consultar dados de terceiros). */
 export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
   {
@@ -167,7 +144,7 @@ export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
   {
     name: "sendQuickMenu",
     description:
-      'Envia o botão "Cardápio Rápido" SOMENTE quando o cliente pedir para ver o cardápio/opções ou disser que quer escolher visualmente ("manda o cardápio", "quais lanches tem?", "quero escolher", "me vê as opções"). NUNCA em saudação ou pergunta aberta. O messageText vira o texto do botão e é a única mensagem do turno.',
+      'Envia o botão "Cardápio Rápido". É o ÚNICO jeito de pedir: use quando o cliente quiser pedir, escolher, ver o cardápio/opções ou citar qualquer item ("quero um México", "manda o cardápio", "quais lanches tem?"). NUNCA em saudação pura. O messageText vira o texto do botão e é a única mensagem do turno.',
     parameters: {
       type: "object",
       properties: {
@@ -181,17 +158,10 @@ export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
     },
   },
   {
-    name: "updateCart",
+    name: "escalateToHuman",
     description:
-      "Grava o carrinho da sessão (sobrescreve). O servidor valida contra o catálogo e calcula os valores; você não informa preços. Devolve o subtotal oficial ou o erro a explicar.",
-    parameters: {
-      type: "object",
-      properties: {
-        items: itemsSchema,
-        notes: { type: "string", description: "Observação geral do pedido (ex.: troco para R$ 50)." },
-      },
-      required: ["items"],
-    },
+      "Use quando o cliente INSISTE em pedir itens pelo chat mesmo depois de você enviar o Cardápio Rápido, ou quando você não entendeu o que ele quer. O bot para de responder esse cliente pelo resto do dia e a equipe é avisada no painel. NÃO escreva nenhum texto ao cliente neste turno.",
+    parameters: { type: "object", properties: { reason: { type: "string", description: "Motivo curto para a equipe." } }, required: ["reason"] },
   },
   {
     name: "setDeliveryAndPayment",
@@ -312,6 +282,10 @@ export async function executeTool(ctx: ToolContext, name: string, args: Args = {
         return sendQuickMenuTool(ctx, args);
       case "updateCart":
         return { ...(await updateCartTool(ctx, args)) };
+      case "escalateToHuman":
+        ctx.silent = true;
+        await escalateForToday(ctx.phone, String(args.reason ?? ""));
+        return { ok: true, note: "Um atendente humano assume. Não escreva nada ao cliente." };
       case "setDeliveryAndPayment":
         return { ...(await setDeliveryAndPaymentTool(ctx, args)) };
       case "cancelUnpaidOrder":

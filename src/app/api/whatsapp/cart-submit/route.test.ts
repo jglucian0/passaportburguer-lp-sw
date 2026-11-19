@@ -141,12 +141,13 @@ describe("POST /api/whatsapp/cart-submit", () => {
     expect((claim?.values as { wamid: string; content: string }).wamid).toMatch(/^qm:[0-9a-f]{64}$/);
     expect((claim?.values as { content: string }).content).toMatch(/80,00/);
 
-    expect(wa.text).toHaveBeenCalledTimes(1);
+    // Duas mensagens curtas: resumo dos itens e a pergunta seguinte.
+    expect(wa.text).toHaveBeenCalledTimes(2);
     const [to, text] = wa.text.mock.calls[0];
     expect(to).toBe(PHONE);
     expect(text).toMatch(/2x Nova York \(\+ Bacon\) — obs: sem cebola/);
     expect(text).toMatch(/80,00/);
-    expect(text).toMatch(/nome e do endereço/); // cliente novo: pede endereço
+    expect(wa.text.mock.calls[1][1]).toMatch(/seu nome/); // cliente novo: pede nome e entrega/retirada
   });
 
   it("cliente cadastrado com endereço salvo: confirma o endereço e pergunta o pagamento", async () => {
@@ -157,10 +158,9 @@ describe("POST /api/whatsapp/cart-submit", () => {
       [{ id: "o1", addressSnapshot: { street: "Rua A", number: "10", complement: null, reference: null, neighborhood: "Zona 07", district: "Zona 07" } }],
     );
     await call({ token: validToken(), items });
-    const text = wa.text.mock.calls[0][1] as string;
-    expect(text).toContain("João");
-    expect(text).toContain("Rua A, 10");
-    expect(text).toMatch(/Pix, cartão ou na entrega/);
+    const next = wa.text.mock.calls[1][1] as string;
+    expect(next).toContain("Rua A, 10");
+    expect(next).toMatch(/retirar/);
   });
 
   it("409 quando o link já foi usado (claim em conflito); nada é salvo nem enviado", async () => {

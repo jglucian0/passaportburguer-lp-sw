@@ -154,10 +154,14 @@ describe("generateContent — resiliência", () => {
   });
 
   it("400 em um modelo: tenta o próximo (sem backoff) e só falha se todos recusarem", async () => {
-    fetchMock.mockResolvedValueOnce(errRes(400, "Request contains an invalid argument.", "INVALID_ARGUMENT")).mockResolvedValueOnce(okRes());
+    for (let i = 0; i < 3; i++) fetchMock.mockResolvedValueOnce(errRes(400, "Request contains an invalid argument.", "INVALID_ARGUMENT"));
+    fetchMock.mockResolvedValueOnce(okRes());
     const out = await generateContent(req, { sleep });
     expect(out?.parts[0].text).toBe("olá");
-    expect(urlOf(1)).not.toBe(geminiUrl(M1));
+    // M1 tentado completo, sem thinking e sem toolConfig; só então o próximo modelo.
+    expect(urlOf(2)).toBe(geminiUrl(M1));
+    expect(JSON.parse(bodyOf(2)).toolConfig).toBeUndefined();
+    expect(urlOf(3)).not.toBe(geminiUrl(M1));
     expect(sleep).not.toHaveBeenCalled();
 
     fetchMock.mockReset();
@@ -224,6 +228,38 @@ describe("generateContent — resiliência", () => {
     expect(line).toContain("INVALID_ARGUMENT");
     expect(line).toContain("argumento inválido");
     expect(line).not.toContain(KEY);
+  });
+});
+
+describe("reserva gratuita (GEMINI_API_KEY_FALLBACK)", () => {
+  const FALLBACK = "chave-reserva-xyz";
+  const keyOf = (i: number) => (fetchMock.mock.calls[i][1].headers as Record<string, string>)["x-goog-api-key"];
+
+  it("chave principal falhou em todos os modelos: usa a reserva, só com modelos estáveis", async () => {
+    vi.stubEnv("GEMINI_API_KEY_FALLBACK", FALLBACK);
+    fetchMock.mockImplementation(async (_u: string, init: { headers: Record<string, string> }) =>
+      init.headers["x-goog-api-key"] === FALLBACK ? okRes() : errRes(429, "quota", "RESOURCE_EXHAUSTED"),
+    );
+    const out = await generateContent(req, { sleep });
+    expect(out?.parts[0].text).toBe("olá");
+    const last = fetchMock.mock.calls.length - 1;
+    expect(keyOf(last)).toBe(FALLBACK);
+    expect(urlOf(last)).toContain("gemini-2.5-flash-lite");
+  });
+
+  it("sem a variável, nada muda: a falha da chave principal é a que sobe", async () => {
+    fetchMock.mockImplementation(async () => errRes(403, "no", "PERMISSION_DENIED"));
+    const e = await generateContent(req, { sleep }).catch((x) => x);
+    expect(e).toBeInstanceOf(GeminiHttpError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reserva também falha: sobe o erro da principal", async () => {
+    vi.stubEnv("GEMINI_API_KEY_FALLBACK", FALLBACK);
+    fetchMock.mockImplementation(async () => errRes(403, "main", "PERMISSION_DENIED"));
+    const e = await generateContent(req, { sleep }).catch((x) => x);
+    expect(e).toBeInstanceOf(GeminiHttpError);
+    expect(e.errorBody).toContain("main");
   });
 });
 

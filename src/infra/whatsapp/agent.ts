@@ -3,7 +3,18 @@ import { desc, eq, and, notInArray } from "drizzle-orm";
 import { db } from "@/infra/db";
 import { whatsappInboxBuffer, whatsappMessages, whatsappSessions, type PaymentMethod } from "@/infra/db/schema";
 
-import { downloadMedia, sendCtaUrlButton, sendTextMessage } from "./client";
+import { downloadMedia, sendCtaUrlButton, sendInteractiveButtons, sendTextMessage } from "./client";
+import { escalateForToday } from "./handoff";
+import { repeatLastOrder } from "./repeat-order";
+import {
+  MENU_BUTTON_BODY,
+  REPEAT_BUTTON_ID,
+  REPEAT_BUTTON_TITLE,
+  buildStartFlow,
+  isRepeatRequest,
+  repeatButtonBody,
+  shouldUseStartFlow,
+} from "./start-flow";
 import { checkoutMessage, resetSession, runAutoCheckout } from "./draft-flow";
 import { generateContent } from "./gemini-client";
 import { GeminiHttpError, GeminiUnavailableError, type GeminiContent, type GeminiPart, type GeminiRequest } from "./gemini";
@@ -11,7 +22,7 @@ import { splitReply, stripRepeatedGreeting, stripUrlsAndMarkdownLinks } from "./
 import { loadStoreContext, type StoreContext } from "./store-context";
 import { greetingForHour, resolveGreetingMode, type GreetingMode } from "./greeting";
 import { HISTORY_LIMIT, isClosingMessage, nextStep, selectSessionMessages, type NextStep } from "./session-rules";
-import { executeTool, getAvailableMenu, getCustomerContext, TOOL_DECLARATIONS, type CustomerContext } from "./tools";
+import { executeTool, generateQuickMenuLink, getAvailableMenu, getCustomerContext, TOOL_DECLARATIONS, type CustomerContext } from "./tools";
 import type { ToolContext } from "./shared";
 import { STICKER_TEXT, type InboundMessage } from "./webhook";
 import { errorSummary } from "./log";
@@ -22,12 +33,10 @@ import {
   isGreetingOnly,
   isInjectionAttempt,
   isOptOutMessage,
+  normalizeText,
   OPT_OUT_REPLY,
-  menuMessage,
   MENU_SHOW_LINK_IN_BODY,
-  returningMessage,
   reviewReply,
-  welcomeMessage,
 } from "./guardrails";
 
 const MAX_TOOL_ROUNDS = 6;
@@ -186,10 +195,12 @@ ELOGIO / AVALIAÇÃO
 - Cliente elogiou o hambúrguer, o lanche, a comida ou o atendimento (feedback positivo): chame sendReviewRequest e responda só com um agradecimento caloroso e curto (1 a 2 frases, sem link). O sistema envia sozinho, logo depois, outra mensagem com o pedido de avaliação no Google. Nunca escreva o link.
 - "Obrigado"/"valeu" simples NÃO é elogio. Reclamação ou crítica: acolha e use requestHumanHandoff, sem pedir avaliação.
 
-CARDÁPIO RÁPIDO (botão)
-- Chame sendQuickMenu SOMENTE quando o cliente pedir para ver o cardápio/opções ou quiser escolher visualmente: "manda o cardápio", "quais lanches tem?", "quero escolher", "me vê as opções".
-- Saudação ("Oi", "Bom dia", "Tudo bem?") e pergunta aberta ("Estão abertos?") NÃO acionam sendQuickMenu.
-- Em messageText vai uma frase curta e simpática; ela vira o texto do botão e é a ÚNICA mensagem do turno: não escreva outra depois.
+PEDIDO SÓ PELO CARDÁPIO RÁPIDO (REGRA PRINCIPAL)
+- Você NÃO anota itens pelo chat. Todo pedido é montado no Cardápio Rápido (botão).
+- Cliente quer pedir, escolher ou cita um item ("quero um México", "me vê um combo", "quais lanches tem?"): chame sendQuickMenu e, em messageText, uma frase curta ("É rapidinho pelo cardápio 👇"). Não discuta itens, combos nem adicionais.
+- Se você JÁ enviou o botão nesta conversa e o cliente continua pedindo pelo chat, ou você não entendeu o que ele quer: chame escalateToHuman e NÃO escreva texto (um atendente assume).
+- Dúvida (horário, ingrediente de item do CARDÁPIO, taxa, andamento): responda curto e, se fizer sentido, ofereça o botão.
+- Saudação pura ("Oi") NÃO aciona sendQuickMenu. O messageText vira o texto do botão e é a ÚNICA mensagem do turno.
 
 LINKS
 - NUNCA escreva URL, link ou Markdown ([texto](url)). Você não conhece nenhum endereço de site. Links saem só por botões oficiais enviados pelo sistema.
@@ -203,15 +214,12 @@ ${JSON.stringify(session)}
 CARDÁPIO COMPLETO (ids e preços exatos em centavos, para as ferramentas)
 ${JSON.stringify(context.menu)}
 
-FLUXO DO PEDIDO (estado explícito: session.nextStep diz o que falta)
-- Cliente cadastrado (${who.firstName ?? "sem nome"}): pergunte se quer repetir o último pedido (${who.lastOrder}) ou escolher outro lanche. Se ele já disser os itens, anote e confirme o endereço salvo (${who.address}). Cliente novo: pergunte se já conhece os lanches ou quer o cardápio digital.
-- NUNCA pergunte forma de pagamento (Pix, cartão, entrega) nem escreva código Pix: o cliente escolhe o pagamento na página que o sistema envia por botão assim que houver itens + endereço/retirada.
-1. CART: cliente disse o que quer → updateCart com o carrinho COMPLETO (sobrescreve; só o que ele pediu; observações em notes). Cliente cadastrado que quer repetir o último pedido: use lastOrderItems.
-   Pedido vindo do Cardápio Rápido ("[Cliente montou o pedido no Cardápio Rápido]"): os itens já estão em draftCart; não remonte, siga para a entrega.
-2. DELIVERY: pergunte entrega ou retirada e o endereço (rua e número). Cliente cadastrado com defaultAddress e addressConfirmed = false: pergunte UMA vez se entrega no endereço salvo (mostre rua e número). Quando ele confirmar ("sim", "no mesmo endereço") ou informar outro, chame setDeliveryAndPayment com addressConfirmed: true (sem address para usar o salvo). Depois disso NUNCA pergunte o endereço de novo. Cliente novo: peça o nome e envie em customerName.
-3. CHECKOUT: com carrinho + endereço confirmado (ou retirada), o SERVIDOR fecha o pedido sozinho (status aguardando pagamento) e envia UMA mensagem com o botão "Ir para pagamento". Não pergunte forma de pagamento, não peça confirmação extra, não escreva o resumo final, nem código Pix, nem link.
-- CPF: NUNCA peça CPF pelo WhatsApp. A página de pagamento coleta o CPF do cliente.
-- Depois de finalizado, não crie outro pedido a menos que o cliente peça.
+FLUXO DO PEDIDO (session.nextStep diz o que falta)
+- CART (sem itens): conduza ao Cardápio Rápido (regra acima). Você nunca monta carrinho.
+- DELIVERY (itens já escolhidos no cardápio ou pelo atalho "Repetir pedido"; falta entrega/retirada): pergunte entrega ou retirada. Cliente cadastrado com endereço salvo (${who.address}) e addressConfirmed = false: pergunte UMA vez se entrega nesse endereço. Entrega: peça rua e número. Cliente novo: peça também o nome e envie em customerName. Retirada: chame setDeliveryAndPayment na hora (PICKUP, addressConfirmed true). Quando souber, chame setDeliveryAndPayment com addressConfirmed: true. Depois NUNCA pergunte o endereço de novo.
+- CHECKOUT: com itens + endereço confirmado (ou retirada), o SERVIDOR fecha o pedido sozinho e envia UMA mensagem com o botão "Ir para pagamento". Não pergunte forma de pagamento, não peça confirmação extra, não escreva resumo final, código Pix nem link.
+- NUNCA peça CPF pelo WhatsApp: a página de pagamento coleta.
+- Depois de finalizado, não crie outro pedido a menos que o cliente peça (novo pedido = Cardápio Rápido).
 
 CANCELAMENTO
 - Cliente quer cancelar um pedido que ainda não foi pago: chame cancelUnpaidOrder (cancela e libera o cliente para um novo pedido; o atendimento continua com você).
@@ -347,6 +355,8 @@ export type AgentDeps = {
   download: Download;
   /** Chegou mensagem do cliente fora deste lote (ainda não processada)? Então a resposta em andamento é descartada. */
   hasNewer?: (phone: string, batchWamids: string[]) => Promise<boolean>;
+  /** Botões de resposta (atalho "Repetir pedido"). */
+  sendButtons?: typeof sendInteractiveButtons;
 };
 
 async function hasNewerInbound(phone: string, batchWamids: string[]): Promise<boolean> {
@@ -371,6 +381,7 @@ const defaultDeps: AgentDeps = {
   sendCta: sendCtaUrlButton,
   download: downloadMedia,
   hasNewer: hasNewerInbound,
+  sendButtons: sendInteractiveButtons,
 };
 
 /** Resultado do turno quando o cliente escreveu de novo no meio: nada foi enviado, o lote volta junto com a(s) nova(s). */
@@ -403,8 +414,13 @@ async function recordAssistant(phone: string, content: string) {
  * Entrega a resposta. Com botão (Cardápio Rápido / checkout), o texto vira o corpo DO PRÓPRIO botão:
  * uma mensagem só, nunca um texto solto antes dele. Se a Meta recusar o botão, cai para texto + link.
  */
-async function deliverReply(deps: AgentDeps, ctx: ToolContext, phone: string, reply: string): Promise<void> {
+async function deliverReply(deps: AgentDeps, ctx: ToolContext, phone: string, reply: string, preface: string[] = []): Promise<void> {
   const cta = ctx.cta;
+  // Início de conversa: textos curtos primeiro, depois o botão.
+  for (const text of preface) {
+    await deps.sendText(phone, text);
+    await new Promise((r) => setTimeout(r, MULTI_MESSAGE_GAP_MS));
+  }
   if (!cta) {
     // Mensagens curtas: cada bloco (separado por linha em branco) sai como uma mensagem própria.
     const parts = splitReply(reply);
@@ -447,14 +463,24 @@ export function cannedReply(
   if (texts.every(isOptOutMessage)) return OPT_OUT_REPLY;
   if (texts.some(isInjectionAttempt)) return OFF_TOPIC_REPLY;
 
-  if (greetingMode === "IN_CONVERSATION") return null;
-  if (context.session.nextStep !== "CART") return null;
-  if (!texts.every(isGreetingOnly)) return null;
-  // Loja fechada (ou status ilegível): a IA avisa o horário em vez do convite para pedir.
-  if (!context.store || /fechad/i.test(context.store.statusText)) return null;
+  return null;
+}
 
-  const firstName = context.customer.isRegistered ? context.customer.firstName : null;
-  return greetingMode === "FIRST_TODAY" ? welcomeMessage(greetingForHour(now), firstName) : returningMessage(firstName);
+/**
+ * Início do atendimento: SEMPRE o mesmo roteiro (boas-vindas + botão do Cardápio Rápido; cadastrado vê o nome e o atalho
+ * de repetir o último pedido). Só com loja aberta, sem pedido em andamento e mensagens de texto sem pergunta.
+ */
+export function startFlowFor(messages: InboundMessage[], context: TurnContext, greetingMode: GreetingMode, now: Date = new Date()) {
+  if (messages.length === 0 || !messages.every((m) => m.mediaType === "text")) return null;
+  if (greetingMode === "IN_CONVERSATION" || context.session.nextStep !== "CART") return null;
+  if (!shouldUseStartFlow(messages.map((m) => m.content))) return null;
+  if (!context.store || /fechad/i.test(context.store.statusText)) return null;
+  const c = context.customer;
+  return buildStartFlow(
+    greetingForHour(now),
+    greetingMode,
+    c.isRegistered ? { isRegistered: true, firstName: c.firstName, lastOrderSummary: c.lastOrderSummary } : { isRegistered: false },
+  );
 }
 
 function closingNote(error: string, needsDocument: boolean): GeminiContent {
@@ -512,7 +538,37 @@ export async function runBotTurn(
     let usedTools = false;
     let checkoutTried = false;
     let orderClosed = false;
-    for (let round = 0; round < (canned !== null ? 0 : MAX_TOOL_ROUNDS); round++) {
+    let preface: string[] = [];
+    const menuCta = (bodyText: string) => ({ buttonText: "Cardápio Rápido", url: generateQuickMenuLink(phone).url, bodyText });
+
+    // Atalho "Repetir pedido" (botão): o backend grava os itens do último pedido, sem IA.
+    const repeatRequest = canned === null && isRepeatRequest(messages.map((m) => m.content));
+    if (repeatRequest) {
+      const text = await repeatLastOrder(ctx, context.customer);
+      deterministic = true;
+      if (text) reply = text;
+      else {
+        reply = "Alguns itens do último pedido não estão disponíveis agora. Escolha pelo cardápio 👇";
+        ctx.cta = menuCta(reply);
+      }
+    }
+    // Início da conversa: SEMPRE o mesmo roteiro (texto curto + botão do Cardápio Rápido [+ atalho de repetir]).
+    const start = canned === null && !repeatRequest ? startFlowFor(messages, context, greetingMode) : null;
+    if (start) {
+      preface = start.preface;
+      reply = start.ctaBody;
+      ctx.cta = menuCta(start.ctaBody);
+      deterministic = true;
+      const summary = start.repeatSummary;
+      if (summary) {
+        ctx.afterReply.push(async () => {
+          const body = repeatButtonBody(summary);
+          await (deps.sendButtons ?? sendInteractiveButtons)(phone, body, [{ id: REPEAT_BUTTON_ID, title: REPEAT_BUTTON_TITLE }]);
+          await recordAssistant(phone, body);
+        });
+      }
+    }
+    for (let round = 0; round < (deterministic ? 0 : MAX_TOOL_ROUNDS); round++) {
       const request = { systemInstruction, contents, functionDeclarations: TOOL_DECLARATIONS };
       let content: GeminiContent | null;
       try {
@@ -578,14 +634,20 @@ export async function runBotTurn(
         responses.push({ functionResponse: { name, response } });
       }
       contents.push({ role: "user", parts: responses });
+      if (ctx.silent) break; // escalou para humano: não há mais nada a dizer
+    }
+
+    // Escalou para um humano (cliente insistiu / bot não entendeu): fica em silêncio; o painel já foi avisado.
+    if (ctx.silent) {
+      await cancelFollowups(phone, "CUSTOMER_ACTIVE").catch(() => undefined);
+      return true;
     }
 
     if (!deterministic) {
       // Cardápio Rápido: a mensagem do botão é SEMPRE o texto padrão da casa (a IA só decide quando enviar);
       // qualquer texto extra do modelo é descartado (nunca sai uma segunda mensagem no mesmo turno).
       if (ctx.cta) {
-        const firstName = context.customer.isRegistered ? context.customer.firstName : null;
-        ctx.cta = { ...ctx.cta, bodyText: menuMessage(firstName), appendUrlToBody: MENU_SHOW_LINK_IN_BODY };
+        ctx.cta = { ...ctx.cta, bodyText: MENU_BUTTON_BODY, appendUrlToBody: MENU_SHOW_LINK_IN_BODY };
       }
       reply = sanitizeModelReply(ctx.cta?.bodyText ?? reply, greetingMode);
       // Última barreira: se mesmo após as correções sobrou valor inventado ou quebra de persona, não vai para o cliente.
@@ -596,10 +658,25 @@ export async function runBotTurn(
     // Sem texto (bloqueio/resposta vazia) é falha: não vale como atendimento.
     if (!reply) throw new Error("O modelo não devolveu resposta de texto.");
 
+    // Anti-repetição: mesma resposta de novo (ou cardápio já enviado 3x sem concluir) = o bot não está entendendo.
+    // Em vez de encher o cliente, para de responder hoje e avisa o painel.
+    if (!deterministic) {
+      const sent = selectSessionMessages(recent, context.session.sessionStartedAt).filter((r) => r.role === "assistant");
+      const target = normalizeText(reply);
+      const repeated = ctx.cta
+        ? sent.filter((r) => r.content === MENU_BUTTON_BODY).length >= 3
+        : reply.length >= 25 && sent.slice(-3).some((r) => normalizeText(r.content) === target);
+      if (repeated) {
+        await escalateForToday(phone, ctx.cta ? "Cliente pediu o cardápio várias vezes sem concluir o pedido" : "O bot repetiria a mesma resposta (não está entendendo o cliente)");
+        await cancelFollowups(phone, "CUSTOMER_ACTIVE").catch(() => undefined);
+        return true;
+      }
+    }
+
     // Última chance: se o cliente escreveu agora, a resposta velha não sai. (Pedido já fechado pelo checkout segue valendo.)
     if (!orderClosed && (await superseded())) return SUPERSEDED;
-    await deliverReply(deps, ctx, phone, reply);
-    await recordAssistant(phone, reply);
+    await deliverReply(deps, ctx, phone, reply, preface);
+    await recordAssistant(phone, [...preface, reply].join("\n\n"));
 
     // Retorno automático (segundo plano): nunca atrapalha o atendimento.
     try {
@@ -610,7 +687,7 @@ export async function runBotTurn(
         // Cliente voltou a falar: qualquer retorno pendente perde o sentido.
         await cancelFollowups(phone, "CUSTOMER_ACTIVE");
         const thanksOnly = textOnly && messages.every((m) => isClosingMessage(m.content));
-        if (!thanksOnly && !canned) await enqueueReopenFollowup(phone);
+        if (!thanksOnly && !canned && !start) await enqueueReopenFollowup(phone);
       }
     } catch (error) {
       console.error("[whatsapp-bot] falha ao agendar retorno:", errorSummary(error));

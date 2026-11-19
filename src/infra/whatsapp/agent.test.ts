@@ -75,6 +75,7 @@ vi.mock("./geocode", () => ({
 const wa = vi.hoisted(() => ({ cta: vi.fn().mockResolvedValue({}), text: vi.fn().mockResolvedValue({}) }));
 vi.mock("./client", () => ({
   sendTemplateMessage: vi.fn(),
+  sendInteractiveButtons: vi.fn(),
   sendCtaUrlButton: wa.cta,
   sendTextMessage: wa.text,
   downloadMedia: vi.fn(),
@@ -227,7 +228,7 @@ describe("tools: Cliente Novo vs Cadastrado", () => {
   it("declaração do tool: messageText obrigatório; só para quem pede cardápio/opções", () => {
     const decl = TOOL_DECLARATIONS.find((t) => t.name === "sendQuickMenu")!;
     expect(decl.parameters?.required).toEqual(["messageText"]);
-    expect(decl.description).toMatch(/SOMENTE/i);
+    expect(decl.description).toMatch(/ÚNICO jeito de pedir/i);
   });
 });
 
@@ -555,6 +556,39 @@ describe("runBotTurn (Gemini mockado)", () => {
     };
     return { d, requests, sent, ctas };
   }
+
+  it("escalateToHuman: nada é enviado ao cliente, o bot pausa até o fim do dia e deixa o HANDOFF para o painel", async () => {
+    const { d, sent, ctas } = deps([modelCall("escalateToHuman", { reason: "insiste em pedir pelo chat" })]);
+    expect(await runBotTurn(PHONE, [msg({ content: "quero um mexico sem cebola" })], d)).toBe(true);
+    expect(sent).toEqual([]);
+    expect(ctas).toEqual([]);
+    const pause = h.writes.find((w) => w.table === whatsappSessions && (w.values as { botPausedUntil?: Date }).botPausedUntil);
+    const until = (pause?.values as { botPausedUntil: Date }).botPausedUntil;
+    expect(until.getTime()).toBeGreaterThan(Date.now());
+    expect(until.getTime() - Date.now()).toBeLessThanOrEqual(24 * 3_600_000);
+    const handoff = h.writes.find((w) => w.table === whatsappMessages && String((w.values as { content?: string }).content).startsWith("HANDOFF"));
+    expect(handoff).toBeTruthy();
+  });
+
+  it("pedido pelo chat: a IA só envia o botão do Cardápio Rápido, com o texto padrão curto", async () => {
+    const { d, sent, ctas } = deps([modelCall("sendQuickMenu", { messageText: "É rapidinho pelo cardápio 👇" })]);
+    await runBotTurn(PHONE, [msg({ content: "quero um mexico" })], d);
+    expect(sent).toEqual([]);
+    expect(ctas).toHaveLength(1);
+    expect(ctas[0].button).toBe("Cardápio Rápido");
+    expect(ctas[0].body.length).toBeLessThan(120);
+  });
+
+  it("não está entendendo: se a resposta repete uma das últimas, para de responder hoje e avisa o painel", async () => {
+    const frase = "Não consegui entender direitinho o que você quer, pode explicar de outro jeito?";
+    h.rows.set(whatsappMessages, [
+      { role: "assistant", content: frase, createdAt: minutesAgo(1), wamid: null, phone: PHONE },
+    ]);
+    const { d, sent } = deps([modelText(frase)]);
+    expect(await runBotTurn(PHONE, [msg({ content: "aaa" })], d)).toBe(true);
+    expect(sent).toEqual([]);
+    expect(h.writes.some((w) => w.table === whatsappMessages && String((w.values as { content?: string }).content).startsWith("HANDOFF"))).toBe(true);
+  });
 
   it("Cliente Novo: contexto vem no systemInstruction (sem round-trip de tool) e a resposta é enviada", async () => {
     h.rows.set(customers, []);

@@ -132,18 +132,24 @@ export async function submitQuickCart(raw: unknown): Promise<QuickCartResult> {
   if (!paused) {
     try {
       const ctx = await getCustomerContext(phone);
-      const greeting = ctx.isRegistered ? `Anotei seus itens, ${ctx.firstName}! ` : "Anotei seus itens!";
+      const summary = `Anotei seus itens!
+
+${itemsText}
+
+Subtotal: *${formatCents(calc.subtotalCents)}* (+ taxa, se for entrega)`;
       const next = ctx.isRegistered
         ? ctx.defaultAddress
-          ? `Entrego em *${ctx.defaultAddress.street}, ${ctx.defaultAddress.number}*? Me confirma que eu já te mando o link pra finalizar. 😉`
-          : "Me passa o endereço de entrega (rua e número) ou me avise se vai retirar. 😉"
-        : "Pra fechar, só preciso do seu nome e do endereço de entrega (rua e número) — ou me avise se prefere retirar. 😉";
-      const text = `${greeting}\n\n${itemsText}\n\nSubtotal: *${formatCents(calc.subtotalCents)}* (+ taxa de entrega, se for entrega)\n\n${next}`;
-      await sendTextMessage(phone, text);
-      await db
-        .insert(whatsappMessages)
-        .values({ phone, role: "assistant", content: text, mediaType: "text" })
-        .catch(() => undefined);
+          ? `Entrego em *${ctx.defaultAddress.street}, ${ctx.defaultAddress.number}* ou você vai retirar?`
+          : "É para entrega ou você vai retirar?"
+        : "Me diz seu nome e se é entrega (com rua e número) ou retirada.";
+      // Duas mensagens curtas em vez de um textão.
+      for (const text of [summary, next]) {
+        await sendTextMessage(phone, text);
+        await db
+          .insert(whatsappMessages)
+          .values({ phone, role: "assistant", content: text, mediaType: "text" })
+          .catch(() => undefined);
+      }
     } catch (error) {
       console.error("[quick-menu] falha ao enviar confirmação:", errorSummary(error));
     }

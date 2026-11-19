@@ -79,6 +79,9 @@ export function KdsBoard({
   const [detailed, setDetailed] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [chatsOpen, setChatsOpen] = useState(false);
+  /** Conversas do WhatsApp que o bot não consegue atender (pausado/escalado): precisam de uma pessoa. */
+  const [handoffs, setHandoffs] = useState(0);
+  const handoffsRef = useRef(0);
   const [creating, setCreating] = useState(false);
   const [printing, setPrinting] = useState<AdminOrderView | null>(null);
   const [timelineOrder, setTimelineOrder] = useState<AdminOrderView | null>(null);
@@ -148,6 +151,19 @@ export function KdsBoard({
       const fresh = data.orders.filter((o) => o.status === "RECEIVED" && !seenRef.current.has(o.id));
       for (const order of data.orders) seenRef.current.add(order.id);
       if (fresh.length > 0 && soundOnRef.current) beep();
+
+      // Aviso de atendimento humano pendente (bot escalou): contador no botão e o mesmo sininho quando aumenta.
+      try {
+        const ping = await fetch("/api/admin/orders/ping", { cache: "no-store" });
+        if (ping.ok) {
+          const { humanHandoffs = 0 } = (await ping.json()) as { humanHandoffs?: number };
+          if (humanHandoffs > handoffsRef.current && soundOnRef.current) beep();
+          handoffsRef.current = humanHandoffs;
+          setHandoffs(humanHandoffs);
+        }
+      } catch {
+        /* o aviso é complementar: falha aqui não derruba o painel */
+      }
     } catch {
       setOnline(false);
     }
@@ -327,6 +343,14 @@ export function KdsBoard({
           </Button>
           <Button variant="outline" className="h-10" onClick={() => setChatsOpen(true)}>
             <Headset className="h-4 w-4" /> Atendimentos WhatsApp
+            {handoffs > 0 ? (
+              <span
+                className="ml-1 rounded-full bg-red-600 px-2 py-0.5 text-xs font-bold text-white"
+                title="Conversas que o bot não conseguiu atender"
+              >
+                {handoffs}
+              </span>
+            ) : null}
           </Button>
           <Button className="h-10 w-full sm:w-auto" onClick={() => setCreating(true)}>
             <Plus className="h-4 w-4" /> Novo Pedido

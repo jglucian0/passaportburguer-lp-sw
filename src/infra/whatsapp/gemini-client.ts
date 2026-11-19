@@ -16,10 +16,10 @@ import {
  */
 export const DEFAULT_MODEL_CHAIN = [
   "gemini-3.1-flash-lite",
-  "gemini-3.5-flash-lite",
-  "gemini-3.8-flash",
   "gemini-2.5-flash",
   "gemini-2.5-flash-lite",
+  "gemini-3.5-flash-lite",
+  "gemini-3.8-flash",
   "gemini-2.0-flash",
 ] as const;
 
@@ -29,12 +29,19 @@ export function modelChain(): string[] {
   return [...new Set(chain.map(normalizeModel))];
 }
 
+/**
+ * Reserva GRATUITA: se existir GEMINI_API_KEY_FALLBACK (chave de OUTRO projeto do Google AI Studio, sem faturamento),
+ * ela só é usada quando a chave principal falhou em todos os modelos. Só modelos estáveis, para nunca cobrar nem usar preview.
+ */
+export const FALLBACK_MODEL_CHAIN = ["gemini-2.5-flash-lite", "gemini-2.5-flash"] as const;
+
 /** Erros transitórios: vale repetir no mesmo modelo e, esgotado, trocar de modelo. */
 export const TRANSIENT_STATUSES = new Set([429, 500, 502, 503, 504]);
 /** Backoff entre as repetições no mesmo modelo (1ª chamada + 2 repetições). */
 export const BACKOFF_MS = [800, 2000] as const;
 
-const ATTEMPT_TIMEOUT_MS = 25_000;
+/** Um modelo lento não pode comer o orçamento dos próximos: 12 s por tentativa. */
+const ATTEMPT_TIMEOUT_MS = 12_000;
 /** Orçamento total de uma chamada (todos os modelos): o after() do webhook tem teto de 60s. */
 const TOTAL_BUDGET_MS = 40_000;
 const MIN_ATTEMPT_MS = 3_000;
@@ -42,11 +49,14 @@ const MIN_ATTEMPT_MS = 3_000;
 const DEAD_MODEL_TTL_MS = 30 * 60_000;
 
 const deadModels = new Map<string, number>();
-/** Modelos que recusaram `thinkingConfig` (400): passam a ser chamados sem ele. */
-const noThinkingConfig = new Set<string>();
+/**
+ * Degradação por modelo após 400: 0 = pedido completo; 1 = sem thinkingConfig; 2 = sem thinkingConfig e sem toolConfig.
+ * (Modelos "preview" costumam recusar só a configuração, não o conteúdo.)
+ */
+const degradeLevel = new Map<string, number>();
 export function resetDeadModels(): void {
   deadModels.clear();
-  noThinkingConfig.clear();
+  degradeLevel.clear();
 }
 
 /** Sem "pensar" (thinkingBudget 0) a resposta sai em ~1 s; temperatura baixa para o tom ficar consistente. */
@@ -73,29 +83,50 @@ function isTimeout(error: unknown): boolean {
 export async function generateContent(req: GeminiRequest, deps: GenerateDeps = {}): Promise<GeminiContent | null> {
   const key = process.env.GEMINI_API_KEY;
   if (!key) throw new Error("GEMINI_API_KEY não definida.");
-  const sleep = deps.sleep ?? realSleep;
   const now = deps.now ?? Date.now;
   const deadline = now() + TOTAL_BUDGET_MS;
+  try {
+    return await generateWithKey(req, key, modelChain(), "main", deadline, deps);
+  } catch (error) {
+    const fallbackKey = (process.env.GEMINI_API_KEY_FALLBACK ?? "").trim();
+    if (!fallbackKey || fallbackKey === key) throw error;
+    console.error("[whatsapp-bot] chave principal falhou; usando a reserva gratuita:", error instanceof Error ? error.message.slice(0, 200) : "erro");
+    try {
+      return await generateWithKey(req, fallbackKey, [...FALLBACK_MODEL_CHAIN], "fallback", deadline, deps);
+    } catch {
+      throw error; // o erro que importa é o da chave principal
+    }
+  }
+}
+
+async function generateWithKey(
+  req: GeminiRequest,
+  key: string,
+  chain: string[],
+  scope: string,
+  deadline: number,
+  deps: GenerateDeps,
+): Promise<GeminiContent | null> {
+  const sleep = deps.sleep ?? realSleep;
+  const now = deps.now ?? Date.now;
+  const stateKey = (m: string) => `${scope}:${m}`;
 
   // Corpo montado uma vez por variante (com/sem thinkingConfig): o payload multimodal é idêntico em todos os modelos.
-  const buildBody = (withThinking: boolean) =>
+  const buildBody = (level: number) =>
     JSON.stringify({
       systemInstruction: { parts: [{ text: req.systemInstruction }] },
       contents: normalizeContents(req.contents),
       tools: [{ functionDeclarations: req.functionDeclarations }],
-      toolConfig: { functionCallingConfig: { mode: "AUTO" } },
-      generationConfig: withThinking
-        ? { ...GENERATION_CONFIG, thinkingConfig: { thinkingBudget: 0 } }
-        : GENERATION_CONFIG,
+      ...(level >= 2 ? {} : { toolConfig: { functionCallingConfig: { mode: "AUTO" } } }),
+      generationConfig:
+        level === 0 ? { ...GENERATION_CONFIG, thinkingConfig: { thinkingBudget: 0 } } : GENERATION_CONFIG,
     });
-  const bodyWithThinking = buildBody(true);
-  const bodyWithoutThinking = buildBody(false);
+  const bodies = [buildBody(0), buildBody(1), buildBody(2)];
 
   const log: string[] = [];
   /** 400 de um modelo não encerra o turno: outro modelo pode aceitar. Só falha se TODOS recusarem. */
   let lastBadRequest: GeminiHttpError | null = null;
-  const chain = modelChain();
-  const alive = chain.filter((m) => (deadModels.get(m) ?? 0) <= now());
+  const alive = chain.filter((m) => (deadModels.get(stateKey(m)) ?? 0) <= now());
   const candidates = alive.length > 0 ? alive : chain; // tudo "morto": tenta mesmo assim
 
   for (const model of candidates) {
@@ -111,7 +142,7 @@ export async function generateContent(req: GeminiRequest, deps: GenerateDeps = {
         res = await fetch(geminiUrl(model), {
           method: "POST",
           headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-          body: noThinkingConfig.has(model) ? bodyWithoutThinking : bodyWithThinking,
+          body: bodies[degradeLevel.get(stateKey(model)) ?? 0],
           signal: AbortSignal.timeout(Math.min(ATTEMPT_TIMEOUT_MS, remaining)),
         });
       } catch (error) {
@@ -136,18 +167,19 @@ export async function generateContent(req: GeminiRequest, deps: GenerateDeps = {
       const httpError = new GeminiHttpError(res.status, errorBody, model);
 
       if (res.status === 404) {
-        deadModels.set(model, now() + DEAD_MODEL_TTL_MS);
+        deadModels.set(stateKey(model), now() + DEAD_MODEL_TTL_MS);
         log.push(`${model}: 404 ${errorBody.slice(0, 120)}`);
         break; // modelo indisponível para a conta: próximo
       }
-      // Modelo que não aceita desligar o thinking: repete UMA vez, sem thinkingConfig (não é erro do pedido).
-      if (res.status === 400 && /thinking/i.test(errorBody) && !noThinkingConfig.has(model)) {
-        noThinkingConfig.add(model);
-        log.push(`${model}: 400 thinkingConfig recusado, repetindo sem ele`);
-        attempt--; // não consome uma repetição do backoff
-        continue;
-      }
       if (res.status === 400) {
+        const level = degradeLevel.get(stateKey(model)) ?? 0;
+        if (level < 2) {
+          // Pode ser só a configuração: repete o MESMO modelo com um pedido mais simples (sem gastar backoff).
+          degradeLevel.set(stateKey(model), level + 1);
+          log.push(`${model}: 400, repetindo com pedido simplificado (nível ${level + 1})`);
+          attempt--;
+          continue;
+        }
         lastBadRequest = httpError;
         log.push(`${model}: 400 ${errorBody.slice(0, 120)}`);
         console.error("[whatsapp-bot] gemini 400:", model, errorBody.slice(0, 200), describeShape(req));
