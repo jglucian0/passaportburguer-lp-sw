@@ -19,6 +19,7 @@
     "db:migrate-settings": "tsx --env-file=.env.local src/infra/db/migrate-store-settings.ts",
     "db:migrate-kds": "tsx --env-file=.env.local src/infra/db/migrate-kds.ts",
     "db:migrate-delivery": "tsx --env-file=.env.local src/infra/db/migrate-delivery-team.ts",
+    "db:migrate-new": "npm run db:migrate-coupons && npm run db:migrate-followups && npm run db:migrate-marketing && npm run db:migrate-miles",
     "db:migrate-miles": "tsx --env-file=.env.local src/infra/db/migrate-miles.ts",
     "db:migrate-marketing": "tsx --env-file=.env.local src/infra/db/migrate-marketing.ts",
     "db:migrate-followups": "tsx --env-file=.env.local src/infra/db/migrate-followups.ts",

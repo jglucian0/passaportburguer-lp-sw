@@ -27,10 +27,17 @@ export default async function MilesPage() {
     .from(customers)
     .where(eq(customers.id, session.customerId))
     .limit(1);
-  const [account, missions] = await Promise.all([
-    getMilesAccount(session.tenantId, session.customerId),
-    getMissionViews(session.tenantId, session.customerId),
-  ]);
+  // Nunca derruba a página: se as tabelas de milhas ainda não existem (migração pendente), mostra "em breve".
+  let account: Awaited<ReturnType<typeof getMilesAccount>> | null = null;
+  let missions: Awaited<ReturnType<typeof getMissionViews>> = [];
+  try {
+    [account, missions] = await Promise.all([
+      getMilesAccount(session.tenantId, session.customerId),
+      getMissionViews(session.tenantId, session.customerId),
+    ]);
+  } catch (error) {
+    console.error("[miles] falha ao carregar a página:", error instanceof Error ? error.message.split("\n")[0] : "erro");
+  }
   const { tenant, categories, store } = storefront;
 
   return (
@@ -46,15 +53,15 @@ export default async function MilesPage() {
         <div className="mx-auto max-w-xl">
           <MilesView
             data={{
-              enabled: account.config.enabled,
+              enabled: account?.config.enabled ?? false,
               firstName: (customer?.name ?? "").trim().split(/\s+/)[0] ?? "",
-              available: account.balance.available,
-              expiringSoon: account.balance.expiringSoon,
-              nextExpiry: account.balance.nextExpiry?.toISOString() ?? null,
-              milesPerReal: account.config.milesPerReal,
-              rewards: account.rewards,
-              history: account.history.map((h) => ({ ...h, createdAt: h.createdAt.toISOString() })),
-              coupons: account.activeCoupons.map((c) => ({ ...c, validUntil: c.validUntil?.toISOString() ?? null })),
+              available: account?.balance.available ?? 0,
+              expiringSoon: account?.balance.expiringSoon ?? 0,
+              nextExpiry: account?.balance.nextExpiry?.toISOString() ?? null,
+              milesPerReal: account?.config.milesPerReal ?? 0,
+              rewards: account?.rewards ?? [],
+              history: (account?.history ?? []).map((h) => ({ ...h, createdAt: h.createdAt.toISOString() })),
+              coupons: (account?.activeCoupons ?? []).map((c) => ({ ...c, validUntil: c.validUntil?.toISOString() ?? null })),
               missions: missions.map((m) => ({
                 id: m.id,
                 name: m.name,
