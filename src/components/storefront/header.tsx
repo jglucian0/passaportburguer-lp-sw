@@ -14,7 +14,7 @@ import { useCustomerFirstName } from "./use-customer";
 
 const LINKS = [
   { href: "/#cardapio", label: "Cardápio", ready: true },
-  { href: "/#cardapio", label: "Fidelidade", ready: false },
+  { href: "/milhas", label: "Milhas", ready: true },
 ] as const;
 
 export function Header({ tenant, store }: { tenant: PublicTenant; store: StoreStatus }) {

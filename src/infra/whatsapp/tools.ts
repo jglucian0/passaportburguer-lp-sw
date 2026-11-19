@@ -126,8 +126,8 @@ export async function getDraftCart(phone: string) {
 /* 3. generateQuickMenuLink                                            */
 /* ------------------------------------------------------------------ */
 
-export function generateQuickMenuLink(phone: string): { url: string } {
-  const token = signWhatsAppToken({ phone, purpose: "QUICK_MENU" }, 30);
+export function generateQuickMenuLink(phone: string, validMinutes = 30): { url: string } {
+  const token = signWhatsAppToken({ phone, purpose: "QUICK_MENU" }, validMinutes);
   return { url: `${appUrl()}/cardapio-rapido?token=${encodeURIComponent(token)}` };
 }
 

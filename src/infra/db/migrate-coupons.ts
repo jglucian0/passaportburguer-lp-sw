@@ -27,6 +27,13 @@ async function main() {
       created_at timestamptz NOT NULL DEFAULT now()
     )`;
   await sql`CREATE UNIQUE INDEX IF NOT EXISTS coupons_tenant_code_uq ON coupons (tenant_id, code)`;
+  /* Cupom aplicado ao pedido: validade, cupom pessoal (campanhas) e desconto gravado no pedido. */
+  await sql`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS expires_at timestamptz`;
+  await sql`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS customer_id uuid REFERENCES customers(id) ON DELETE CASCADE`;
+  await sql`ALTER TABLE orders ADD COLUMN IF NOT EXISTS coupon_id uuid REFERENCES coupons(id) ON DELETE SET NULL`;
+  await sql`ALTER TABLE orders ADD COLUMN IF NOT EXISTS coupon_code text`;
+  await sql`ALTER TABLE orders ADD COLUMN IF NOT EXISTS discount_cents integer NOT NULL DEFAULT 0`;
+  await sql`ALTER TABLE orders ADD COLUMN IF NOT EXISTS coupon_consumed_at timestamptz`;
   console.log("coupons ok.");
 }
 

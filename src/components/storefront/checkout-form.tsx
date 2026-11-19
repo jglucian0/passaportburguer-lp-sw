@@ -4,10 +4,10 @@ import { ArrowLeft, Bike, ChevronDown, Loader2, Store } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState, useTransition } from "react";
 
-import { createOrder } from "@/actions/storefront";
+import { createOrder, validateCoupon } from "@/actions/storefront";
 import { Input, Textarea } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { calculateCart } from "@/core/cart/calculate-cart";
+import { calculateCart, type CartCoupon } from "@/core/cart/calculate-cart";
 import {
   calculateDeliveryQuote,
   normalizeCity,
@@ -116,6 +116,35 @@ export function CheckoutForm({
   const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
   const onlinePayment = isOnlinePaymentMethod(paymentMethod);
 
+  /* Cupom: aplicado só sobre os itens; o servidor valida e recalcula tudo ao criar o pedido. */
+  const [couponInput, setCouponInput] = useState("");
+  const [coupon, setCoupon] = useState<CartCoupon | null>(null);
+  const [couponError, setCouponError] = useState<string | null>(null);
+  const [couponLoading, setCouponLoading] = useState(false);
+
+  async function applyCoupon() {
+    if (!couponInput.trim() || couponLoading) return;
+    setCouponLoading(true);
+    setCouponError(null);
+    try {
+      const result = await validateCoupon(couponInput);
+      if (result.ok) setCoupon(result.coupon);
+      else {
+        setCoupon(null);
+        setCouponError(result.error);
+      }
+    } catch {
+      setCouponError("Não foi possível validar o cupom. Tente novamente.");
+    } finally {
+      setCouponLoading(false);
+    }
+  }
+  function removeCoupon() {
+    setCoupon(null);
+    setCouponInput("");
+    setCouponError(null);
+  }
+
   /* Frete por distância: o servidor recalcula o mesmo valor ao criar o pedido. */
   const quote = useMemo(
     () => (address ? calculateDeliveryQuote(address.lat, address.lon, address.city) : null),
@@ -167,6 +196,7 @@ export function CheckoutForm({
         minOrderCents,
         paymentMethod,
         changeForCents,
+        coupon,
       }),
     [
       items,
@@ -176,6 +206,7 @@ export function CheckoutForm({
       minOrderCents,
       paymentMethod,
       changeForCents,
+      coupon,
     ],
   );
 
@@ -183,6 +214,7 @@ export function CheckoutForm({
   const itemCount = lines.reduce((sum, l) => sum + l.quantity, 0);
   const fee = deliveryType === "DELIVERY" && zone ? zone.feeCents : 0;
   const total = calc.ok ? calc.totalCents : subtotal + fee;
+  const discount = calc.ok ? calc.discountCents : 0;
 
   /* Pedido mínimo: só entrega, sobre o subtotal dos produtos (sem a taxa). */
   const missingMinCents =
@@ -260,6 +292,7 @@ export function CheckoutForm({
         notes: combinedNotes || null,
         documentNumber: includeDocument || onlinePayment ? docDigits : null,
         idempotencyKey,
+        couponCode: coupon?.code ?? null,
         items,
       });
 
@@ -581,12 +614,58 @@ export function CheckoutForm({
           </Field>
         </section>
 
+        {/* Cupom (desconto só nos itens) */}
+        <section className="space-y-2 rounded-xl border border-slate-200 bg-white p-4 text-sm shadow-sm">
+          <label htmlFor="coupon" className="font-semibold">
+            Cupom de desconto
+          </label>
+          {coupon ? (
+            <div className="flex items-center justify-between rounded-lg bg-emerald-50 px-3 py-2 text-emerald-800">
+              <span>
+                {coupon.code} aplicado{" "}
+                {calc.ok ? `(-${formatCents(calc.discountCents)})` : ""}
+              </span>
+              <button type="button" onClick={removeCoupon} className="font-semibold underline">
+                Remover
+              </button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <input
+                id="coupon"
+                value={couponInput}
+                onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
+                placeholder="Digite seu cupom"
+                maxLength={40}
+                autoCapitalize="characters"
+                autoComplete="off"
+                className="h-11 min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 text-base uppercase text-slate-900 placeholder:text-slate-400 focus:border-[#F59E0B] focus:outline-none focus:ring-2 focus:ring-[#F59E0B]/30"
+              />
+              <button
+                type="button"
+                onClick={() => void applyCoupon()}
+                disabled={couponLoading || !couponInput.trim()}
+                className="h-11 rounded-xl bg-[#071329] px-4 font-semibold text-white disabled:opacity-50"
+              >
+                {couponLoading ? "..." : "Aplicar"}
+              </button>
+            </div>
+          )}
+          {couponError ? <p className="text-red-700">{couponError}</p> : null}
+        </section>
+
         {/* Totais */}
         <section className="space-y-2 rounded-xl border border-slate-200 bg-white p-4 text-sm shadow-sm">
           <div className="flex justify-between">
             <span className="text-slate-500">Subtotal</span>
             <span>{formatCents(subtotal)}</span>
           </div>
+          {coupon ? (
+            <div className="flex justify-between text-emerald-700">
+              <span>Cupom {coupon.code}</span>
+              <span>-{formatCents(discount)}</span>
+            </div>
+          ) : null}
           {deliveryType === "DELIVERY" ? (
             <div className="flex justify-between">
               <span className="text-slate-500">Taxa de entrega</span>

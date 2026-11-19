@@ -1,5 +1,6 @@
 import { eq, inArray } from "drizzle-orm";
 
+import { milesEarnedLine } from "@/infra/miles/miles";
 import { db } from "@/infra/db";
 import {
   customers,
@@ -65,10 +66,11 @@ export async function notifyPaymentConfirmed(orderId: string): Promise<void> {
         ? `Pagamento confirmado! ✅ Seu pedido ${orderLabel(order.orderNumber)} já está na chapa no Passaporte Burguer. Avisaremos quando sair para entrega!`
         : `Pagamento confirmado! ✅ Seu pedido ${orderLabel(order.orderNumber)} já está na chapa no Passaporte Burguer. Avisaremos quando estiver pronto para retirada!`;
 
+    const milesLine = await milesEarnedLine(orderId);
     const key = `notif:${orderId}:paid`;
-    if (!(await claimNotification(session.phone, key, text))) return; // já enviada
+    if (!(await claimNotification(session.phone, key, text + milesLine))) return; // já enviada
     try {
-      await sendTextMessage(session.phone, text);
+      await sendTextMessage(session.phone, text + milesLine);
     } catch (error) {
       await db.delete(whatsappMessages).where(eq(whatsappMessages.wamid, key)).catch(() => undefined);
       throw error;

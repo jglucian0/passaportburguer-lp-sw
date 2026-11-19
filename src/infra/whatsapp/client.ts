@@ -190,13 +190,15 @@ export async function sendInteractiveButtons(to: string, bodyText: string, butto
  * Botão que abre um link (Cardápio Rápido / Checkout). Se a Meta recusar o formato (400: URL inválida,
  * texto fora do limite etc.), cai para texto simples com o link.
  */
-export async function sendCtaUrlButton(to: string, bodyText: string, buttonText: string, url: string) {
+export async function sendCtaUrlButton(to: string, bodyText: string, buttonText: string, url: string, imageUrl?: string | null) {
   try {
     return await graphPost({
       to,
       type: "interactive",
       interactive: {
         type: "cta_url",
+        // Foto no topo (JPEG/PNG em https): abre o apetite e continua sendo UMA mensagem só.
+        ...(imageUrl ? { header: { type: "image", image: { link: imageUrl } } } : {}),
         body: { text: truncate(bodyText, LIMITS.body, true) },
         action: {
           name: "cta_url",
@@ -206,11 +208,31 @@ export async function sendCtaUrlButton(to: string, bodyText: string, buttonText:
     });
   } catch (error) {
     if (!canFallbackToText(error)) throw error;
+    // Foto recusada (URL inacessível/formato): repete sem a foto antes de cair para texto.
+    if (imageUrl) return sendCtaUrlButton(to, bodyText, buttonText, url, null);
     // Se o corpo já traz o link (Pix), não repete.
     if (bodyText.includes(url)) return sendTextMessage(to, bodyText);
     // O link nunca é cortado: o corpo é que cede espaço.
     return sendTextMessage(to, `${truncate(bodyText, LIMITS.text - url.length - 4, true)}\n\n${url}`);
   }
+}
+
+/**
+ * Mensagem de template aprovado pela Meta (única forma de falar com o cliente fora da janela de 24 h).
+ * `bodyParams` preenchem {{1}}, {{2}}... do corpo, na ordem.
+ */
+export function sendTemplateMessage(to: string, name: string, languageCode: string, bodyParams: string[] = []) {
+  return graphPost({
+    to,
+    type: "template",
+    template: {
+      name,
+      language: { code: languageCode },
+      ...(bodyParams.length > 0
+        ? { components: [{ type: "body", parameters: bodyParams.map((text) => ({ type: "text", text })) }] }
+        : {}),
+    },
+  });
 }
 
 /** Marca como lida (dois tiques azuis). */

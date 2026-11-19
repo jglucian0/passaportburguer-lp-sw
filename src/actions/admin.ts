@@ -1,7 +1,7 @@
 "use server";
 
 import bcrypt from "bcryptjs";
-import { and, asc, desc, eq, max } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, max, notInArray } from "drizzle-orm";
 import { revalidateTag } from "next/cache";
 import { after } from "next/server";
 import { z } from "zod";
@@ -33,6 +33,11 @@ import {
   type CatalogDeliveryZone,
 } from "@/core/schemas/product";
 import { isOnlinePaymentMethod, uuidSchema } from "@/core/schemas/common";
+import type { MarketingConfig } from "@/core/marketing/campaign";
+import { loadCustomerProfiles } from "@/infra/marketing/profile";
+import type { MilesConfig } from "@/core/miles/ledger";
+import { creditOrderMiles, loadMilesConfig, reverseOrderMiles } from "@/infra/miles/miles";
+import { loadMarketingConfig } from "@/infra/marketing/settings";
 import { cancelPendingCharges } from "@/infra/payments/asaas";
 import { calculateCart } from "@/core/cart/calculate-cart";
 import { canCancel, getNextStatus } from "@/core/orders/state-machine";
@@ -54,6 +59,12 @@ import {
   coupons,
   customers,
   deliveryZones,
+  marketingSends,
+  marketingSettings,
+  milesLedger,
+  milesMissions,
+  milesRewards,
+  milesSettings,
   orderItems,
   orderTimelineEvents,
   orders,
@@ -241,6 +252,11 @@ export async function advanceOrder(input: unknown): Promise<ActionResult<{ statu
       after(() => notifyOutForDelivery(order.id));
     }
 
+    // Pedido entregue: garante as milhas (cobre pagamento na entrega e liberação manual; idempotente).
+    if (next === "DELIVERED") {
+      after(() => creditOrderMiles(order.id).catch(() => undefined));
+    }
+
     if (manualOnlineRelease) {
       console.warn(
         "[audit] liberação manual de pedido com pagamento online",
@@ -295,6 +311,8 @@ export async function cancelOrder(input: unknown): Promise<ActionResult<{ status
 
     // Pedido cancelado não pode mais ser pago: remove a cobrança pendente no Asaas.
     after(() => cancelPendingCharges(order.id).catch(() => undefined));
+    // As milhas que o pedido tinha rendido voltam.
+    after(() => reverseOrderMiles(order.id).catch(() => undefined));
 
     return success({ status: "CANCELED" as const });
   });
@@ -1065,6 +1083,335 @@ export async function deleteCoupon(input: unknown): Promise<ActionResult> {
       .where(and(eq(coupons.id, parsed.data.id), eq(coupons.tenantId, session.tenantId)))
       .returning({ id: coupons.id });
     if (deleted.length === 0) return failure("Cupom não encontrado.");
+    return success(null);
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Campanhas de remarketing (somente OWNER)                            */
+/* ------------------------------------------------------------------ */
+
+const marketingSettingsInputSchema = z
+  .object({
+    enabled: z.boolean(),
+    discountMinPercent: z.number().int().min(1, "Desconto mínimo: de 1% a 90%.").max(90),
+    discountMaxPercent: z.number().int().min(1).max(90, "Desconto máximo: até 90%."),
+    fanBonusPercent: z.number().int().min(0).max(50),
+    couponValidHours: z.number().int().min(1, "Validade do cupom: de 1 a 336 horas.").max(336),
+    couponMinOrderCents: z.number().int().min(0).max(1_000_000),
+    minDaysBetween: z.number().int().min(1, "Intervalo entre mensagens: de 1 a 90 dias.").max(90),
+    sendFromHour: z.number().int().min(0).max(23),
+    sendUntilHour: z.number().int().min(1).max(24),
+    targetAtRisk: z.boolean(),
+    targetLost: z.boolean(),
+  })
+  .refine((v) => v.discountMinPercent <= v.discountMaxPercent, {
+    path: ["discountMaxPercent"],
+    message: "O desconto máximo precisa ser maior ou igual ao mínimo.",
+  })
+  .refine((v) => v.sendFromHour < v.sendUntilHour, {
+    path: ["sendUntilHour"],
+    message: "O horário final precisa ser depois do inicial.",
+  });
+
+export type AdminMarketing = {
+  config: MarketingConfig;
+  stats: {
+    sent30d: number;
+    waitingTemplate30d: number;
+    failed30d: number;
+    converted30d: number;
+    atRisk: number;
+    lost: number;
+    fans: number;
+  };
+  whatsappTemplateConfigured: boolean;
+};
+
+export async function getAdminMarketing(): Promise<AdminMarketing | null> {
+  const session = await requireSession();
+  if (session.role !== "OWNER") return null;
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  const [config, sends, profiles] = await Promise.all([
+    loadMarketingConfig(session.tenantId),
+    db
+      .select({ status: marketingSends.status, outcome: marketingSends.outcome, couponId: marketingSends.couponId })
+      .from(marketingSends)
+      .where(and(eq(marketingSends.tenantId, session.tenantId), gte(marketingSends.createdAt, since))),
+    loadCustomerProfiles(session.tenantId),
+  ]);
+
+  const sentCouponIds = sends.filter((s) => s.status === "SENT" && s.couponId).map((s) => s.couponId as string);
+  // Convertido = o cupom enviado virou pedido com pagamento confirmado (cupom consumido).
+  const converted = sentCouponIds.length
+    ? await db
+        .select({ id: orders.id })
+        .from(orders)
+        .where(and(inArray(orders.couponId, sentCouponIds), isNotNull(orders.couponConsumedAt)))
+    : [];
+
+  return {
+    config,
+    stats: {
+      sent30d: sends.filter((s) => s.status === "SENT").length,
+      waitingTemplate30d: sends.filter((s) => s.outcome === "WAITING_TEMPLATE").length,
+      failed30d: sends.filter((s) => s.status === "FAILED").length,
+      converted30d: converted.length,
+      atRisk: profiles.filter((p) => p.segment === "AT_RISK").length,
+      lost: profiles.filter((p) => p.segment === "LOST").length,
+      fans: profiles.filter((p) => p.isFan).length,
+    },
+    whatsappTemplateConfigured: !!process.env.WHATSAPP_TEMPLATE_WINBACK?.trim(),
+  };
+}
+
+export async function saveMarketingSettings(input: unknown): Promise<ActionResult> {
+  return guardOwner(async (session) => {
+    const parsed = marketingSettingsInputSchema.safeParse(input);
+    if (!parsed.success) return fromZod(parsed.error);
+    await db
+      .insert(marketingSettings)
+      .values({ tenantId: session.tenantId, ...parsed.data })
+      .onConflictDoUpdate({ target: marketingSettings.tenantId, set: { ...parsed.data, updatedAt: new Date() } });
+    return success(null);
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Programa de milhas (somente OWNER)                                  */
+/* ------------------------------------------------------------------ */
+
+const milesSettingsInputSchema = z.object({
+  enabled: z.boolean(),
+  milesPerReal: z.number().int().min(1, "Milhas por R$ 1: de 1 a 100.").max(100),
+  validityMonths: z.number().int().min(0, "Validade: de 0 (sem validade) a 60 meses.").max(60),
+  rewardCouponValidDays: z.number().int().min(1, "Validade do cupom: de 1 a 180 dias.").max(180),
+});
+
+const milesRewardInputSchema = z.object({
+  id: z.string().uuid().nullish(),
+  name: z.string().trim().min(2, "Informe o nome da recompensa.").max(80),
+  milesCost: z.number().int().min(1, "Custo em milhas: no mínimo 1.").max(1_000_000),
+  discountCents: z.number().int().min(1, "Informe o desconto.").max(1_000_000),
+  minOrderCents: z.number().int().min(0).max(1_000_000),
+  isActive: z.boolean(),
+});
+
+const milesMissionInputSchema = z.object({
+  id: z.string().uuid().nullish(),
+  name: z.string().trim().min(2, "Informe o nome da missão.").max(80),
+  period: z.enum(["WEEK", "MONTH"]),
+  targetOrders: z.number().int().min(1, "Meta: de 1 a 31 pedidos.").max(31),
+  minOrderCents: z.number().int().min(0).max(1_000_000),
+  bonusMiles: z.number().int().min(1, "Bônus: no mínimo 1 milha.").max(1_000_000),
+  isActive: z.boolean(),
+});
+
+export type AdminMilesDashboard = {
+  activeCustomers30d: number;
+  recurringCustomers30d: number;
+  recurringRevenueCents30d: number;
+  /** Últimos 7 dias, do mais antigo ao mais recente. */
+  spendByDay: { label: string; cents: number }[];
+  top: { name: string; orders: number; spendCents: number }[];
+};
+
+export type AdminMiles = {
+  missions: {
+    id: string;
+    name: string;
+    period: "WEEK" | "MONTH";
+    targetOrders: number;
+    minOrderCents: number;
+    bonusMiles: number;
+    isActive: boolean;
+  }[];
+  dashboard: AdminMilesDashboard;
+  config: MilesConfig;
+  rewards: {
+    id: string;
+    name: string;
+    milesCost: number;
+    discountCents: number;
+    minOrderCents: number;
+    isActive: boolean;
+  }[];
+  stats: { issued30d: number; redeemed30d: number; customersWithMiles: number; couponsRedeemed30d: number };
+};
+
+export async function getAdminMiles(): Promise<AdminMiles | null> {
+  const session = await requireSession();
+  if (session.role !== "OWNER") return null;
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  const [config, rewards, ledger] = await Promise.all([
+    loadMilesConfig(session.tenantId),
+    db
+      .select({
+        id: milesRewards.id,
+        name: milesRewards.name,
+        milesCost: milesRewards.milesCost,
+        discountCents: milesRewards.discountCents,
+        minOrderCents: milesRewards.minOrderCents,
+        isActive: milesRewards.isActive,
+      })
+      .from(milesRewards)
+      .where(eq(milesRewards.tenantId, session.tenantId))
+      .orderBy(asc(milesRewards.milesCost)),
+    db
+      .select({ type: milesLedger.type, miles: milesLedger.miles, customerId: milesLedger.customerId, createdAt: milesLedger.createdAt })
+      .from(milesLedger)
+      .where(eq(milesLedger.tenantId, session.tenantId)),
+  ]);
+
+  const missions = await db
+    .select({
+      id: milesMissions.id,
+      name: milesMissions.name,
+      period: milesMissions.period,
+      targetOrders: milesMissions.targetOrders,
+      minOrderCents: milesMissions.minOrderCents,
+      bonusMiles: milesMissions.bonusMiles,
+      isActive: milesMissions.isActive,
+    })
+    .from(milesMissions)
+    .where(eq(milesMissions.tenantId, session.tenantId))
+    .orderBy(asc(milesMissions.bonusMiles));
+
+  // Painel de resultados (30 dias): pedidos válidos = nem cancelados, nem aguardando pagamento.
+  const validOrders = await db
+    .select({
+      customerId: orders.customerId,
+      createdAt: orders.createdAt,
+      totalCents: orders.totalCents,
+      name: customers.name,
+    })
+    .from(orders)
+    .innerJoin(customers, eq(customers.id, orders.customerId))
+    .where(
+      and(
+        eq(orders.tenantId, session.tenantId),
+        gte(orders.createdAt, since),
+        notInArray(orders.status, ["CANCELED", "AWAITING_PAYMENT"]),
+      ),
+    );
+  const perCustomer = new Map<string, { name: string; orders: number; spendCents: number }>();
+  for (const o of validOrders) {
+    const cur = perCustomer.get(o.customerId) ?? { name: o.name.trim().split(/\s+/)[0] ?? o.name, orders: 0, spendCents: 0 };
+    cur.orders += 1;
+    cur.spendCents += o.totalCents;
+    perCustomer.set(o.customerId, cur);
+  }
+  const recurring = [...perCustomer.values()].filter((c) => c.orders >= 2);
+  const dayFmt = new Intl.DateTimeFormat("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit" });
+  const spendByDay = Array.from({ length: 7 }, (_, i) => {
+    const day = new Date(Date.now() - (6 - i) * 24 * 60 * 60 * 1000);
+    const label = dayFmt.format(day);
+    const cents = validOrders.filter((o) => dayFmt.format(o.createdAt) === label).reduce((s, o) => s + o.totalCents, 0);
+    return { label, cents };
+  });
+  const dashboard: AdminMilesDashboard = {
+    activeCustomers30d: perCustomer.size,
+    recurringCustomers30d: recurring.length,
+    recurringRevenueCents30d: recurring.reduce((s, c) => s + c.spendCents, 0),
+    spendByDay,
+    top: [...perCustomer.values()].sort((a, b) => b.spendCents - a.spendCents).slice(0, 5),
+  };
+
+  const recent = ledger.filter((l) => l.createdAt >= since);
+  return {
+    missions,
+    dashboard,
+    config,
+    rewards,
+    stats: {
+      issued30d: recent.filter((l) => l.miles > 0).reduce((s, l) => s + l.miles, 0),
+      redeemed30d: recent.filter((l) => l.type === "REDEEM").reduce((s, l) => s - l.miles, 0),
+      customersWithMiles: new Set(ledger.map((l) => l.customerId)).size,
+      couponsRedeemed30d: recent.filter((l) => l.type === "REDEEM").length,
+    },
+  };
+}
+
+export async function saveMilesSettings(input: unknown): Promise<ActionResult> {
+  return guardOwner(async (session) => {
+    const parsed = milesSettingsInputSchema.safeParse(input);
+    if (!parsed.success) return fromZod(parsed.error);
+    await db
+      .insert(milesSettings)
+      .values({ tenantId: session.tenantId, ...parsed.data })
+      .onConflictDoUpdate({ target: milesSettings.tenantId, set: { ...parsed.data, updatedAt: new Date() } });
+    return success(null);
+  });
+}
+
+export async function saveMilesReward(input: unknown): Promise<ActionResult<{ id: string }>> {
+  return guardOwner(async (session) => {
+    const parsed = milesRewardInputSchema.safeParse(input);
+    if (!parsed.success) return fromZod(parsed.error);
+    const { id, ...values } = parsed.data;
+    if (id) {
+      const updated = await db
+        .update(milesRewards)
+        .set(values)
+        .where(and(eq(milesRewards.id, id), eq(milesRewards.tenantId, session.tenantId)))
+        .returning({ id: milesRewards.id });
+      if (updated.length === 0) return failure("Recompensa não encontrada.");
+      return success({ id });
+    }
+    const [row] = await db
+      .insert(milesRewards)
+      .values({ tenantId: session.tenantId, ...values })
+      .returning({ id: milesRewards.id });
+    return success({ id: row.id });
+  });
+}
+
+export async function deleteMilesReward(input: unknown): Promise<ActionResult> {
+  return guardOwner(async (session) => {
+    const parsed = idInputSchema.safeParse(input);
+    if (!parsed.success) return fromZod(parsed.error);
+    const deleted = await db
+      .delete(milesRewards)
+      .where(and(eq(milesRewards.id, parsed.data.id), eq(milesRewards.tenantId, session.tenantId)))
+      .returning({ id: milesRewards.id });
+    if (deleted.length === 0) return failure("Recompensa não encontrada.");
+    return success(null);
+  });
+}
+
+export async function saveMilesMission(input: unknown): Promise<ActionResult<{ id: string }>> {
+  return guardOwner(async (session) => {
+    const parsed = milesMissionInputSchema.safeParse(input);
+    if (!parsed.success) return fromZod(parsed.error);
+    const { id, ...values } = parsed.data;
+    if (id) {
+      const updated = await db
+        .update(milesMissions)
+        .set(values)
+        .where(and(eq(milesMissions.id, id), eq(milesMissions.tenantId, session.tenantId)))
+        .returning({ id: milesMissions.id });
+      if (updated.length === 0) return failure("Missão não encontrada.");
+      return success({ id });
+    }
+    const [row] = await db
+      .insert(milesMissions)
+      .values({ tenantId: session.tenantId, ...values })
+      .returning({ id: milesMissions.id });
+    return success({ id: row.id });
+  });
+}
+
+export async function deleteMilesMission(input: unknown): Promise<ActionResult> {
+  return guardOwner(async (session) => {
+    const parsed = idInputSchema.safeParse(input);
+    if (!parsed.success) return fromZod(parsed.error);
+    const deleted = await db
+      .delete(milesMissions)
+      .where(and(eq(milesMissions.id, parsed.data.id), eq(milesMissions.tenantId, session.tenantId)))
+      .returning({ id: milesMissions.id });
+    if (deleted.length === 0) return failure("Missão não encontrada.");
     return success(null);
   });
 }

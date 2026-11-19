@@ -19,7 +19,8 @@ import {
 import { formatCents } from "@/lib/utils";
 
 import { geocodeAddress } from "./geocode";
-import { ensureCustomer, finalizeOrderAndCheckout, priceCart, type Coords, type FinalizeResult } from "./order-flow";
+import { findPersonalCoupons } from "@/infra/coupons";
+import { checkoutBodyText, ensureCustomer, finalizeOrderAndCheckout, priceCart, type Coords, type FinalizeResult } from "./order-flow";
 import { isCheckoutReady, nextStep } from "./session-rules";
 import { getTenantId, type ToolContext } from "./shared";
 import { getCustomerContext } from "./customer-context";
@@ -264,6 +265,7 @@ export async function setDeliveryAndPaymentTool(ctx: ToolContext, input: unknown
       coords,
       snapshot?.district ?? snapshot?.neighborhood ?? null,
       paymentMethod ?? undefined,
+      await findPersonalCoupons(tenantId, customer.id).catch(() => []),
     );
     if (!priced.ok) return priced;
     pricing = {
@@ -327,5 +329,5 @@ export async function runAutoCheckout(ctx: ToolContext): Promise<AutoCheckoutOut
 
 /** Mensagem de fechamento escrita pelo backend (único texto, além do botão, que carrega link). */
 export function checkoutMessage(r: Extract<FinalizeResult, { ok: true }>): string {
-  return `Pedido #${r.orderNumber} anotado! Total ${r.amountFormatted}. Toque abaixo para escolher como pagar e mandar pra chapa 👇`;
+  return checkoutBodyText(r);
 }

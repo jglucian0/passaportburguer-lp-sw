@@ -1,6 +1,6 @@
 "use client";
 
-import { Bike, LogOut, Settings, ShoppingBag, UtensilsCrossed, Wallet } from "lucide-react";
+import { Bike, LogOut, Megaphone, Plane, Settings, ShoppingBag, UtensilsCrossed, Wallet } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -17,6 +17,8 @@ const NAV: readonly { href: string; label: string; icon: typeof ShoppingBag; own
   { href: "/admin/cardapio", label: "Cardápio", icon: UtensilsCrossed },
   { href: "/admin/financeiro", label: "Financeiro", icon: Wallet, ownerOnly: true },
   { href: "/admin/entregas", label: "Entregas", icon: Bike, ownerOnly: true },
+  { href: "/admin/marketing", label: "Marketing", icon: Megaphone, ownerOnly: true },
+  { href: "/admin/milhas", label: "Milhas", icon: Plane, ownerOnly: true },
   { href: "/admin/config", label: "Config", icon: Settings, ownerOnly: true },
 ];
 

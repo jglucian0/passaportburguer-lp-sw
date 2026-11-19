@@ -31,6 +31,8 @@ export const checkoutSchema = z
     /** CPF/CNPJ na nota (opcional). Chega com ou sem máscara; é validado e guardado só com dígitos. */
     documentNumber: z.string().trim().max(18).nullish(),
     items: cartInputSchema,
+    /** Cupom (opcional): validado de novo no servidor; vale só sobre os itens. */
+    couponCode: z.string().trim().max(40).nullish(),
     /** Gerada no checkout (UUID): reenvios/duplo clique devolvem o mesmo pedido. */
     idempotencyKey: z.string().uuid().nullish(),
   })

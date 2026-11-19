@@ -462,6 +462,12 @@ export const orders = pgTable(
     changeForCents: integer("change_for_cents"),
     subtotalCents: integer("subtotal_cents").notNull(),
     deliveryFeeCents: integer("delivery_fee_cents").notNull().default(0),
+    /** Cupom aplicado só sobre os itens (nunca sobre a taxa). total = subtotal - desconto + taxa. */
+    discountCents: integer("discount_cents").notNull().default(0),
+    couponId: uuid("coupon_id"),
+    couponCode: text("coupon_code"),
+    /** Preenchido quando o cupom foi consumido (pagamento confirmado): garante consumo único. */
+    couponConsumedAt: timestamp("coupon_consumed_at", { withTimezone: true }),
     totalCents: integer("total_cents").notNull(),
     notes: text("notes"),
     /** CPF (11) ou CNPJ (14) na nota fiscal, só dígitos. Opcional. */
@@ -648,6 +654,10 @@ export const coupons = pgTable(
     maxUses: integer("max_uses"),
     usedCount: integer("used_count").notNull().default(0),
     isActive: boolean("is_active").notNull().default(true),
+    /** null = sem validade. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    /** Cupom pessoal (campanhas): só este cliente pode usar. null = qualquer cliente. */
+    customerId: uuid("customer_id").references(() => customers.id, { onDelete: "cascade" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("coupons_tenant_code_uq").on(t.tenantId, t.code)],
@@ -820,6 +830,8 @@ export const whatsappSessions = pgTable(
     addressConfirmed: boolean("address_confirmed").notNull().default(false),
     /** Forma de pagamento já escolhida neste pedido (null = ainda não escolheu). */
     paymentMethod: text("payment_method").$type<PaymentMethod>(),
+    /** O cliente pediu para não receber mensagens de marketing/retorno (PARAR). */
+    marketingOptOutAt: timestamp("marketing_opt_out_at", { withTimezone: true }),
     /** Início do pedido atual: o histórico enviado à IA só considera mensagens a partir daqui. */
     sessionStartedAt: timestamp("session_started_at", { withTimezone: true }).notNull().defaultNow(),
     lastInteractionAt: timestamp("last_interaction_at", { withTimezone: true })
@@ -862,4 +874,185 @@ export const whatsappInboxBuffer = pgTable(
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("whatsapp_inbox_phone_idx").on(t.phone, t.processed, t.receivedAt)],
+);
+
+/* ------------------------------------------------------------------ */
+/* whatsapp_followups (retorno automático ao cliente)                  */
+/* ------------------------------------------------------------------ */
+
+export type WhatsAppFollowupKind = "REOPEN";
+export type WhatsAppFollowupStatus = "PENDING" | "SENT" | "CANCELLED" | "SKIPPED";
+
+/** Fila de mensagens ativas. Uma pendente por telefone; o cron envia quando a loja abre. */
+export const whatsappFollowups = pgTable(
+  "whatsapp_followups",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    phone: text("phone").notNull(),
+    kind: text("kind").$type<WhatsAppFollowupKind>().notNull().default("REOPEN"),
+    status: text("status").$type<WhatsAppFollowupStatus>().notNull().default("PENDING"),
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
+    /** Última mensagem do cliente: a janela de 24 h do texto livre conta a partir dela. */
+    lastCustomerMessageAt: timestamp("last_customer_message_at", { withTimezone: true }).notNull(),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    /** "template" ou "text" (como foi enviado) ou o motivo do cancelamento/descarte. */
+    outcome: text("outcome"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("whatsapp_followups_due_idx").on(t.status, t.scheduledFor)],
+);
+
+/* ------------------------------------------------------------------ */
+/* marketing (campanhas de remarketing)                                */
+/* ------------------------------------------------------------------ */
+
+/** Configuração das campanhas (uma linha por loja). Sem linha = padrões e campanhas desligadas. */
+export const marketingSettings = pgTable("marketing_settings", {
+  tenantId: uuid("tenant_id")
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  enabled: boolean("enabled").notNull().default(false),
+  discountMinPercent: integer("discount_min_percent").notNull().default(5),
+  discountMaxPercent: integer("discount_max_percent").notNull().default(15),
+  /** Bônus (em pontos percentuais) somado ao sorteio para clientes fãs, limitado ao máximo. */
+  fanBonusPercent: integer("fan_bonus_percent").notNull().default(5),
+  couponValidHours: integer("coupon_valid_hours").notNull().default(48),
+  couponMinOrderCents: integer("coupon_min_order_cents").notNull().default(0),
+  /** Intervalo mínimo entre duas mensagens de marketing para o mesmo cliente. */
+  minDaysBetween: integer("min_days_between").notNull().default(7),
+  sendFromHour: integer("send_from_hour").notNull().default(10),
+  sendUntilHour: integer("send_until_hour").notNull().default(21),
+  targetAtRisk: boolean("target_at_risk").notNull().default(true),
+  targetLost: boolean("target_lost").notNull().default(true),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type MarketingSendStatus = "SENT" | "SKIPPED" | "FAILED";
+
+/** Registro de cada tentativa de campanha: limite por cliente, auditoria e atribuição (cupom -> pedido). */
+export const marketingSends = pgTable(
+  "marketing_sends",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    customerId: uuid("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    phone: text("phone").notNull(),
+    segment: text("segment").notNull(),
+    isFan: boolean("is_fan").notNull().default(false),
+    status: text("status").$type<MarketingSendStatus>().notNull(),
+    /** "text" | "template" quando enviado; motivo quando não (ex.: WAITING_TEMPLATE, SEND_FAILED). */
+    outcome: text("outcome"),
+    couponId: uuid("coupon_id").references(() => coupons.id, { onDelete: "set null" }),
+    discountPercent: integer("discount_percent"),
+    sentAt: timestamp("sent_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("marketing_sends_customer_idx").on(t.customerId, t.createdAt)],
+);
+
+/* ------------------------------------------------------------------ */
+/* milhas (programa de fidelidade)                                     */
+/* ------------------------------------------------------------------ */
+
+/** Configuração do programa (uma linha por loja). Sem linha = padrões, programa DESLIGADO. */
+export const milesSettings = pgTable("miles_settings", {
+  tenantId: uuid("tenant_id")
+    .primaryKey()
+    .references(() => tenants.id, { onDelete: "cascade" }),
+  enabled: boolean("enabled").notNull().default(false),
+  /** Milhas ganhas por R$ 1,00 em itens (já com desconto de cupom, sem a taxa de entrega). */
+  milesPerReal: integer("miles_per_real").notNull().default(5),
+  /** Validade das milhas ganhas, em meses (0 = não expiram). */
+  validityMonths: integer("validity_months").notNull().default(12),
+  /** Validade do cupom gerado no resgate, em dias. */
+  rewardCouponValidDays: integer("reward_coupon_valid_days").notNull().default(15),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Recompensas da "loja de milhas": X milhas viram um cupom de desconto pessoal. */
+export const milesRewards = pgTable(
+  "miles_rewards",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    milesCost: integer("miles_cost").notNull(),
+    /** Desconto em centavos, só sobre os itens. */
+    discountCents: integer("discount_cents").notNull(),
+    minOrderCents: integer("min_order_cents").notNull().default(0),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("miles_rewards_tenant_idx").on(t.tenantId)],
+);
+
+export type MilesEntryType = "EARN" | "REDEEM" | "REVERSAL" | "BONUS" | "ADJUST";
+
+/** Extrato: todo crédito/débito de milhas. O saldo é calculado a partir daqui (nunca guardado). */
+export const milesLedger = pgTable(
+  "miles_ledger",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    customerId: uuid("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    type: text("type").$type<MilesEntryType>().notNull(),
+    /** Positivo = crédito, negativo = débito. */
+    miles: integer("miles").notNull(),
+    orderId: uuid("order_id").references(() => orders.id, { onDelete: "set null" }),
+    rewardId: uuid("reward_id").references(() => milesRewards.id, { onDelete: "set null" }),
+    couponId: uuid("coupon_id").references(() => coupons.id, { onDelete: "set null" }),
+    description: text("description").notNull(),
+    /** Só nos créditos: depois desta data as milhas não valem mais. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("miles_ledger_customer_idx").on(t.customerId, t.createdAt)],
+);
+
+/** Missões ("Peça 3x no mês +300 milhas"): o progresso sai dos pedidos; o bônus cai uma vez por período. */
+export const milesMissions = pgTable(
+  "miles_missions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** "WEEK" (segunda a domingo) ou "MONTH" (mês civil), no horário de Brasília. */
+    period: text("period").$type<"WEEK" | "MONTH">().notNull(),
+    targetOrders: integer("target_orders").notNull(),
+    /** Só contam pedidos com itens (já com desconto) a partir deste valor. */
+    minOrderCents: integer("min_order_cents").notNull().default(0),
+    bonusMiles: integer("bonus_miles").notNull(),
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("miles_missions_tenant_idx").on(t.tenantId)],
+);
+
+/** Bônus já pago: a chave única (missão, cliente, período) impede pagar duas vezes. */
+export const milesMissionAwards = pgTable(
+  "miles_mission_awards",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    missionId: uuid("mission_id")
+      .notNull()
+      .references(() => milesMissions.id, { onDelete: "cascade" }),
+    customerId: uuid("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    periodKey: text("period_key").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("miles_mission_awards_uq").on(t.missionId, t.customerId, t.periodKey)],
 );

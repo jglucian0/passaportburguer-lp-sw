@@ -15,6 +15,7 @@ import type { DeliveryType, OrderStatus, PaymentMethod } from "@/core/schemas/co
 import { checkoutSchema } from "@/core/schemas/checkout";
 import { isOnlinePaymentMethod } from "@/core/schemas/common";
 import { createPixCharge } from "@/infra/payments/asaas";
+import { consumeOrderCoupon, lookupCoupon } from "@/infra/coupons";
 import type { CatalogDeliveryZone } from "@/core/schemas/product";
 import { getStoreStatus, type OpeningHours, type StoreStatus } from "@/core/store/opening-hours";
 import { getAuthSession } from "@/infra/auth/customer-session";
@@ -251,6 +252,14 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
     zone = withQuotedFee(base, quote.feeCents);
   }
 
+  /* Cupom: validado aqui (nunca confiamos no desconto do navegador). */
+  let couponLookup: Extract<Awaited<ReturnType<typeof lookupCoupon>>, { ok: true }> | null = null;
+  if (data.couponCode) {
+    const found = await lookupCoupon(tenant.id, data.couponCode, session.customerId);
+    if (!found.ok) return failure(found.error);
+    couponLookup = found;
+  }
+
   const calc = calculateCart({
     items: data.items,
     catalog,
@@ -259,6 +268,7 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
     minOrderCents: effectiveMinOrderCents(tenant.minOrderCents),
     paymentMethod: data.paymentMethod,
     changeForCents: data.changeForCents,
+    coupon: couponLookup?.coupon ?? null,
   });
 
   if (!calc.ok) return failure(calc.errors.map((e) => e.message).join(" "));
@@ -348,6 +358,9 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
           changeForCents: data.paymentMethod === "CASH" ? (data.changeForCents ?? null) : null,
           subtotalCents: calc.subtotalCents,
           deliveryFeeCents: calc.deliveryFeeCents,
+          discountCents: calc.discountCents,
+          couponId: couponLookup?.couponId ?? null,
+          couponCode: couponLookup?.coupon.code ?? null,
           totalCents: calc.totalCents,
           notes: data.notes ?? null,
           documentNumber: data.documentNumber ? onlyDigits(data.documentNumber) : null,
@@ -393,6 +406,8 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
 
   /* Saipos: nunca bloqueia nem falha a compra. PIX só é enviado após a confirmação do pagamento. */
   if (initialStatus !== "AWAITING_PAYMENT") {
+    // Pagamento na entrega/retirada: o pedido já foi aceito, então o cupom é consumido agora.
+    await consumeOrderCoupon(created.orderId).catch(() => undefined);
     const orderIdToSync = created.orderId;
     after(() => sendOrderToSaipos(orderIdToSync));
   }
@@ -528,4 +543,26 @@ export async function getCustomerOrders(): Promise<CustomerOrdersData | null> {
     customerPhone: customer.phone,
     orders: await loadCustomerOrders(ref.id, customer.id),
   };
+}
+
+
+/** Confere o cupom para o checkout (o desconto real é recalculado no servidor ao criar o pedido). */
+export async function validateCoupon(
+  code: unknown,
+): Promise<
+  | { ok: true; coupon: { code: string; type: "PERCENT" | "FIXED"; value: number; minOrderCents: number } }
+  | { ok: false; error: string }
+> {
+  const session = await getAuthSession();
+  if (!session) return { ok: false, error: "Sessão expirada. Entre novamente." };
+  const limit = await checkRateLimit({
+    identifier: session.customerId,
+    route: "coupon",
+    limit: 15,
+    windowSeconds: 600,
+  });
+  if (!limit.allowed) return { ok: false, error: "Muitas tentativas. Aguarde um pouco." };
+  if (typeof code !== "string") return { ok: false, error: "Informe o código do cupom." };
+  const found = await lookupCoupon(session.tenantId, code, session.customerId);
+  return found.ok ? { ok: true, coupon: found.coupon } : found;
 }

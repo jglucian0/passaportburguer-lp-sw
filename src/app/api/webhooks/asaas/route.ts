@@ -13,6 +13,7 @@ import {
 } from "@/infra/db/schema";
 import { timelineInsert } from "@/infra/db/timeline";
 import { settlePayment } from "@/infra/payments/settle";
+import { reverseOrderMiles } from "@/infra/miles/miles";
 import { tokenMatches } from "@/infra/payments/webhook-auth";
 import { cancelOrderOnSaipos } from "@/lib/saipos";
 import { formatCents } from "@/lib/utils";
@@ -125,6 +126,11 @@ async function handleRefundOrChargeback(
     }),
     link as never,
   ]);
+
+  // Pedido cancelado por estorno/chargeback: as milhas que ele rendeu são devolvidas (idempotente).
+  if (Array.isArray(canceled) && canceled.length > 0) {
+    await reverseOrderMiles(order.id).catch(() => undefined);
+  }
 
   /* ---- Saipos: só quando o pedido já foi enviado ---- */
   let saiposCancelStatus: SaiposCancelStatus = order.saiposCancelStatus ?? "NOT_APPLICABLE";

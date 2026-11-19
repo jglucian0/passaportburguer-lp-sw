@@ -94,3 +94,20 @@ export function isStoreOpen(params: {
 }): boolean {
   return getStoreStatus(params).isOpen;
 }
+
+/**
+ * Próximo instante de abertura segundo o horário semanal (null se nenhum dia está habilitado).
+ * O Brasil não tem horário de verão, então somar minutos ao relógio local é seguro.
+ */
+export function nextOpeningAt(openingHours: OpeningHours, now: Date = new Date(), timeZone: string = DEFAULT_TIME_ZONE): Date | null {
+  const { day, minutes } = getLocalClock(now, timeZone);
+  for (let offset = 0; offset < 8; offset++) {
+    const d = openingHours[dayKey(day + offset)];
+    if (!d?.enabled) continue;
+    const openMinutes = toMinutes(d.open);
+    if (offset === 0 && openMinutes <= minutes) continue; // a janela de hoje já começou
+    const deltaMinutes = offset * 24 * 60 + openMinutes - minutes;
+    return new Date(now.getTime() + deltaMinutes * 60_000);
+  }
+  return null;
+}

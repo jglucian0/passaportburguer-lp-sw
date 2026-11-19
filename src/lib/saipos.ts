@@ -136,7 +136,7 @@ async function buildPayload(orderId: string, config: SaiposConfig) {
     cod_store: config.storeId,
     created_at: createdAt,
     notes,
-    total_discount: 0,
+    total_discount: toReais(order.discountCents),
     total_amount: toReais(order.totalCents),
     customer: {
       id: order.customerId,

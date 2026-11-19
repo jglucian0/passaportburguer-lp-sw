@@ -15,11 +15,14 @@ import { executeTool, getAvailableMenu, getCustomerContext, TOOL_DECLARATIONS, t
 import { appUrl, type ToolContext } from "./shared";
 import { STICKER_TEXT, type InboundMessage } from "./webhook";
 import { errorSummary } from "./log";
+import { cancelFollowups, enqueueReopenFollowup, setMarketingOptOut } from "./followups";
 import {
   OFF_TOPIC_REPLY,
   collectKnownCents,
   isGreetingOnly,
   isInjectionAttempt,
+  isOptOutMessage,
+  OPT_OUT_REPLY,
   menuMessage,
   MENU_SHOW_LINK_IN_BODY,
   returningMessage,
@@ -411,6 +414,7 @@ export function cannedReply(
 ): string | null {
   if (messages.length === 0 || !messages.every((m) => m.mediaType === "text")) return null;
   const texts = messages.map((m) => m.content);
+  if (texts.every(isOptOutMessage)) return OPT_OUT_REPLY;
   if (texts.some(isInjectionAttempt)) return OFF_TOPIC_REPLY;
 
   if (greetingMode === "IN_CONVERSATION") return null;
@@ -557,6 +561,21 @@ export async function runBotTurn(
 
     await deliverReply(deps, ctx, phone, reply);
     await recordAssistant(phone, reply);
+
+    // Retorno automático (segundo plano): nunca atrapalha o atendimento.
+    try {
+      const textOnly = messages.length > 0 && messages.every((m) => m.mediaType === "text");
+      if (textOnly && messages.every((m) => isOptOutMessage(m.content))) {
+        await setMarketingOptOut(phone);
+      } else {
+        // Cliente voltou a falar: qualquer retorno pendente perde o sentido.
+        await cancelFollowups(phone, "CUSTOMER_ACTIVE");
+        const thanksOnly = textOnly && messages.every((m) => isClosingMessage(m.content));
+        if (!thanksOnly && !canned) await enqueueReopenFollowup(phone);
+      }
+    } catch (error) {
+      console.error("[whatsapp-bot] falha ao agendar retorno:", errorSummary(error));
+    }
 
     // Cliente encerrou o papo ("Já chegou", "Valeu") sem pedido em andamento: próxima conversa começa limpa.
     const closing =

@@ -15,6 +15,7 @@ export type CartErrorCode =
   | "ZONE_REQUIRED"
   | "ZONE_INACTIVE"
   | "MIN_ORDER_NOT_REACHED"
+  | "COUPON_MIN_NOT_REACHED"
   | "CHANGE_INSUFFICIENT";
 
 export type CartError = {
@@ -40,6 +41,21 @@ export type CalculatedLine = {
   totalItemCents: number;
 };
 
+/** Cupom já validado (ativo, dentro da validade, com usos): aqui só se calcula o desconto. */
+export type CartCoupon = {
+  code: string;
+  type: "PERCENT" | "FIXED";
+  /** PERCENT: 1–100. FIXED: centavos. */
+  value: number;
+  minOrderCents: number;
+};
+
+/** Desconto só sobre os itens (nunca sobre a taxa de entrega) e nunca maior que o subtotal. */
+export function couponDiscountCents(subtotalCents: number, coupon: Pick<CartCoupon, "type" | "value">): number {
+  const raw = coupon.type === "PERCENT" ? Math.floor((subtotalCents * coupon.value) / 100) : coupon.value;
+  return Math.max(0, Math.min(raw, subtotalCents));
+}
+
 export type CalculateCartParams = {
   items: CartItemInput[];
   /** Catálogo do tenant (produtos com grupos e adicionais). */
@@ -49,6 +65,7 @@ export type CalculateCartParams = {
   minOrderCents: number;
   paymentMethod?: PaymentMethod;
   changeForCents?: number | null;
+  coupon?: CartCoupon | null;
 };
 
 export type CalculateCartResult =
@@ -57,12 +74,14 @@ export type CalculateCartResult =
       lines: CalculatedLine[];
       subtotalCents: number;
       deliveryFeeCents: number;
+      /** Desconto do cupom (0 sem cupom). */
+      discountCents: number;
       totalCents: number;
     }
   | { ok: false; errors: CartError[] };
 
 export function calculateCart(params: CalculateCartParams): CalculateCartResult {
-  const { items, catalog, deliveryType, deliveryZone, minOrderCents, paymentMethod, changeForCents } =
+  const { items, catalog, deliveryType, deliveryZone, minOrderCents, paymentMethod, changeForCents, coupon } =
     params;
 
   const errors: CartError[] = [];
@@ -201,7 +220,15 @@ export function calculateCart(params: CalculateCartParams): CalculateCartResult 
   }
 
   const subtotalCents = lines.reduce((sum, l) => sum + l.totalItemCents, 0);
-  const totalCents = subtotalCents + deliveryFeeCents;
+  const discountCents = coupon && subtotalCents >= coupon.minOrderCents ? couponDiscountCents(subtotalCents, coupon) : 0;
+  const totalCents = subtotalCents - discountCents + deliveryFeeCents;
+
+  if (errors.length === 0 && coupon && subtotalCents < coupon.minOrderCents) {
+    errors.push({
+      code: "COUPON_MIN_NOT_REACHED",
+      message: `O cupom ${coupon.code} vale para pedidos a partir de ${formatCents(coupon.minOrderCents)} em itens.`,
+    });
+  }
 
   /* Mínimo vale só para ENTREGA e incide sobre o subtotal dos produtos (sem a taxa). */
   if (errors.length === 0 && deliveryType === "DELIVERY" && subtotalCents < minOrderCents) {
@@ -225,7 +252,7 @@ export function calculateCart(params: CalculateCartParams): CalculateCartResult 
 
   if (errors.length > 0) return { ok: false, errors };
 
-  return { ok: true, lines, subtotalCents, deliveryFeeCents, totalCents };
+  return { ok: true, lines, subtotalCents, deliveryFeeCents, discountCents, totalCents };
 }
 
 export function formatCents(cents: number): string {

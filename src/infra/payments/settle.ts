@@ -1,6 +1,8 @@
 import { and, eq, ne, sql } from "drizzle-orm";
 import { after } from "next/server";
 
+import { consumeOrderCoupon } from "@/infra/coupons";
+import { creditOrderMiles } from "@/infra/miles/miles";
 import { db } from "@/infra/db";
 import { orders, payments } from "@/infra/db/schema";
 import { loadStoreSettings } from "@/infra/db/store-settings";
@@ -60,6 +62,14 @@ export async function settlePayment(opts: {
       metadata: { paidCents: opts.paidCents, status: opts.status },
       dedupeKey: `${opts.orderId}:payment-confirmed`,
     });
+    // Pagamento validado: o cupom do pedido é consumido (idempotente).
+    await consumeOrderCoupon(opts.orderId).catch((error) =>
+      console.error("[coupons] falha ao consumir cupom:", error instanceof Error ? error.message : "erro"),
+    );
+    // Pagamento validado: credita as milhas do pedido (idempotente; programa desligado = nada).
+    await creditOrderMiles(opts.orderId).catch((error) =>
+      console.error("[miles] falha ao creditar milhas:", error instanceof Error ? error.message : "erro"),
+    );
     // Um único after(): Saipos e aviso no WhatsApp (só quem liberou o pedido avisa; o aviso também é idempotente).
     after(async () => {
       await Promise.allSettled([sendOrderToSaipos(opts.orderId), notifyPaymentConfirmed(opts.orderId)]);

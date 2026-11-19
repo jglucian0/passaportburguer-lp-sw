@@ -1,7 +1,7 @@
 import { and, eq, inArray, max, sql } from "drizzle-orm";
 import { z } from "zod";
 
-import { calculateCart, type CalculateCartResult } from "@/core/cart/calculate-cart";
+import { calculateCart, couponDiscountCents, type CalculateCartResult, type CartCoupon } from "@/core/cart/calculate-cart";
 import { calculateDeliveryQuote, resolveDeliveryZone, withQuotedFee } from "@/core/delivery/quote";
 import type { CatalogDeliveryZone } from "@/core/schemas/product";
 import { effectiveMinOrderCents } from "@/core/store/min-order";
@@ -24,6 +24,7 @@ import {
 } from "@/infra/db/schema";
 import { loadStoreSettings } from "@/infra/db/store-settings";
 import { recordTimelineEvent } from "@/infra/db/timeline";
+import { findPersonalCoupons } from "@/infra/coupons";
 import { formatCents } from "@/lib/utils";
 
 import { getBrazilianPhoneVariants } from "./phone";
@@ -37,6 +38,8 @@ type Priced =
       calc: Extract<CalculateCartResult, { ok: true }>;
       zone: CatalogDeliveryZone | null;
       autoAccept: boolean;
+      /** Cupom que entrou no cálculo (null = nenhum ou não atingiu o mínimo). */
+      coupon: { id: string; code: string } | null;
     }
   | { ok: false; error: string };
 
@@ -48,6 +51,7 @@ export async function priceCart(
   coords: Coords | null,
   neighborhood: string | null,
   paymentMethod?: PaymentMethod,
+  personalCoupons: { couponId: string; coupon: CartCoupon }[] = [],
 ): Promise<Priced> {
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   if (!tenant) return { ok: false, error: "Loja não encontrada." };
@@ -78,20 +82,40 @@ export async function priceCart(
     zone = withQuotedFee(base, quote.feeCents);
   }
 
-  const calc = calculateCart({
-    items: items.map((i) => ({
-      productId: i.productId,
-      quantity: i.quantity,
-      addons: (i.addons ?? []).map((a) => ({ addonId: a.addonId, quantity: a.quantity })),
-    })),
-    catalog,
-    deliveryType,
-    deliveryZone: zone,
-    minOrderCents: effectiveMinOrderCents(tenant.minOrderCents),
-    paymentMethod,
-  });
+  const calculate = (coupon: CartCoupon | null) =>
+    calculateCart({
+      items: items.map((i) => ({
+        productId: i.productId,
+        quantity: i.quantity,
+        addons: (i.addons ?? []).map((a) => ({ addonId: a.addonId, quantity: a.quantity })),
+      })),
+      catalog,
+      deliveryType,
+      deliveryZone: zone,
+      minOrderCents: effectiveMinOrderCents(tenant.minOrderCents),
+      paymentMethod,
+      coupon,
+    });
+  // Sem cupom primeiro: dá o subtotal real e valida o carrinho.
+  let calc = calculate(null);
   if (!calc.ok) return { ok: false, error: calc.errors.map((e) => e.message).join(" ") };
-  return { ok: true, calc, zone, autoAccept: settings.autoAcceptOrders };
+
+  // Um só cupom por fechamento: o de MAIOR desconto entre os que o pedido alcança (nunca soma).
+  let appliedCoupon: { id: string; code: string } | null = null;
+  const subtotal = calc.subtotalCents;
+  const best = personalCoupons
+    .filter((c) => subtotal >= c.coupon.minOrderCents)
+    .map((c) => ({ c, discount: couponDiscountCents(subtotal, c.coupon) }))
+    .filter((x) => x.discount > 0)
+    .sort((a, b) => b.discount - a.discount)[0];
+  if (best) {
+    const withCoupon = calculate(best.c.coupon);
+    if (withCoupon.ok) {
+      calc = withCoupon;
+      appliedCoupon = { id: best.c.couponId, code: best.c.coupon.code };
+    }
+  }
+  return { ok: true, calc, zone, autoAccept: settings.autoAcceptOrders, coupon: appliedCoupon };
 }
 
 /** Cliente por telefone; cria (sem senha, telefone já provado pelo próprio WhatsApp) se não existir. */
@@ -135,6 +159,9 @@ export type FinalizeResult =
       orderId: string;
       orderNumber: number;
       amountFormatted: string;
+      /** Cupom pessoal aplicado (desconto só sobre os itens). */
+      couponCode?: string;
+      discountFormatted?: string;
       paymentMethod: PaymentMethod;
       deliveryType: "DELIVERY" | "PICKUP";
       /** Pix: código Copia e Cola. O agente o envia como mensagem própria; o modelo nunca o vê. */
@@ -145,6 +172,12 @@ export type FinalizeResult =
       chargeError?: boolean;
     }
   | { ok: false; error: string; needsDocument?: boolean };
+
+/** Texto único da mensagem de fechamento (botão "Ir para pagamento"). */
+export function checkoutBodyText(r: { orderNumber: number; amountFormatted: string; couponCode?: string; discountFormatted?: string }): string {
+  const coupon = r.couponCode && r.discountFormatted ? ` Cupom ${r.couponCode} aplicado (-${r.discountFormatted}).` : "";
+  return `Pedido #${r.orderNumber} anotado!${coupon} Total ${r.amountFormatted}. Toque abaixo para escolher como pagar e mandar pra chapa 👇`;
+}
 
 function isUniqueViolation(error: unknown): boolean {
   const e = error as { code?: string; cause?: { code?: string } } | null;
@@ -190,9 +223,10 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     address && address.latitude != null && address.longitude != null
       ? { lat: address.latitude, lon: address.longitude, city: address.city ?? "" }
       : null;
-  const priced = await priceCart(tenantId, draft, deliveryType, coords, address?.district ?? null, paymentMethod);
+  const personalCoupons = await findPersonalCoupons(tenantId, customer.id).catch(() => []);
+  const priced = await priceCart(tenantId, draft, deliveryType, coords, address?.district ?? null, paymentMethod, personalCoupons);
   if (!priced.ok) return priced;
-  const { calc, zone } = priced;
+  const { calc, zone, coupon: appliedCoupon } = priced;
 
   /*
    * Reivindica o rascunho de forma atômica (duas finalizações simultâneas não criam dois pedidos) e já
@@ -279,6 +313,9 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
             changeForCents: null,
             subtotalCents: calc.subtotalCents,
             deliveryFeeCents: calc.deliveryFeeCents,
+            discountCents: calc.discountCents,
+            couponId: appliedCoupon?.id ?? null,
+            couponCode: appliedCoupon?.code ?? null,
             totalCents: calc.totalCents,
             notes,
             documentNumber,
@@ -328,6 +365,9 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     orderId: created.orderId,
     orderNumber: created.orderNumber,
     amountFormatted: formatCents(calc.totalCents),
+    ...(appliedCoupon && calc.discountCents > 0
+      ? { couponCode: appliedCoupon.code, discountFormatted: formatCents(calc.discountCents) }
+      : {}),
     paymentMethod,
     deliveryType,
   };
@@ -337,7 +377,7 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
   ctx.cta = {
     buttonText: "Ir para pagamento",
     url: payUrl,
-    bodyText: `Pedido #${created.orderNumber} anotado! Total ${base.amountFormatted}. Toque abaixo para escolher como pagar e mandar pra chapa 👇`,
+    bodyText: checkoutBodyText(base),
   };
   return { ...base, checkoutUrl: payUrl };
 }

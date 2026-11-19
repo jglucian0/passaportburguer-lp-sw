@@ -78,6 +78,17 @@ export function menuMessage(firstName?: string | null): string {
   ].join("\n\n");
 }
 
+/** "PARAR", "Sair", "Não quero receber mensagens": o cliente não quer mais mensagens ativas da loja. */
+export function isOptOutMessage(text: string): boolean {
+  const t = normalizeText(text);
+  if (!t) return false;
+  if (/^(parar|pare|sair|stop|descadastrar|nao quero receber)( .{0,30})?$/.test(t) && t.split(" ").length <= 6) return true;
+  return /nao (quero|desejo) (mais )?receber (mais )?(mensagens?|promocoes?|ofertas?)/.test(t);
+}
+
+export const OPT_OUT_REPLY =
+  "Tudo certo! Não vou mais te mandar mensagens de retorno. Quando bater a fome, é só chamar por aqui 🍔";
+
 export const OFF_TOPIC_REPLY = [
   "Aqui eu cuido só dos pedidos e dúvidas do Passaporte Burguer, tá? ✈️",
   "Quer dar uma olhada no cardápio ou já me conta o que vai pedir?"
