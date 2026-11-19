@@ -65,10 +65,13 @@ export function AddressPicker({
   value,
   onChange,
   estimatedMinutes,
+  defaultAddress = null,
 }: {
   value: ConfirmedAddress | null;
   onChange: (address: ConfirmedAddress | null) => void;
   estimatedMinutes?: number | null;
+  /** Último endereço usado (servidor): só entra se este aparelho ainda não tem histórico. */
+  defaultAddress?: Omit<ConfirmedAddress, "id" | "usedAt"> | null;
 }) {
   const [book, setBook] = useState<AddressBook>(EMPTY_BOOK);
   const [mode, setMode] = useState<Mode>("search");
@@ -97,6 +100,13 @@ export function AddressPicker({
     setBook(loaded);
     setProfileAddress(loadSavedAddress());
     const active = loaded.items.find((i) => i.id === loaded.activeId) ?? null;
+    if (!active && defaultAddress) {
+      const seeded = saveAndActivate(loaded, defaultAddress);
+      setBook(seeded.book);
+      onChangeRef.current(seeded.address);
+      setMode("summary");
+      return;
+    }
     if (active) {
       onChangeRef.current(active);
       setMode("summary");
@@ -405,7 +415,7 @@ export function AddressPicker({
               }}
               className="text-xs font-semibold text-[#0A2540] underline underline-offset-2"
             >
-              Trocar
+              Alterar
             </button>
             <button
               type="button"

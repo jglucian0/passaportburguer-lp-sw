@@ -13,7 +13,7 @@ import { scrollToElement } from "@/lib/smooth-scroll";
 
 import { CartDrawer } from "./cart-drawer";
 import { CartProvider, useCart } from "./cart-provider";
-import { ACTIVE_ORDER_KEY } from "./cart-storage";
+import { ACTIVE_ORDER_KEY, ORDER_PLACED_FLAG } from "./cart-storage";
 import { useCustomerFirstName } from "./use-customer";
 import { PASSPORT_SELECT_EVENT } from "./destinations";
 import { Footer } from "./footer";
@@ -23,12 +23,38 @@ import { Header } from "./header";
 import { OverlayProvider, useOverlayOpen } from "./overlay-context";
 import { DRINK_CATEGORY, MAIN_CATEGORY } from "./upsell";
 
+/** Telas de pagamento (/pedido/[id]/pagamento e /pagamento/[id]): foco total no Pix/cartão, sem sacola nem tab bar. */
+export function isPaymentRoute(pathname: string): boolean {
+  return /^\/pedido\/[^/]+\/pagamento/.test(pathname) || pathname.startsWith("/pagamento/");
+}
+
+/** Pedido recém-criado: ao chegar na tela de pagamento, zera a sacola (memória + localStorage). */
+function PaymentCartReset({ tenantId }: { tenantId: string }) {
+  const pathname = usePathname();
+  const { clear, hydrated } = useCart();
+
+  useEffect(() => {
+    if (!hydrated || !isPaymentRoute(pathname)) return;
+    try {
+      if (window.sessionStorage.getItem(ORDER_PLACED_FLAG) === tenantId) {
+        clear();
+        window.sessionStorage.removeItem(ORDER_PLACED_FLAG);
+      }
+    } catch {
+      /* sessionStorage indisponível: a sacola segue oculta nesta rota de qualquer forma */
+    }
+  }, [hydrated, pathname, tenantId, clear]);
+
+  return null;
+}
+
 const NUDGE_DISMISSED_KEY = "pb:drinks-nudge-dismissed";
 
 function FloatingCartBar({ categories }: { categories: CatalogCategory[] }) {
   const { lines, count, subtotalCents, hydrated, openCart, isOpen } = useCart();
   const [dismissed, setDismissed] = useState(false);
   const overlayOpen = useOverlayOpen();
+  const pathname = usePathname();
 
   useEffect(() => {
     try {
@@ -71,11 +97,11 @@ function FloatingCartBar({ categories }: { categories: CatalogCategory[] }) {
   }
 
   // Esconde a barra enquanto o carrinho ou um modal está aberto, para não sobrepor.
-  if (!hydrated || count === 0 || isOpen || overlayOpen) return null;
+  if (!hydrated || count === 0 || isOpen || overlayOpen || isPaymentRoute(pathname)) return null;
   const nudge = showNudge && !dismissed;
 
   return (
-    <div className="fixed bottom-16 inset-x-3 z-40 animate-in fade-in slide-in-from-bottom-4 duration-300 md:bottom-3 md:inset-x-auto md:left-1/2 md:w-full md:max-w-2xl md:-translate-x-1/2">
+    <div className="fixed bottom-[calc(4rem+env(safe-area-inset-bottom))] inset-x-3 z-40 animate-in fade-in slide-in-from-bottom-4 duration-300 md:bottom-3 md:inset-x-auto md:left-1/2 md:w-full md:max-w-2xl md:-translate-x-1/2">
       {nudge ? (
         <div className="flex items-center justify-between gap-2 rounded-t-xl bg-[#0A2540] px-4 py-2 text-xs text-white">
           <span className="min-w-0 truncate">
@@ -105,15 +131,15 @@ function FloatingCartBar({ categories }: { categories: CatalogCategory[] }) {
         type="button"
         onClick={openCart}
         className={cn(
-          "flex h-14 w-full items-center justify-between bg-[#F59E0B] px-5 font-bold text-[#0A2540] shadow-xl transition duration-200 hover:brightness-105 active:scale-[0.99]",
+          "flex h-14 w-full items-center justify-between bg-[#0A2540] px-5 font-bold text-white shadow-xl ring-2 ring-[#F59E0B] transition duration-200 hover:brightness-110 active:scale-[0.99]",
           nudge ? "rounded-b-2xl" : "rounded-2xl",
         )}
       >
         <span className="flex items-center gap-2">
-          <ShoppingBag className="h-5 w-5" />
-          Ver carrinho ({count})
+          <ShoppingBag className="h-5 w-5 text-[#F59E0B]" />
+          Ver sacola • {count} {count === 1 ? "item" : "itens"}
         </span>
-        <span>{formatCents(subtotalCents)}</span>
+        <span className="text-[#F59E0B]">{formatCents(subtotalCents)}</span>
       </button>
     </div>
   );
@@ -144,7 +170,7 @@ function BottomTabBar() {
   }, [pathname]);
 
   // O checkout tem a própria barra fixa de ação; carrinho/modal abertos também escondem a tab bar.
-  if (isOpen || overlayOpen || pathname.startsWith("/checkout")) return null;
+  if (isOpen || overlayOpen || pathname.startsWith("/checkout") || isPaymentRoute(pathname)) return null;
 
   const onMenu = pathname === "/";
   const onOrders = pathname.startsWith("/meus-pedidos");
@@ -234,16 +260,18 @@ export function StorefrontShell({
   categories?: CatalogCategory[];
   children: ReactNode;
 }) {
+  const pathname = usePathname();
   return (
     <CartProvider tenantId={tenant.id}>
       <OverlayProvider>
       <div style={brandStyle(tenant.primaryColor)} className="min-h-dvh bg-[#071329]">
+        <PaymentCartReset tenantId={tenant.id} />
         <Header tenant={tenant} store={store} />
         <main>{children}</main>
         <Footer tenant={tenant} />
         {showCartBar ? <FloatingCartBar categories={categories} /> : null}
         <BottomTabBar />
-        <CartDrawer minOrderCents={effectiveMinOrderCents(tenant.minOrderCents)} storeOpen={store.isOpen} categories={categories} />
+        {isPaymentRoute(pathname) ? null : <CartDrawer minOrderCents={effectiveMinOrderCents(tenant.minOrderCents)} storeOpen={store.isOpen} categories={categories} />}
       </div>
       </OverlayProvider>
     </CartProvider>

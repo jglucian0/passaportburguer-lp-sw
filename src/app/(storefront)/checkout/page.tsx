@@ -45,6 +45,7 @@ export default async function CheckoutPage() {
         minOrderCents={effectiveMinOrderCents(data.tenant.minOrderCents)}
         storeOpen={data.store.isOpen}
         customer={{ name: customer.name, phone: customer.phone }}
+        prefill={{ documentNumber: customer.documentNumber, lastAddress: customer.lastAddress }}
       />
     </StorefrontShell>
   );

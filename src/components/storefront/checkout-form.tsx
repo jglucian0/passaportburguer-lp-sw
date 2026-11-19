@@ -88,6 +88,7 @@ export function CheckoutForm({
   minOrderCents,
   storeOpen,
   customer,
+  prefill,
 }: {
   catalog: CatalogProduct[];
   zones: CatalogDeliveryZone[];
@@ -95,6 +96,8 @@ export function CheckoutForm({
   storeOpen: boolean;
   /** Dados da conta logada: o servidor usa a sessão; aqui só exibimos. */
   customer: { name: string; phone: string };
+  /** Dados de pedidos anteriores: último endereço (com pino) e CPF/CNPJ já salvo. */
+  prefill?: { documentNumber: string | null; lastAddress: Omit<ConfirmedAddress, "id" | "usedAt"> | null };
 }) {
   const { tenantId, lines, hydrated } = useCart();
   const [isPending, startTransition] = useTransition();
@@ -110,7 +113,9 @@ export function CheckoutForm({
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [includeDocument, setIncludeDocument] = useState(false);
-  const [documentValue, setDocumentValue] = useState("");
+  const [documentValue, setDocumentValue] = useState(() =>
+    prefill?.documentNumber ? formatDocument(prefill.documentNumber) : "",
+  );
   const [documentTouched, setDocumentTouched] = useState(false);
   /* Muda só quando um envio falha (nenhum pedido criado); reenvio/duplo clique reaproveita a chave. */
   const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
@@ -480,6 +485,7 @@ export function CheckoutForm({
 
           {deliveryType === "DELIVERY" ? (
             <AddressPicker
+              defaultAddress={prefill?.lastAddress ?? null}
               value={address}
               onChange={setAddress}
               estimatedMinutes={zone?.estimatedMinutes ?? null}

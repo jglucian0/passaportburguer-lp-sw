@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
+import { calculateDeliveryQuote } from "@/core/delivery/quote";
 import { cleanText, emailInput, passwordInput } from "@/core/schemas/auth";
 import { db } from "@/infra/db";
 import { customerAddresses, customers, whatsappSessions, type AddressSnapshot, type WhatsAppDraftCartItem } from "@/infra/db/schema";
@@ -38,6 +39,8 @@ export type QuickCheckoutPrefill = {
   name: string;
   email: string;
   addresses: { id: string; street: string; number: string; complement: string; reference: string }[];
+  /** Taxa de entrega do 1º endereço salvo (null = não deu para calcular). O servidor recalcula ao fechar. */
+  primaryFeeCents?: number | null;
 };
 
 async function findCustomer(tenantId: string, phone: string) {
@@ -60,10 +63,30 @@ export async function loadQuickCheckoutPrefill(tenantId: string, phone: string):
     .from(customerAddresses)
     .where(and(eq(customerAddresses.tenantId, tenantId), eq(customerAddresses.customerId, customer.id)))
     .limit(5);
+  /* Taxa do endereço pré-selecionado, para o cliente ver o total antes do pagamento. */
+  let primaryFeeCents: number | null = null;
+  const first = rows[0];
+  if (first) {
+    try {
+      const built = await buildSnapshot(tenantId, {
+        street: first.street,
+        number: first.number,
+        complement: first.complement,
+        reference: first.reference,
+      });
+      if (built.ok) {
+        const quote = calculateDeliveryQuote(built.coords.lat, built.coords.lon, built.coords.city);
+        if (quote.deliverable) primaryFeeCents = quote.feeCents;
+      }
+    } catch {
+      /* geocodificação indisponível: a taxa aparece no pagamento */
+    }
+  }
   return {
     needsCredentials: !customer.passwordHash,
     name: customer.name,
     email: customer.email ?? "",
+    primaryFeeCents,
     addresses: rows.map((a) => ({
       id: a.id,
       street: a.street,

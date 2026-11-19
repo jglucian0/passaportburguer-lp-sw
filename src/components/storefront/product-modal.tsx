@@ -1,8 +1,8 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { Minus, Plus, Stamp, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Check, Minus, Plus, Stamp, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { getProductDisplayPrice } from "@/core/menu/pricing";
 import type { CatalogAddon, CatalogAddonGroup, CatalogProduct } from "@/core/schemas/product";
@@ -69,6 +69,43 @@ function StepButton({
   );
 }
 
+/** Cabeçalho numerado de cada passo do funil. */
+function Step({
+  id,
+  n,
+  title,
+  hint,
+  blocks,
+  children,
+}: {
+  id: string;
+  n: number;
+  title: string;
+  hint: string;
+  blocks: Map<string, HTMLElement>;
+  children: ReactNode;
+}) {
+  return (
+    <section
+      ref={(el) => {
+        if (el) blocks.set(id, el);
+      }}
+      className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50/60 p-3"
+    >
+      <header className="flex items-center gap-2.5">
+        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#0A2540] text-sm font-extrabold text-[#F59E0B]">
+          {n}
+        </span>
+        <div className="min-w-0">
+          <h3 className="font-bold leading-tight text-[#0A2540]">{title}</h3>
+          <p className="text-xs text-slate-500">{hint}</p>
+        </div>
+      </header>
+      {children}
+    </section>
+  );
+}
+
 export function ProductModal({
   product,
   storeOpen,
@@ -94,6 +131,12 @@ export function ProductModal({
     Object.fromEntries((editing?.addons ?? []).map((a) => [a.addonId, a.quantity])),
   );
   const [note, setNote] = useState(editing?.note ?? "");
+  const [firstClass, setFirstClass] = useState(false);
+
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const blockRefs = useRef(new Map<string, HTMLElement>());
+  const scrollTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(scrollTimer.current), []);
 
   const groups = useMemo(
     () => [...product.addonGroups].sort((a, b) => a.sortOrder - b.sortOrder),
@@ -147,9 +190,62 @@ export function ProductModal({
     },
     [editing, categoryName, upsells, product.id, groups],
   );
-  const chosenExtras = shelf.filter((u) => extras.has(u.id));
+  /* Funil de upsell (só hambúrgueres avulsos, nunca combos nem edição). */
+  const funnel = !editing && !!categoryName && MAIN_CATEGORY.test(categoryName) && !/combo/i.test(categoryName);
+
+  /* Passo 1 — Primeira Classe: batata + refrigerante do cardápio, somados ao preço de tabela. */
+  const upgrade = useMemo(() => {
+    if (!funnel || groups.some((g) => isDrinkGroup(g.name))) return null;
+    const fries = upsells.find((u) => u.id !== product.id && /batata/i.test(u.name));
+    const drink = upsells.find((u) => u.id !== product.id && isDrinkProduct(u.name));
+    return fries && drink ? { fries, drink, cents: fries.priceCents + drink.priceCents } : null;
+  }, [funnel, groups, upsells, product.id]);
+
+  const upgradeIds = useMemo(
+    () => new Set(upgrade ? [upgrade.fries.id, upgrade.drink.id] : []),
+    [upgrade],
+  );
+  /* Passo 2/3: prateleira restante, separando bebidas (passo 3) dos demais extras (passo 2). */
+  const shelfRest = shelf.filter((u) => !upgradeIds.has(u.id));
+  const shelfDrinks = funnel ? shelfRest.filter((u) => isDrinkProduct(u.name)) : [];
+  const shelfOther = funnel ? shelfRest.filter((u) => !isDrinkProduct(u.name)) : shelfRest;
+
+  const chosenExtras = shelf.filter((u) => extras.has(u.id) && !upgradeIds.has(u.id));
+  const upgradeCents = firstClass && upgrade ? upgrade.cents * quantity : 0;
   const total =
-    unitTotal * quantity + chosenExtras.reduce((sum, u) => sum + u.priceCents, 0);
+    unitTotal * quantity +
+    upgradeCents +
+    chosenExtras.reduce((sum, u) => sum + u.priceCents, 0);
+
+  /** Rola suavemente o conteúdo interno do modal até o bloco indicado. */
+  function scrollToBlock(key: string) {
+    window.clearTimeout(scrollTimer.current);
+    scrollTimer.current = window.setTimeout(() => {
+      const scroller = scrollerRef.current;
+      const el = blockRefs.current.get(key);
+      if (!scroller || !el) return;
+      const top =
+        el.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop - 8;
+      scroller.scrollTo({ top, behavior: "smooth" });
+    }, 180);
+  }
+
+  /** Ordem visual dos blocos: escolhas obrigatórias, passos do funil, observação. */
+  const requiredGroups = groups.filter((g) => g.minSelections > 0 && !(funnel && isDrinkGroup(g.name)));
+  const drinkGroups = funnel ? groups.filter((g) => isDrinkGroup(g.name) && !requiredGroups.includes(g)) : [];
+  const extraGroups = groups.filter((g) => !requiredGroups.includes(g) && !drinkGroups.includes(g));
+  const blockOrder = [
+    ...requiredGroups.map((g) => `g:${g.id}`),
+    ...(upgrade ? ["upgrade"] : []),
+    ...(extraGroups.length > 0 || shelfOther.length > 0 ? ["extras"] : []),
+    ...(drinkGroups.length > 0 || shelfDrinks.length > 0 ? ["drinks"] : []),
+    "note",
+  ];
+
+  function advanceFrom(key: string) {
+    const next = blockOrder[blockOrder.indexOf(key) + 1];
+    if (next) scrollToBlock(next);
+  }
 
   function toggleExtra(id: string) {
     setExtras((prev) => {
@@ -168,6 +264,8 @@ export function ProductModal({
       if (!(wasSelected && group.minSelections === 0)) next[addonId] = 1;
       return next;
     });
+    /* Escolha obrigatória resolvida: leva o cliente ao próximo bloco. */
+    if (group.minSelections > 0 && (selection[addonId] ?? 0) === 0) advanceFrom(`g:${group.id}`);
   }
 
   function changeMulti(group: CatalogAddonGroup, addon: CatalogAddon, delta: number) {
@@ -182,6 +280,14 @@ export function ProductModal({
       else next[addonId] = nextQty;
       return next;
     });
+    if (
+      delta > 0 &&
+      group.minSelections > 0 &&
+      groupCount(group) + 1 === group.maxSelections &&
+      (selection[addonId] ?? 0) < addon.maxQuantity
+    ) {
+      advanceFrom(`g:${group.id}`);
+    }
   }
 
   function handleAdd() {
@@ -196,6 +302,18 @@ export function ProductModal({
       addons: selectedAddons,
       ...(trimmed ? { note: trimmed } : {}),
     });
+    if (firstClass && upgrade) {
+      for (const item of [upgrade.fries, upgrade.drink]) {
+        addLine({
+          productId: item.id,
+          name: item.name,
+          imageUrl: item.imageUrl,
+          unitPriceCents: item.priceCents,
+          quantity,
+          addons: [],
+        });
+      }
+    }
     for (const extra of chosenExtras) {
       addLine({
         productId: extra.id,
@@ -207,6 +325,174 @@ export function ProductModal({
       });
     }
     onClose();
+  }
+
+  function renderGroup(group: CatalogAddonGroup) {
+          const count = groupCount(group);
+          const single = group.maxSelections === 1;
+          const invalid = count < group.minSelections;
+
+          return (
+            <fieldset
+            key={group.id}
+            ref={(el) => {
+              if (el) blockRefs.current.set(`g:${group.id}`, el);
+            }}
+            className="space-y-2"
+          >
+              <legend className="flex w-full items-center justify-between gap-2">
+                <span className="font-bold text-[#0A2540]">{group.name}</span>
+                <span
+                  className={cn(
+                    "rounded-full px-2 py-0.5 text-xs font-semibold",
+                    invalid ? "bg-amber-100 text-amber-900" : "bg-blue-50 text-blue-900",
+                  )}
+                >
+                  {groupHint(group)}
+                </span>
+              </legend>
+
+              <div className="divide-y divide-slate-200 overflow-hidden rounded-xl border border-slate-200">
+                {group.addons.map((addon) => {
+                  const qty = selection[addon.id] ?? 0;
+                  const disabled = !addon.isAvailable;
+
+                  return (
+                    <div
+                      key={addon.id}
+                      {...(single
+                        ? {
+                            role: "radio",
+                            "aria-checked": qty > 0,
+                            "aria-disabled": disabled,
+                            "aria-label": addon.name,
+                            tabIndex: disabled ? -1 : 0,
+                            onClick: () => {
+                              if (!disabled) pickSingle(group, addon.id);
+                            },
+                            onKeyDown: (e: React.KeyboardEvent) => {
+                              if (disabled || (e.key !== "Enter" && e.key !== " ")) return;
+                              e.preventDefault();
+                              pickSingle(group, addon.id);
+                            },
+                          }
+                        : {})}
+                      className={cn(
+                        "flex items-center justify-between gap-3 px-3 py-2.5 transition-colors",
+                        single && !disabled && "cursor-pointer hover:bg-slate-50",
+                        single && disabled && "cursor-not-allowed",
+                        qty > 0 && "bg-amber-50/40",
+                        disabled && "opacity-40",
+                      )}
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-[#0A2540]">{addon.name}</p>
+                        <p className="text-xs text-slate-500">
+                          {disabled
+                            ? "Indisponível"
+                            : addon.priceCents > 0
+                              ? `+ ${formatCents(addon.priceCents)}`
+                              : "Grátis"}
+                          {!disabled && !single && addon.maxQuantity > 1
+                            ? ` • até ${addon.maxQuantity}x`
+                            : ""}
+                        </p>
+                      </div>
+
+                      {single ? (
+                        <span
+                          aria-hidden="true"
+                          className={cn(
+                            "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2",
+                            qty > 0 ? "border-[#F59E0B]" : "border-slate-300",
+                          )}
+                        >
+                          {qty > 0 ? (
+                            <span className="h-3 w-3 rounded-full bg-[#F59E0B]" />
+                          ) : null}
+                        </span>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <StepButton
+                            kind="minus"
+                            label={`Remover ${addon.name}`}
+                            disabled={disabled || qty === 0}
+                            onClick={() => changeMulti(group, addon, -1)}
+                          />
+                          <span className="w-5 text-center text-sm font-bold">{qty}</span>
+                          <StepButton
+                            kind="plus"
+                            label={`Adicionar ${addon.name}`}
+                            disabled={
+                              disabled || count >= group.maxSelections || qty >= addon.maxQuantity
+                            }
+                            onClick={() => changeMulti(group, addon, 1)}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </fieldset>
+          );
+  }
+
+  function renderShelf(items: CatalogProduct[], id: string, title: string) {
+    return (
+      <section aria-labelledby={`${id}-title`} className="space-y-2">
+        <h3 id={`${id}-title`} className="text-sm font-bold text-[#0A2540]">
+          {title}
+        </h3>
+        <ul className="no-scrollbar -mx-4 flex gap-2.5 overflow-x-auto px-4 pb-1">
+          {items.map((item) => {
+            const added = extras.has(item.id);
+            return (
+              <li
+                key={item.id}
+                className={cn(
+                  "flex w-32 shrink-0 flex-col rounded-xl border p-2 transition-colors",
+                  added ? "border-amber-500 bg-amber-50" : "border-slate-200 bg-white",
+                )}
+              >
+                <div className="flex h-14 w-full items-center justify-center overflow-hidden rounded-lg bg-[#E2E8F0] text-[#94A3B8]">
+                  {item.imageUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={item.imageUrl}
+                      alt=""
+                      loading="lazy"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <Stamp className="h-6 w-6" strokeWidth={1.25} />
+                  )}
+                </div>
+                <p className="mt-1.5 line-clamp-2 min-h-[2rem] text-xs font-semibold leading-tight text-[#0A2540]">
+                  {item.name}
+                </p>
+                <p className="text-xs font-bold text-slate-600">
+                  + {formatCents(item.priceCents)}
+                </p>
+                <button
+                  type="button"
+                  aria-pressed={added}
+                  onClick={() => toggleExtra(item.id)}
+                  className={cn(
+                    "mt-1.5 h-8 rounded-lg text-xs font-bold transition active:scale-95",
+                    added
+                      ? "bg-emerald-600 text-white"
+                      : "bg-[#F59E0B] text-[#0A2540] hover:brightness-105",
+                  )}
+                >
+                  {added ? "✓ Adicionado" : "Adicionar"}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+    );
   }
 
   return (
@@ -226,7 +512,7 @@ export function ProductModal({
               <X className="h-5 w-5" />
             </Dialog.Close>
 
-            <div className="light-scrollbar min-h-0 flex-1 overflow-y-auto">
+            <div ref={scrollerRef} className="light-scrollbar min-h-0 flex-1 scroll-smooth overflow-y-auto">
               <div className="relative flex h-56 items-center justify-center overflow-hidden bg-slate-950 sm:h-64">
                 {atmosphereUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -271,167 +557,74 @@ export function ProductModal({
                   </p>
                 </div>
 
-                {groups.map((group) => {
-                  const count = groupCount(group);
-                  const single = group.maxSelections === 1;
-                  const invalid = count < group.minSelections;
+                {requiredGroups.map((group) => renderGroup(group))}
 
-                  return (
-                    <fieldset key={group.id} className="space-y-2">
-                      <legend className="flex w-full items-center justify-between gap-2">
-                        <span className="font-bold text-[#0A2540]">{group.name}</span>
+                {upgrade ? (
+                  <Step blocks={blockRefs.current} id="upgrade" n={1} title="Primeira Classe" hint="Vire combo: batata + refrigerante">
+                    <button
+                      type="button"
+                      aria-pressed={firstClass}
+                      onClick={() => setFirstClass((v) => !v)}
+                      className={cn(
+                        "flex w-full items-center justify-between gap-3 rounded-xl border-2 p-3 text-left transition active:scale-[0.99]",
+                        firstClass ? "border-[#F59E0B] bg-amber-50" : "border-slate-200 bg-white",
+                      )}
+                    >
+                      <span className="min-w-0">
+                        <span className="block text-sm font-bold text-[#0A2540]">Embarque Primeira Classe</span>
+                        <span className="block text-xs text-slate-500">
+                          {upgrade.fries.name} + {upgrade.drink.name}
+                        </span>
+                      </span>
+                      <span className="flex shrink-0 items-center gap-2">
+                        <span className="text-sm font-extrabold text-[#0A2540]">+ {formatCents(upgrade.cents)}</span>
                         <span
+                          aria-hidden="true"
                           className={cn(
-                            "rounded-full px-2 py-0.5 text-xs font-semibold",
-                            invalid ? "bg-amber-100 text-amber-900" : "bg-blue-50 text-blue-900",
+                            "flex h-6 w-6 items-center justify-center rounded-full border-2",
+                            firstClass ? "border-[#F59E0B] bg-[#F59E0B] text-[#0A2540]" : "border-slate-300",
                           )}
                         >
-                          {groupHint(group)}
+                          {firstClass ? <Check className="h-3.5 w-3.5" strokeWidth={3} /> : null}
                         </span>
-                      </legend>
-
-                      <div className="divide-y divide-slate-200 overflow-hidden rounded-xl border border-slate-200">
-                        {group.addons.map((addon) => {
-                          const qty = selection[addon.id] ?? 0;
-                          const disabled = !addon.isAvailable;
-
-                          return (
-                            <div
-                              key={addon.id}
-                              {...(single
-                                ? {
-                                    role: "radio",
-                                    "aria-checked": qty > 0,
-                                    "aria-disabled": disabled,
-                                    "aria-label": addon.name,
-                                    tabIndex: disabled ? -1 : 0,
-                                    onClick: () => {
-                                      if (!disabled) pickSingle(group, addon.id);
-                                    },
-                                    onKeyDown: (e: React.KeyboardEvent) => {
-                                      if (disabled || (e.key !== "Enter" && e.key !== " ")) return;
-                                      e.preventDefault();
-                                      pickSingle(group, addon.id);
-                                    },
-                                  }
-                                : {})}
-                              className={cn(
-                                "flex items-center justify-between gap-3 px-3 py-2.5 transition-colors",
-                                single && !disabled && "cursor-pointer hover:bg-slate-50",
-                                single && disabled && "cursor-not-allowed",
-                                qty > 0 && "bg-amber-50/40",
-                                disabled && "opacity-40",
-                              )}
-                            >
-                              <div className="min-w-0">
-                                <p className="text-sm font-medium text-[#0A2540]">{addon.name}</p>
-                                <p className="text-xs text-slate-500">
-                                  {disabled
-                                    ? "Indisponível"
-                                    : addon.priceCents > 0
-                                      ? `+ ${formatCents(addon.priceCents)}`
-                                      : "Grátis"}
-                                  {!disabled && !single && addon.maxQuantity > 1
-                                    ? ` • até ${addon.maxQuantity}x`
-                                    : ""}
-                                </p>
-                              </div>
-
-                              {single ? (
-                                <span
-                                  aria-hidden="true"
-                                  className={cn(
-                                    "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2",
-                                    qty > 0 ? "border-[#F59E0B]" : "border-slate-300",
-                                  )}
-                                >
-                                  {qty > 0 ? (
-                                    <span className="h-3 w-3 rounded-full bg-[#F59E0B]" />
-                                  ) : null}
-                                </span>
-                              ) : (
-                                <div className="flex items-center gap-2">
-                                  <StepButton
-                                    kind="minus"
-                                    label={`Remover ${addon.name}`}
-                                    disabled={disabled || qty === 0}
-                                    onClick={() => changeMulti(group, addon, -1)}
-                                  />
-                                  <span className="w-5 text-center text-sm font-bold">{qty}</span>
-                                  <StepButton
-                                    kind="plus"
-                                    label={`Adicionar ${addon.name}`}
-                                    disabled={
-                                      disabled || count >= group.maxSelections || qty >= addon.maxQuantity
-                                    }
-                                    onClick={() => changeMulti(group, addon, 1)}
-                                  />
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </fieldset>
-                  );
-                })}
-
-                {shelf.length > 0 ? (
-                  <section aria-labelledby="upsell-title" className="space-y-2">
-                    <h3 id="upsell-title" className="font-bold text-[#0A2540]">
-                      Complete seu embarque
-                    </h3>
-                    <ul className="no-scrollbar -mx-4 flex gap-2.5 overflow-x-auto px-4 pb-1">
-                      {shelf.map((item) => {
-                        const added = extras.has(item.id);
-                        return (
-                          <li
-                            key={item.id}
-                            className={cn(
-                              "flex w-32 shrink-0 flex-col rounded-xl border p-2 transition-colors",
-                              added ? "border-amber-500 bg-amber-50" : "border-slate-200 bg-white",
-                            )}
-                          >
-                            <div className="flex h-14 w-full items-center justify-center overflow-hidden rounded-lg bg-[#E2E8F0] text-[#94A3B8]">
-                              {item.imageUrl ? (
-                                // eslint-disable-next-line @next/next/no-img-element
-                                <img
-                                  src={item.imageUrl}
-                                  alt=""
-                                  loading="lazy"
-                                  className="h-full w-full object-cover"
-                                />
-                              ) : (
-                                <Stamp className="h-6 w-6" strokeWidth={1.25} />
-                              )}
-                            </div>
-                            <p className="mt-1.5 line-clamp-2 min-h-[2rem] text-xs font-semibold leading-tight text-[#0A2540]">
-                              {item.name}
-                            </p>
-                            <p className="text-xs font-bold text-slate-600">
-                              + {formatCents(item.priceCents)}
-                            </p>
-                            <button
-                              type="button"
-                              aria-pressed={added}
-                              onClick={() => toggleExtra(item.id)}
-                              className={cn(
-                                "mt-1.5 h-8 rounded-lg text-xs font-bold transition active:scale-95",
-                                added
-                                  ? "bg-emerald-600 text-white"
-                                  : "bg-[#F59E0B] text-[#0A2540] hover:brightness-105",
-                              )}
-                            >
-                              {added ? "✓ Adicionado" : "Adicionar"}
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  </section>
+                      </span>
+                    </button>
+                  </Step>
                 ) : null}
 
-                <div className="space-y-1.5">
+                {extraGroups.length > 0 || shelfOther.length > 0 ? (
+                  funnel ? (
+                    <Step blocks={blockRefs.current} id="extras" n={upgrade ? 2 : 1} title="Adicionais extras" hint="Capriche no seu lanche">
+                      {extraGroups.map((group) => renderGroup(group))}
+                      {shelfOther.length > 0 ? renderShelf(shelfOther, "upsell", "Complete seu embarque") : null}
+                    </Step>
+                  ) : (
+                    <>
+                      {extraGroups.map((group) => renderGroup(group))}
+                      {shelfOther.length > 0 ? renderShelf(shelfOther, "upsell", "Complete seu embarque") : null}
+                    </>
+                  )
+                ) : null}
+
+                {drinkGroups.length > 0 || shelfDrinks.length > 0 ? (
+                  <Step
+                    blocks={blockRefs.current} id="drinks"
+                    n={(upgrade ? 1 : 0) + (extraGroups.length > 0 || shelfOther.length > 0 ? 1 : 0) + 1}
+                    title="Bebida gelada para acompanhar"
+                    hint="Peça já e receba tudo junto"
+                  >
+                    {drinkGroups.map((group) => renderGroup(group))}
+                    {shelfDrinks.length > 0 ? renderShelf(shelfDrinks, "drinks-shelf", "Escolha sua bebida") : null}
+                  </Step>
+                ) : null}
+
+
+                <div
+                  ref={(el) => {
+                    if (el) blockRefs.current.set("note", el);
+                  }}
+                  className="space-y-1.5"
+                >
                   <label htmlFor="product-note" className="font-bold text-[#0A2540]">
                     Alguma observação?
                   </label>

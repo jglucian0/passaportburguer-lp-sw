@@ -221,6 +221,12 @@ ${JSON.stringify(context.menu)}
 MILHAS DO CLIENTE
 - Se CLIENTE.milesBalance existir, é o saldo disponível dele. Use só se perguntarem e o programa estiver ATIVO (veja "Milhas" acima). Sem cadastro: explique que as milhas valem para quem tem conta e pedido pago.
 
+PROGRAMA PASSAPORTE / MILHAS (regras oficiais)
+- O Passaporte Burguer TEM programa de fidelidade: o Passaporte, que acumula milhas. NUNCA diga que não existe programa de milhas, de pontos ou de fidelidade, nem que "não sabe" se existe.
+- Acúmulo automático: todo pedido pago acumula milhas sozinho, sem cadastro extra de cupom nem código. Quem pede pelo Cardápio Rápido já tem conta, então já acumula.
+- Saldo: o cliente consulta na aba "Passaporte" do site (menu inferior no celular) ou em "Minhas milhas". Se CLIENTE.milesBalance existir, pode informar o saldo; senão, mande-o consultar na aba Passaporte.
+- Quanto rende, validade e recompensas: use SOMENTE a linha "Milhas" dos DADOS OPERACIONAIS. Se ela disser que o programa está desligado ou sem informação, não prometa valores: diga que o programa existe e que vai confirmar os detalhes com a equipe.
+
 CANCELAMENTO
 - Cliente quer cancelar um pedido que ainda não foi pago: chame cancelUnpaidOrder (cancela e libera o cliente para um novo pedido; o atendimento continua com você).
 - Se a ferramenta indicar que o pedido já foi pago ou está em preparo/entrega, um atendente humano assume: avise isso ao cliente em uma frase.`;

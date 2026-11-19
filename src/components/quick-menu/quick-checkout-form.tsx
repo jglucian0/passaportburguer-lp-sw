@@ -10,6 +10,7 @@ export type CheckoutPrefill = {
   name: string;
   email: string;
   addresses: { id: string; street: string; number: string; complement: string; reference: string }[];
+  primaryFeeCents?: number | null;
 };
 
 export type SummaryLine = { key: string; text: string; detail?: string; totalCents: number };
@@ -62,7 +63,12 @@ export function QuickCheckoutForm({
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState<"idle" | "sending" | "done">("idle");
 
+  const [pickingAddress, setPickingAddress] = useState(false);
   const usingSaved = addressId !== NEW_ADDRESS;
+  const selectedSaved = prefill.addresses.find((a) => a.id === addressId) ?? null;
+  /* A taxa só é conhecida para o endereço pré-selecionado (o 1º salvo). */
+  const knownFee =
+    selectedSaved && selectedSaved.id === prefill.addresses[0]?.id ? (prefill.primaryFeeCents ?? null) : null;
 
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
@@ -225,7 +231,28 @@ export function QuickCheckoutForm({
         {deliveryType === "DELIVERY" ? (
           <>
             <p className="pt-1 text-sm font-bold text-[#F59E0B]">Endereço de entrega</p>
-            {prefill.addresses.length > 0 ? (
+            {selectedSaved && !pickingAddress ? (
+              <div className="flex items-start gap-3 rounded-xl border border-[#F59E0B] bg-[#F59E0B]/10 px-3 py-3 text-white">
+                <div className="min-w-0 flex-1 text-sm">
+                  <span className="font-semibold">
+                    {selectedSaved.street}, {selectedSaved.number}
+                  </span>
+                  {selectedSaved.complement ? (
+                    <span className="block text-xs text-white/60">{selectedSaved.complement}</span>
+                  ) : null}
+                  {knownFee !== null ? (
+                    <span className="mt-1 block text-xs text-white/80">Taxa de entrega: {formatCents(knownFee)}</span>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPickingAddress(true)}
+                  className="shrink-0 text-xs font-semibold text-[#F59E0B] underline underline-offset-2"
+                >
+                  Alterar
+                </button>
+              </div>
+            ) : prefill.addresses.length > 0 ? (
               <div className="space-y-2" role="radiogroup" aria-label="Endereço">
                 {prefill.addresses.map((a) => (
                   <button
@@ -277,7 +304,9 @@ export function QuickCheckoutForm({
                 </Field>
               </>
             ) : null}
-            <p className="text-xs text-white/60">Entregamos só em Maringá-PR. A taxa aparece no pagamento.</p>
+            <p className="text-xs text-white/60">
+              Entregamos só em Maringá-PR.{knownFee === null ? " A taxa aparece no pagamento." : ""}
+            </p>
           </>
         ) : (
           <p className="rounded-xl bg-white/5 px-3 py-3 text-sm text-white/80">Você retira o pedido aqui na loja. Sem taxa de entrega.</p>

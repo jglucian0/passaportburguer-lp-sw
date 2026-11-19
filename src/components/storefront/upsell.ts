@@ -23,7 +23,7 @@ const MAX_UPSELLS = 4;
 const MAX_BADGES = 3;
 
 /** Só entram itens que cabem em um toque: disponíveis e sem escolha obrigatória. */
-function isOneTap(product: CatalogProduct): boolean {
+export function isOneTap(product: CatalogProduct): boolean {
   return (
     product.isAvailable &&
     product.priceCents > 0 &&

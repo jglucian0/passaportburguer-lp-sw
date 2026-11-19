@@ -499,22 +499,79 @@ async function loadCustomerOrders(tenantId: string, customerId: string): Promise
 
 /** Pedidos do cliente identificado pelo cookie `customer_token`. Retorna null se não houver sessão. */
 /** Cliente da sessão para o checkout (null = precisa entrar). */
+/** Último endereço de entrega com coordenadas (pedido anterior), no formato do seletor de endereços. */
+export type CheckoutLastAddress = {
+  street: string;
+  number: string;
+  complement: string;
+  neighborhood: string;
+  city: string;
+  state: string;
+  postalCode: string;
+  lat: number;
+  lon: number;
+};
+
 export async function getCheckoutCustomer(): Promise<{
   name: string;
   phone: string;
   needsRegistration: boolean;
+  /** CPF/CNPJ (só dígitos) já salvo no cadastro ou em pedido anterior. */
+  documentNumber: string | null;
+  lastAddress: CheckoutLastAddress | null;
 } | null> {
   const ref = await getTenantRef();
   if (!ref) return null;
   const session = await getAuthSession();
   if (!session || session.tenantId !== ref.id) return null;
   const [customer] = await db
-    .select({ name: customers.name, phone: customers.phone, passwordHash: customers.passwordHash })
+    .select({
+      name: customers.name,
+      phone: customers.phone,
+      passwordHash: customers.passwordHash,
+      documentNumber: customers.documentNumber,
+    })
     .from(customers)
     .where(and(eq(customers.id, session.customerId), eq(customers.tenantId, ref.id)))
     .limit(1);
   if (!customer) return null;
-  return { name: customer.name, phone: customer.phone, needsRegistration: customer.passwordHash === null };
+
+  /* Pré-preenchimento: último endereço de entrega (com pino) e CPF do pedido mais recente que o tenha. */
+  const recent = await db
+    .select({ snapshot: orders.addressSnapshot, documentNumber: orders.documentNumber })
+    .from(orders)
+    .where(and(eq(orders.tenantId, ref.id), eq(orders.customerId, session.customerId)))
+    .orderBy(desc(orders.createdAt))
+    .limit(15);
+
+  let lastAddress: CheckoutLastAddress | null = null;
+  for (const row of recent) {
+    const a = row.snapshot;
+    if (a && typeof a.latitude === "number" && typeof a.longitude === "number" && a.street && a.number) {
+      lastAddress = {
+        street: a.street,
+        number: a.number,
+        complement: a.complement ?? "",
+        neighborhood: a.district ?? a.neighborhood ?? "",
+        city: a.city ?? "",
+        state: "PR",
+        postalCode: a.postalCode ?? "",
+        lat: a.latitude,
+        lon: a.longitude,
+      };
+      break;
+    }
+  }
+  const documentNumber =
+    customer.documentNumber ?? recent.find((r) => r.documentNumber)?.documentNumber ?? null;
+
+  return {
+    name: customer.name,
+    phone: customer.phone,
+    needsRegistration: customer.passwordHash === null,
+    documentNumber,
+    lastAddress,
+  };
 }
 
 export async function getCustomerOrders(): Promise<CustomerOrdersData | null> {

@@ -372,7 +372,7 @@ export function Menu({
 
       <div
         id="rota"
-        className="mx-auto max-w-5xl scroll-mt-16 space-y-5 md:scroll-mt-64 px-4 py-6 pb-32 md:pb-12"
+        className="mx-auto max-w-5xl scroll-mt-16 space-y-5 md:scroll-mt-64 px-4 py-5 pb-40 md:pb-12"
       >
         {passportComplete ? (
           <p className="animate-in fade-in zoom-in-95 rounded-2xl border-2 border-dashed border-[#F59E0B] bg-[#F59E0B]/10 p-4 text-center text-sm font-bold text-[#0A2540]">
@@ -421,7 +421,7 @@ export function Menu({
             key={category.id}
             id={`cat-${category.id}`}
             data-cat={category.id}
-            className="scroll-mt-16 space-y-4 md:scroll-mt-64"
+            className="scroll-mt-16 space-y-3 md:scroll-mt-64"
           >
             <h2 className="font-display text-xl font-bold uppercase tracking-wide text-[#0A2540]">
               {category.name}
@@ -433,7 +433,7 @@ export function Menu({
                     {title}
                   </h3>
                 ) : null}
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2 md:gap-3">
                   {products.map((product) => (
                     <ProductCard
                       key={product.id}

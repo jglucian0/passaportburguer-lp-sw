@@ -1,7 +1,7 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { Minus, Plus, ShoppingBag, Trash2, X } from "lucide-react";
+import { Check, Minus, Plus, ShoppingBag, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 
@@ -12,9 +12,7 @@ import { cn, formatCents } from "@/lib/utils";
 import { useCart } from "./cart-provider";
 import { lineTotal, type CartLine } from "./cart-storage";
 import { ProductModal } from "./product-modal";
-
-const SUGGESTION_CATEGORY = /bebida|acompanh/i;
-const MAX_SUGGESTIONS = 3;
+import { isOneTap } from "./upsell";
 
 function addonsSummary(line: CartLine): string {
   return line.addons.map((a) => (a.quantity > 1 ? `+ ${a.quantity}x ${a.name}` : `+ ${a.name}`)).join(", ");
@@ -39,21 +37,35 @@ export function CartDrawer({
     return map;
   }, [categories]);
 
-  /* Bebidas/acompanhamentos que cabem em um clique (sem escolhas obrigatórias) e ainda não estão no carrinho. */
-  const suggestions = useMemo(() => {
-    const inCart = new Set(lines.map((l) => l.productId));
-    return categories
-      .filter((c) => SUGGESTION_CATEGORY.test(c.name))
-      .flatMap((c) => c.products)
-      .filter(
-        (p) =>
-          p.isAvailable &&
-          p.priceCents > 0 &&
-          !inCart.has(p.id) &&
-          p.addonGroups.every((g) => g.minSelections === 0),
-      )
-      .slice(0, MAX_SUGGESTIONS);
-  }, [categories, lines]);
+  /* "Última chamada": itens de decisão rápida (molho, batata, lata, sobremesa), sempre 1 toque. */
+  const lastCall = useMemo(() => {
+    const oneTap = (c: CatalogCategory) => c.products.filter(isOneTap);
+    const pick = (categoryRe: RegExp, preferred: RegExp, taken: Set<string>) => {
+      const pool = categories.filter((c) => categoryRe.test(c.name)).flatMap(oneTap).filter((p) => !taken.has(p.id));
+      return pool.find((p) => preferred.test(p.name)) ?? pool[0] ?? null;
+    };
+    const taken = new Set<string>();
+    const out: CatalogProduct[] = [];
+    const steps: Array<[RegExp, RegExp]> = [
+      [/molho/i, /maionese/i],
+      [/acompanh/i, /batata/i],
+      [/bebida/i, /lata|350/i],
+      [/sobremesa|doce/i, /./],
+    ];
+    for (const [categoryRe, preferred] of steps) {
+      const product = pick(categoryRe, preferred, taken);
+      if (!product) continue;
+      taken.add(product.id);
+      out.push(product);
+    }
+    return out;
+  }, [categories]);
+
+  const qtyInCart = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const l of lines) map.set(l.productId, (map.get(l.productId) ?? 0) + l.quantity);
+    return map;
+  }, [lines]);
 
   const editingProduct = editing ? productById.get(editing.productId) : undefined;
 
@@ -166,45 +178,6 @@ export function CartDrawer({
 
                 {/* Rodapé */}
                 <div className="shrink-0 space-y-3 border-t border-slate-200 bg-slate-50 p-4">
-                  {suggestions.length > 0 ? (
-                    <div>
-                      <p className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
-                        Que tal acompanhar?
-                      </p>
-                      <ul className="light-scrollbar -mx-4 flex gap-2 overflow-x-auto px-4 pb-1">
-                        {suggestions.map((p) => (
-                          <li
-                            key={p.id}
-                            className="flex w-44 shrink-0 flex-col justify-between gap-2 rounded-xl border border-slate-200 bg-white p-2.5"
-                          >
-                            <div className="min-w-0">
-                              <p className="line-clamp-2 text-xs font-semibold leading-tight text-[#0A2540]">
-                                {p.name}
-                              </p>
-                              <p className="mt-0.5 text-xs text-slate-500">{formatCents(p.priceCents)}</p>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                addLine({
-                                  productId: p.id,
-                                  name: p.name,
-                                  imageUrl: p.imageUrl,
-                                  unitPriceCents: p.priceCents,
-                                  quantity: 1,
-                                  addons: [],
-                                })
-                              }
-                              className="rounded-lg bg-[#F59E0B] px-3 py-1.5 text-xs font-bold text-[#0A2540] hover:brightness-105"
-                            >
-                              Adicionar
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-slate-500">Subtotal</span>
                     <span className="text-base font-extrabold text-[#0A2540]">
@@ -216,6 +189,54 @@ export function CartDrawer({
                       {minOrderMessage(minOrderCents, missing)}. Na retirada não há pedido mínimo.
                     </p>
                   ) : null}
+                  {lastCall.length > 0 ? (
+                    <section aria-labelledby="last-call-title">
+                      <h3 id="last-call-title" className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
+                        Algo mais antes do embarque?
+                      </h3>
+                      <ul className="no-scrollbar -mx-4 flex snap-x gap-2 overflow-x-auto px-4 pb-1">
+                        {lastCall.map((p) => {
+                          const qty = qtyInCart.get(p.id) ?? 0;
+                          return (
+                            <li
+                              key={p.id}
+                              className={cn(
+                                "flex w-40 shrink-0 snap-start items-center gap-2 rounded-xl border bg-white p-2 transition-colors",
+                                qty > 0 ? "border-emerald-500 bg-emerald-50" : "border-slate-200",
+                              )}
+                            >
+                              <div className="min-w-0 flex-1">
+                                <p className="line-clamp-2 text-xs font-semibold leading-tight text-[#0A2540]">{p.name}</p>
+                                <p className="mt-0.5 text-xs font-bold text-slate-600">{formatCents(p.priceCents)}</p>
+                              </div>
+                              <button
+                                type="button"
+                                aria-label={qty > 0 ? `Adicionar mais um ${p.name} (${qty} na sacola)` : `Adicionar ${p.name}`}
+                                onClick={() =>
+                                  addLine({
+                                    productId: p.id,
+                                    name: p.name,
+                                    imageUrl: p.imageUrl,
+                                    unitPriceCents: p.priceCents,
+                                    quantity: 1,
+                                    addons: [],
+                                  })
+                                }
+                                className={cn(
+                                  "flex h-9 min-w-9 shrink-0 items-center justify-center gap-0.5 rounded-full px-2 text-sm font-extrabold transition active:scale-90",
+                                  qty > 0 ? "bg-emerald-600 text-white" : "bg-[#F59E0B] text-[#0A2540]",
+                                )}
+                              >
+                                {qty > 0 ? <Check className="h-4 w-4" strokeWidth={3} /> : <Plus className="h-4 w-4" strokeWidth={3} />}
+                                {qty > 0 ? <span className="text-xs tabular-nums">{qty}</span> : null}
+                              </button>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    </section>
+                  ) : null}
+
                   <Link
                     href="/checkout"
                     onClick={closeCart}
