@@ -1,18 +1,18 @@
 import { desc, eq, and, notInArray } from "drizzle-orm";
 
 import { db } from "@/infra/db";
-import { whatsappMessages, whatsappSessions, type PaymentMethod } from "@/infra/db/schema";
+import { whatsappInboxBuffer, whatsappMessages, whatsappSessions, type PaymentMethod } from "@/infra/db/schema";
 
 import { downloadMedia, sendCtaUrlButton, sendTextMessage } from "./client";
 import { checkoutMessage, resetSession, runAutoCheckout } from "./draft-flow";
 import { generateContent } from "./gemini-client";
 import { GeminiHttpError, GeminiUnavailableError, type GeminiContent, type GeminiPart, type GeminiRequest } from "./gemini";
-import { stripRepeatedGreeting, stripUrlsAndMarkdownLinks } from "./sanitizer";
+import { splitReply, stripRepeatedGreeting, stripUrlsAndMarkdownLinks } from "./sanitizer";
 import { loadStoreContext, type StoreContext } from "./store-context";
 import { greetingForHour, resolveGreetingMode, type GreetingMode } from "./greeting";
 import { HISTORY_LIMIT, isClosingMessage, nextStep, selectSessionMessages, type NextStep } from "./session-rules";
 import { executeTool, getAvailableMenu, getCustomerContext, TOOL_DECLARATIONS, type CustomerContext } from "./tools";
-import { appUrl, type ToolContext } from "./shared";
+import type { ToolContext } from "./shared";
 import { STICKER_TEXT, type InboundMessage } from "./webhook";
 import { errorSummary } from "./log";
 import { cancelFollowups, enqueueReopenFollowup, setMarketingOptOut } from "./followups";
@@ -39,10 +39,6 @@ const MAX_REVIEW_RETRIES = 2;
 export const SAFE_FALLBACK_REPLY =
   "Esse detalhe eu prefiro confirmar com a equipe pra não te passar nada errado. Se quiser, já posso te mandar o cardápio digital com os valores certinhos!";
 
-/** Contingência (texto do backend, não da IA): o cliente nunca fica no vácuo quando a IA ou o envio falham. */
-export function contingencyMessage(): string {
-  return `Tive uma instabilidade rápida aqui no meu sistema agora. Pode me mandar novamente ou, se preferir agilizar, fazer seu pedido direto pelo nosso cardápio: ${appUrl()}`;
-}
 
 /* ------------------------------------------------------------------ */
 /* System prompt                                                       */
@@ -156,11 +152,17 @@ ANTI-INVENÇÃO (ESSENCIAL)
 - Entregamos só em Maringá-PR.
 
 COMO RESPONDER
-- Responda só o que foi perguntado, no ritmo do cliente: mensagem curta = resposta curta (1 a 2 frases, no máximo 3). Texto corrido, sem bullet points nem listas para pergunta simples. Uma pergunta por mensagem.
+- MENSAGENS CURTAS: no máximo 1 a 2 frases e ~160 caracteres por mensagem. Se realmente precisar de mais, divida em 2 mensagens curtas separadas por UMA linha em branco (o sistema envia cada bloco como uma mensagem). Nunca escreva textão. Sem bullet points nem listas para pergunta simples. Uma pergunta por mensagem.
+- Responda só o que foi perguntado, no ritmo do cliente. Se ele já disse o que quer (ex.: "vou retirar", "meu nome é João"), NÃO pergunte de novo: anote e avance para o que falta.
+- NUNCA diga "tudo bem por aqui", "tudo certo por aqui", "prazer" nem pergunte "e com você?" a menos que o cliente tenha perguntado como você está. Cumprimentar (bom dia/boa tarde/boa noite, bem-vindo) é SÓ na primeira mensagem do atendimento; depois vá direto ao assunto.
+- NOME: use o primeiro nome do cliente raramente (no máximo 1 vez a cada 4-5 mensagens, ex.: ao confirmar o nome dele ou ao fechar). Na maioria das mensagens NÃO use o nome.
+- NÃO REPITA: antes de responder, leia o histórico. Nunca repita pergunta, explicação ou convite que já fez. "Sim", "ok", "pode ser" é resposta à sua ÚLTIMA pergunta: avance para o próximo passo (se ele aceitou ver o cardápio, chame sendQuickMenu). Evite perguntas com "ou" que "sim" não responde.
+- Retirada: nunca diga que o pedido está pronto, "quase pronto" ou sendo preparado, e não pergunte horário de retirada. Só avance o pedido.
 - Dúvida (horário, pagamento, entrega, retirada): responda direto com os DADOS OPERACIONAIS, sem empurrar o pedido na mesma frase.
 - Só conduza ao pedido quando o cliente demonstrar intenção de pedir ou perguntar o que tem.
 - Agradecimento no fim ("obg", "valeu", "top"): resposta curta e calorosa ("Imagina! Qualquer coisa é só chamar 😊"), sem cardápio.
-- Se perguntar como você está ("tudo bem?"): responda em poucas palavras e já puxe o pedido.
+- Se perguntar como você está ("tudo bem?"): responda em poucas palavras e já puxe o pedido (só nesse caso).
+- Mensagens seguidas do cliente chegam juntas no mesmo turno: responda a TODAS em uma resposta coerente só.
 - Loja fechada: avise logo e diga quando abre (use o Status da loja). O cliente pode ver o cardápio, mas não feche pedido fora do horário.
 - Não entendeu algo: peça para repetir de outro jeito, em uma frase.
 - Áudio: capture o pedido todo, inclusive observações ("sem cebola", "ao ponto"). Imagem: analise e responda ao que o cliente quer. Figurinha ([Figurinha do cliente] + imagem): interprete o sentimento (raiva, dúvida, aprovação, agradecimento) e responda de acordo. NUNCA diga "não entendi" para figurinha.
@@ -202,13 +204,13 @@ CARDÁPIO COMPLETO (ids e preços exatos em centavos, para as ferramentas)
 ${JSON.stringify(context.menu)}
 
 FLUXO DO PEDIDO (estado explícito: session.nextStep diz o que falta)
-- Cliente cadastrado (${who.firstName ?? "sem nome"}): chame pelo primeiro nome e pergunte se quer repetir o último pedido (${who.lastOrder}) ou escolher outro lanche. Se ele já disser os itens, anote e confirme o endereço salvo (${who.address}). Cliente novo: pergunte se já conhece os lanches ou quer o cardápio digital.
+- Cliente cadastrado (${who.firstName ?? "sem nome"}): pergunte se quer repetir o último pedido (${who.lastOrder}) ou escolher outro lanche. Se ele já disser os itens, anote e confirme o endereço salvo (${who.address}). Cliente novo: pergunte se já conhece os lanches ou quer o cardápio digital.
 - NUNCA pergunte forma de pagamento (Pix, cartão, entrega) nem escreva código Pix: o cliente escolhe o pagamento na página que o sistema envia por botão assim que houver itens + endereço/retirada.
 1. CART: cliente disse o que quer → updateCart com o carrinho COMPLETO (sobrescreve; só o que ele pediu; observações em notes). Cliente cadastrado que quer repetir o último pedido: use lastOrderItems.
    Pedido vindo do Cardápio Rápido ("[Cliente montou o pedido no Cardápio Rápido]"): os itens já estão em draftCart; não remonte, siga para a entrega.
 2. DELIVERY: pergunte entrega ou retirada e o endereço (rua e número). Cliente cadastrado com defaultAddress e addressConfirmed = false: pergunte UMA vez se entrega no endereço salvo (mostre rua e número). Quando ele confirmar ("sim", "no mesmo endereço") ou informar outro, chame setDeliveryAndPayment com addressConfirmed: true (sem address para usar o salvo). Depois disso NUNCA pergunte o endereço de novo. Cliente novo: peça o nome e envie em customerName.
 3. CHECKOUT: com carrinho + endereço confirmado (ou retirada), o SERVIDOR fecha o pedido sozinho (status aguardando pagamento) e envia UMA mensagem com o botão "Ir para pagamento". Não pergunte forma de pagamento, não peça confirmação extra, não escreva o resumo final, nem código Pix, nem link.
-- CPF: se customer.hasDocument = true, NUNCA peça. Só se o sistema avisar que falta o CPF, peça ao cliente e envie em documentNumber via setDeliveryAndPayment.
+- CPF: NUNCA peça CPF pelo WhatsApp. A página de pagamento coleta o CPF do cliente.
 - Depois de finalizado, não crie outro pedido a menos que o cliente peça.
 
 CANCELAMENTO
@@ -343,7 +345,24 @@ export type AgentDeps = {
   sendText: (to: string, text: string) => Promise<unknown>;
   sendCta: (to: string, bodyText: string, buttonText: string, url: string) => Promise<unknown>;
   download: Download;
+  /** Chegou mensagem do cliente fora deste lote (ainda não processada)? Então a resposta em andamento é descartada. */
+  hasNewer?: (phone: string, batchWamids: string[]) => Promise<boolean>;
 };
+
+async function hasNewerInbound(phone: string, batchWamids: string[]): Promise<boolean> {
+  const rows = await db
+    .select({ id: whatsappInboxBuffer.id })
+    .from(whatsappInboxBuffer)
+    .where(
+      and(
+        eq(whatsappInboxBuffer.phone, phone),
+        eq(whatsappInboxBuffer.processed, false),
+        batchWamids.length > 0 ? notInArray(whatsappInboxBuffer.wamid, batchWamids) : undefined,
+      ),
+    )
+    .limit(1);
+  return rows.length > 0;
+}
 
 const defaultDeps: AgentDeps = {
   generate: generateContent,
@@ -351,7 +370,11 @@ const defaultDeps: AgentDeps = {
   sendText: sendTextMessage,
   sendCta: sendCtaUrlButton,
   download: downloadMedia,
+  hasNewer: hasNewerInbound,
 };
+
+/** Resultado do turno quando o cliente escreveu de novo no meio: nada foi enviado, o lote volta junto com a(s) nova(s). */
+export const SUPERSEDED = "superseded" as const;
 
 const RATE_LIMIT_RETRY_MS = 1500;
 
@@ -362,6 +385,8 @@ function isRateLimited(error: unknown): boolean {
 }
 
 const CTA_BODY_LIMIT = 1024;
+/** Pausa entre as mensagens de uma mesma resposta (ordem garantida e leitura natural). */
+const MULTI_MESSAGE_GAP_MS = 700;
 const clip = (text: string, max: number) => {
   const chars = Array.from(text);
   return chars.length <= max ? text : `${chars.slice(0, max - 1).join("").trimEnd()}…`;
@@ -381,7 +406,12 @@ async function recordAssistant(phone: string, content: string) {
 async function deliverReply(deps: AgentDeps, ctx: ToolContext, phone: string, reply: string): Promise<void> {
   const cta = ctx.cta;
   if (!cta) {
-    await deps.sendText(phone, reply);
+    // Mensagens curtas: cada bloco (separado por linha em branco) sai como uma mensagem própria.
+    const parts = splitReply(reply);
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) await new Promise((r) => setTimeout(r, MULTI_MESSAGE_GAP_MS));
+      await deps.sendText(phone, parts[i]);
+    }
     return;
   }
   const withLink = (text: string) => (cta.appendUrlToBody ? `${text}\n\n${cta.url}` : text);
@@ -446,14 +476,16 @@ function closingNote(error: string, needsDocument: boolean): GeminiContent {
  * roda o Gemini com function calling e envia a resposta.
  * Retorna true só se a resposta da IA foi entregue (o buffer só é dado como processado nesse caso).
  * A resposta é persistida em whatsapp_messages ANTES de retornar (o inbox só então libera o lock e encadeia o próximo turno).
- * Em qualquer falha envia a mensagem de contingência ao cliente e retorna false.
+ * Em qualquer falha retorna false SEM escrever ao cliente (o inbox refaz o turno depois; esgotadas as tentativas, avisa a loja).
  */
 export async function runBotTurn(
   phone: string,
   messages: InboundMessage[],
   deps: AgentDeps = defaultDeps,
-): Promise<boolean> {
+): Promise<boolean | typeof SUPERSEDED> {
   const ctx: ToolContext = { phone, afterReply: [], cta: null };
+  const batchWamids = messages.map((m) => m.wamid);
+  const superseded = async () => (deps.hasNewer ? deps.hasNewer(phone, batchWamids).catch(() => false) : false);
 
   try {
     // Tudo em paralelo antes do Gemini: histórico, mídia, cliente, sessão e cardápio.
@@ -479,6 +511,7 @@ export async function runBotTurn(
     let deterministic = canned !== null; // texto do backend (checkout/saudação): pode levar link
     let usedTools = false;
     let checkoutTried = false;
+    let orderClosed = false;
     for (let round = 0; round < (canned !== null ? 0 : MAX_TOOL_ROUNDS); round++) {
       const request = { systemInstruction, contents, functionDeclarations: TOOL_DECLARATIONS };
       let content: GeminiContent | null;
@@ -490,6 +523,9 @@ export async function runBotTurn(
         await new Promise((r) => setTimeout(r, RATE_LIMIT_RETRY_MS));
         content = await deps.generate(request);
       }
+      // Cliente mandou outra mensagem enquanto a IA pensava: descarta tudo (antes de qualquer ferramenta/checkout)
+      // e deixa o inbox refazer o turno com as mensagens juntas.
+      if (await superseded()) return SUPERSEDED;
       if (!content) break;
       // O Gemini pode devolver { role: "model" } sem `parts` (resposta vazia/bloqueada/cortada).
       if (!Array.isArray(content.parts)) content = { ...content, parts: [] };
@@ -508,6 +544,7 @@ export async function runBotTurn(
           if (outcome.status === "done") {
             reply = checkoutMessage(outcome.result);
             deterministic = true;
+            orderClosed = true; // pedido já criado: o aviso com o botão de pagamento sai de qualquer jeito
             break;
           }
           if (outcome.status === "failed") {
@@ -559,6 +596,8 @@ export async function runBotTurn(
     // Sem texto (bloqueio/resposta vazia) é falha: não vale como atendimento.
     if (!reply) throw new Error("O modelo não devolveu resposta de texto.");
 
+    // Última chance: se o cliente escreveu agora, a resposta velha não sai. (Pedido já fechado pelo checkout segue valendo.)
+    if (!orderClosed && (await superseded())) return SUPERSEDED;
     await deliverReply(deps, ctx, phone, reply);
     await recordAssistant(phone, reply);
 
@@ -598,9 +637,7 @@ export async function runBotTurn(
     return true;
   } catch (error) {
     console.error("[whatsapp-bot] falha no turno:", errorSummary(error));
-    await deps.sendText(phone, contingencyMessage()).catch((e) => {
-      console.error("[whatsapp-bot] falha ao enviar a contingência:", errorSummary(e));
-    });
+    // Falha NUNCA vira mensagem ao cliente: o lote volta à fila e o inbox tenta de novo em segundos (ver inbox.ts).
     return false;
   }
 }

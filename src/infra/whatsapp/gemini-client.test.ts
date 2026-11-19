@@ -143,7 +143,7 @@ describe("generateContent — resiliência", () => {
     expect(urlOf(1)).toBe(geminiUrl(M1));
   });
 
-  it.each([400, 401, 403])("3) %i falha na hora: sem retry, sem backoff e sem trocar de modelo", async (status) => {
+  it.each([401, 403])("3) %i falha na hora: sem retry, sem backoff e sem trocar de modelo", async (status) => {
     fetchMock.mockResolvedValue(errRes(status, `erro ${status} key=${KEY}`, "INVALID_ARGUMENT"));
     const e = await generateContent(req, { sleep }).catch((x) => x);
     expect(e).toBeInstanceOf(GeminiHttpError);
@@ -151,6 +151,20 @@ describe("generateContent — resiliência", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(sleep).not.toHaveBeenCalled();
     expect(e.message).not.toContain(KEY);
+  });
+
+  it("400 em um modelo: tenta o próximo (sem backoff) e só falha se todos recusarem", async () => {
+    fetchMock.mockResolvedValueOnce(errRes(400, "Request contains an invalid argument.", "INVALID_ARGUMENT")).mockResolvedValueOnce(okRes());
+    const out = await generateContent(req, { sleep });
+    expect(out?.parts[0].text).toBe("olá");
+    expect(urlOf(1)).not.toBe(geminiUrl(M1));
+    expect(sleep).not.toHaveBeenCalled();
+
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(async () => errRes(400, "Request contains an invalid argument.", "INVALID_ARGUMENT"));
+    const e = await generateContent(req, { sleep }).catch((x) => x);
+    expect(e).toBeInstanceOf(GeminiHttpError);
+    expect(e.status).toBe(400);
   });
 
   it("404 (modelo desativado): pula direto ao próximo, sem retry, e lembra que está morto", async () => {
@@ -203,7 +217,7 @@ describe("generateContent — resiliência", () => {
   });
 
   it("o log do turno traz o status e o corpo do erro, sem chave", async () => {
-    fetchMock.mockResolvedValue(errRes(400, `argumento inválido key=${KEY}`, "INVALID_ARGUMENT"));
+    fetchMock.mockImplementation(async () => errRes(400, `argumento inválido key=${KEY}`, "INVALID_ARGUMENT"));
     const e = await generateContent(req, { sleep }).catch((x) => x);
     const line = errorSummary(e);
     expect(line).toContain("400");

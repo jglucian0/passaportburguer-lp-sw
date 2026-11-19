@@ -41,6 +41,8 @@ const form = (over: Record<string, unknown> = {}) => ({
   token: token(),
   name: "Maria da Silva",
   document: VALID_CPF,
+  email: "maria@example.com",
+  password: "senha-forte-123",
   street: "Rua A",
   number: "10",
   ...over,
@@ -59,6 +61,18 @@ beforeEach(() => {
 });
 
 describe("POST /api/whatsapp/complete-registration", () => {
+  it("cliente sem senha: grava e-mail + hash bcrypt (login no site) e exige os dois", async () => {
+    const ok = await call(form());
+    expect(ok.status).toBe(200);
+    const creds = written(customers, "update").map((w) => w.set as Record<string, unknown>).find((x) => "passwordHash" in x);
+    expect(creds?.email).toBe("maria@example.com");
+    expect(String(creds?.passwordHash)).toMatch(/^[$]2[aby][$]/);
+
+    f.ctx.writes.length = 0;
+    const missing = await call(form({ password: undefined }));
+    expect(missing.status).toBe(400);
+  });
+
   it("salva CPF e endereço, vincula a sessão do telefone do TOKEN e devolve o redirect", async () => {
     const res = await call(form());
     expect(res.status).toBe(200);

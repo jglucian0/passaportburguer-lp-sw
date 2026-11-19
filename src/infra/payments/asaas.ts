@@ -207,9 +207,15 @@ async function persistCustomerId(customerId: string, asaasId: string): Promise<v
 
 /** Reaproveita o cus_xxx salvo; senão busca por CPF/CNPJ; senão cria. Persiste o id. */
 export async function getOrCreateAsaasCustomer(customer: AsaasCustomerInput): Promise<string> {
-  if (customer.asaasCustomerId) return customer.asaasCustomerId;
-
   const cpfCnpj = customer.cpfCnpj?.replace(/\D/g, "") || null;
+
+  if (customer.asaasCustomerId) {
+    // Cadastro criado antes de o CPF ser coletado: sem CPF o Asaas não gera o QR Code do Pix.
+    if (cpfCnpj) {
+      await asaasRequest("POST", `/customers/${customer.asaasCustomerId}`, { cpfCnpj }).catch(() => undefined);
+    }
+    return customer.asaasCustomerId;
+  }
 
   if (cpfCnpj) {
     const found = await asaasRequest<{ data?: { id: string }[] }>(

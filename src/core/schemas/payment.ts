@@ -60,9 +60,16 @@ export const cardDataSchema = z
     message: "Cartão vencido ou validade inválida.",
   });
 
+/** CPF/CNPJ do pagador: obrigatório para gerar Pix/fatura quando o pedido ainda não tem um. */
+const documentField = z
+  .string()
+  .transform(onlyDigits)
+  .refine((d) => documentError(d) === null, "CPF inválido.")
+  .optional();
+
 export const payOrderSchema = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("pix") }).strict(),
-  z.object({ mode: z.literal("hosted") }).strict(),
+  z.object({ mode: z.literal("pix"), documentNumber: documentField }).strict(),
+  z.object({ mode: z.literal("hosted"), documentNumber: documentField }).strict(),
   /** Cliente desistiu do Pix (foi para o cartão): invalida o QR Code pendente. */
   z.object({ mode: z.literal("cancel-pix") }).strict(),
   z.object({ mode: z.literal("card"), card: cardDataSchema }).strict(),

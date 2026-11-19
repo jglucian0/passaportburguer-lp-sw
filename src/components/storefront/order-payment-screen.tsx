@@ -98,7 +98,7 @@ export async function OrderPaymentScreen({ orderId, token }: { orderId: string; 
     .limit(1);
 
   const [customer] = await db
-    .select({ email: customers.email, name: customers.name })
+    .select({ email: customers.email, name: customers.name, documentNumber: customers.documentNumber })
     .from(customers)
     .where(eq(customers.id, access.customerId))
     .limit(1);
@@ -109,6 +109,9 @@ export async function OrderPaymentScreen({ orderId, token }: { orderId: string; 
     payment?.pixPayload &&
     payment.pixQrCodeBase64 &&
     (!payment.pixExpirationDate || payment.pixExpirationDate.getTime() > Date.now());
+
+  // CPF já salvo (pedido ou cadastro): o checkout não pede de novo. Via link anônimo ele nunca vai ao HTML.
+  const knownDocument = order.documentNumber ?? customer?.documentNumber ?? null;
 
   const { tenant, categories, store } = storefront;
   const delivery = order.deliveryType === "DELIVERY";
@@ -131,11 +134,12 @@ export async function OrderPaymentScreen({ orderId, token }: { orderId: string; 
             // Link do WhatsApp: escolhe Pix/cartão na própria página (sem cobrança até escolher).
             askMethod={anonymous && !pixValid}
             totalCents={order.totalCents}
+            documentKnown={!!knownDocument}
             // Anônimo: nada de dados pessoais no HTML (o titular digita os dados do cartão).
             customerEmail={anonymous ? "" : (customer?.email ?? "")}
             defaults={{
               holderName: anonymous ? "" : (customer?.name ?? ""),
-              holderCpf: anonymous ? "" : order.documentNumber ? formatDocument(order.documentNumber) : "",
+              holderCpf: anonymous ? "" : knownDocument ? formatDocument(knownDocument) : "",
               // Só entrega tem endereço; retirada deixa os campos de cobrança visíveis.
               postalCode: !anonymous && delivery ? (order.addressSnapshot?.postalCode ?? "") : "",
               addressNumber: !anonymous && delivery ? (order.addressSnapshot?.number ?? "") : "",

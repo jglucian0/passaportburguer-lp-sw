@@ -74,6 +74,7 @@ vi.mock("./geocode", () => ({
 }));
 const wa = vi.hoisted(() => ({ cta: vi.fn().mockResolvedValue({}), text: vi.fn().mockResolvedValue({}) }));
 vi.mock("./client", () => ({
+  sendTemplateMessage: vi.fn(),
   sendCtaUrlButton: wa.cta,
   sendTextMessage: wa.text,
   downloadMedia: vi.fn(),
@@ -454,14 +455,13 @@ describe("finalizeOrderAndCheckout (disparado só pelo backend)", () => {
 });
 
 describe("requestHumanHandoff", () => {
-  it("pausa o bot por 30 min e avisa a loja", async () => {
-    process.env.STORE_WHATSAPP = "5543996098333";
+  it("pausa o bot por 30 min e registra o HANDOFF (sem mandar WhatsApp)", async () => {
     const before = Date.now();
     const out = (await executeTool(ctx(), "requestHumanHandoff", { reason: "reclamação" })) as { pausedUntil: string };
     const delta = new Date(out.pausedUntil).getTime() - before;
     expect(delta).toBeGreaterThan(29 * 60_000);
     expect(delta).toBeLessThan(31 * 60_000);
-    expect(wa.text).toHaveBeenCalledWith("5543996098333", expect.stringContaining("reclamação"));
+    expect(wa.text).not.toHaveBeenCalled();
   });
 });
 
@@ -922,22 +922,26 @@ describe("runBotTurn (Gemini mockado)", () => {
     expect(saved?.values).toMatchObject({ phone: PHONE, role: "assistant", content: "Anotado." });
   });
 
-  it("2) falha total do Gemini: mensagem de contingência ao cliente (com o link do cardápio) e retorno false", async () => {
+  it("2) falha total do Gemini: retorna false e NÃO escreve nada ao cliente (o inbox tenta de novo)", async () => {
     const { d, sent } = deps([]);
     d.generate = async () => {
       throw new Error("todos os modelos falharam");
     };
-    const ok = await runBotTurn(PHONE, [msg()], d);
-    expect(ok).toBe(false);
-    expect(sent).toEqual([
-      "Tive uma instabilidade rápida aqui no meu sistema agora. Pode me mandar novamente ou, se preferir agilizar, fazer seu pedido direto pelo nosso cardápio: https://app.test",
-    ]);
+    expect(await runBotTurn(PHONE, [msg()], d)).toBe(false);
+    expect(sent).toEqual([]);
   });
 
-  it("resposta vazia do modelo (bloqueio) também é falha com contingência", async () => {
+  it("resposta vazia do modelo (bloqueio) também é falha silenciosa", async () => {
     const { d, sent } = deps([]); // generate devolve null
     expect(await runBotTurn(PHONE, [msg()], d)).toBe(false);
-    expect(sent[0]).toMatch(/instabilidade/);
+    expect(sent).toEqual([]);
+  });
+
+  it("cliente escreveu de novo durante o turno: nada é enviado e o turno devolve 'superseded'", async () => {
+    const { d, sent } = deps([modelText("Anotado!")]);
+    d.hasNewer = async () => true;
+    expect(await runBotTurn(PHONE, [msg()], d)).toBe("superseded");
+    expect(sent).toEqual([]);
   });
 
   it("sucesso devolve true e não manda contingência", async () => {
@@ -946,7 +950,7 @@ describe("runBotTurn (Gemini mockado)", () => {
     expect(sent).toEqual(["Anotado!"]);
   });
 
-  it("falha no envio pela Meta: tenta a contingência e retorna false (o lote volta à fila)", async () => {
+  it("falha no envio pela Meta: retorna false sem tentar outra mensagem (o lote volta à fila)", async () => {
     const { d } = deps([modelText("Anotado!")]);
     const calls: string[] = [];
     d.sendText = async (_t, text) => {
@@ -954,6 +958,6 @@ describe("runBotTurn (Gemini mockado)", () => {
       throw new Error("meta fora");
     };
     expect(await runBotTurn(PHONE, [msg()], d)).toBe(false);
-    expect(calls).toHaveLength(2); // resposta + contingência
+    expect(calls).toHaveLength(1);
   });
 });

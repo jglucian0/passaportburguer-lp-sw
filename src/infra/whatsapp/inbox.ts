@@ -11,12 +11,18 @@ import { markMessageAsRead } from "./client";
 import { errorSummary } from "./log";
 import type { InboundMessage } from "./webhook";
 
-/** Espera para agrupar mensagens em rajada (1,8 s: rápido sem partir "oi" + "queria um burger"). */
-export const DEBOUNCE_MS = 1_800;
+/** Espera para agrupar mensagens em rajada: só responde se o cliente ficou quieto por esse tempo. */
+export const DEBOUNCE_MS = 3_500;
 /** Lock atômico do turno por telefone (whatsapp_sessions.processing_lock_until). */
 export const TURN_LOCK_MS = 30_000;
 /** Quantas vezes um turno pode reencadear o seguinte (mensagens que chegaram enquanto respondia). */
 const MAX_FOLLOW_UPS = 3;
+/** Falhou (IA/Meta fora)? Silêncio total para o cliente e nova tentativa depois deste intervalo. */
+export const RETRY_DELAY_MS = 8_000;
+/** Passado este tempo no mesmo webhook (teto da função: 60 s) a nova tentativa fica para a varredura do cron. */
+const RETRY_WINDOW_MS = 38_000;
+/** Mensagem parada na fila há mais que isto é pega pela varredura (retryStalledInbox). */
+const STALLED_AFTER_MS = 30_000;
 
 /**
  * Adquire o lock do turno de forma atômica (um único statement):
@@ -111,19 +117,28 @@ export async function processAfterDebounce(
   // As mensagens novas ficam no buffer (processed = false); o turno ativo as atende em fila, sem atropelar.
   if (!(await acquireTurnLock(phone))) return;
 
+  const startedAt = Date.now();
   const seen = new Set<string>();
   try {
-    let handled = await claimAndRunBatch(phone);
-    handled.forEach((id) => seen.add(id));
+    let run = await claimAndRunBatch(phone);
+    run.ids.forEach((id) => seen.add(id));
 
     // O turno acima já PERSISTIU a resposta em whatsapp_messages. Só então olha o que chegou enquanto
     // respondia e encadeia o próximo turno AINDA com o lock (nenhum outro turno entra no meio).
-    for (let i = followUps; i < MAX_FOLLOW_UPS; i++) {
+    for (let i = followUps; i < MAX_FOLLOW_UPS + 2; i++) {
       if ((await pendingWamids(phone, seen)).length === 0) break;
+      // Turno interrompido (cliente escreveu de novo): espera ele terminar de digitar e refaz com tudo junto.
+      if (run.interrupted) await sleep(delayMs);
+      if (run.failed) {
+        // Sem tempo para outra tentativa neste webhook: a varredura do cron refaz (nada é dito ao cliente).
+        const retryIn = delayMs === 0 ? 0 : RETRY_DELAY_MS; // delay 0 = modo de teste/sem espera
+        if (Date.now() - startedAt + retryIn > RETRY_WINDOW_MS) break;
+        await sleep(retryIn);
+      }
       await renewTurnLock(phone);
-      handled = await claimAndRunBatch(phone);
-      if (handled.length === 0) break;
-      handled.forEach((id) => seen.add(id));
+      run = await claimAndRunBatch(phone);
+      if (run.ids.length === 0 && !run.interrupted && !run.failed) break;
+      run.ids.forEach((id) => seen.add(id));
     }
   } finally {
     await releaseTurnLock(phone);
@@ -147,8 +162,12 @@ async function pendingWamids(phone: string, seen: Set<string>): Promise<string[]
   return pending.filter((r) => !seen.has(r.id)).map((r) => r.wamid);
 }
 
-/** Reserva o lote pendente, roda o turno e atualiza o buffer. Devolve os ids do lote tratado. */
-async function claimAndRunBatch(phone: string): Promise<string[]> {
+/**
+ * Reserva o lote pendente, roda o turno e atualiza o buffer. Devolve os ids do lote tratado.
+ * `interrupted` = o cliente escreveu de novo no meio do turno: nada foi enviado e o lote voltou à fila para ser
+ * refeito junto com a(s) mensagem(ns) nova(s).
+ */
+async function claimAndRunBatch(phone: string): Promise<{ ids: string[]; interrupted: boolean; failed: boolean }> {
   // Reserva atômica: só uma execução leva as linhas (as já reservadas e não expiradas ficam de fora).
   const now = new Date();
   const claimed = await db
@@ -167,17 +186,26 @@ async function claimAndRunBatch(phone: string): Promise<string[]> {
       receivedAt: whatsappInboxBuffer.receivedAt,
       attempts: whatsappInboxBuffer.attempts,
     });
-  if (claimed.length === 0) return [];
+  if (claimed.length === 0) return { ids: [], interrupted: false, failed: false };
 
   const ordered = [...claimed].sort((a, b) => a.receivedAt.getTime() - b.receivedAt.getTime());
   const ids = ordered.map((r) => r.id);
   const batch = ordered.map((r) => r.payload as InboundMessage);
 
-  let ok = false;
+  let ok: boolean | "superseded" = false;
   try {
     ok = await handleBatch(phone, batch);
   } catch (error) {
     console.error("[whatsapp-bot] falha no lote:", errorSummary(error));
+  }
+
+  if (ok === "superseded") {
+    // Devolve o lote à fila sem gastar tentativa: a próxima rodada leva todas as mensagens de uma vez.
+    await db
+      .update(whatsappInboxBuffer)
+      .set({ attempts: sql`greatest(${whatsappInboxBuffer.attempts} - 1, 0)`, lockedUntil: null })
+      .where(inArray(whatsappInboxBuffer.id, ids));
+    return { ids: [], interrupted: true, failed: false };
   }
 
   if (ok) {
@@ -185,7 +213,7 @@ async function claimAndRunBatch(phone: string): Promise<string[]> {
       .update(whatsappInboxBuffer)
       .set({ processed: true, lockedUntil: null })
       .where(inArray(whatsappInboxBuffer.id, ids));
-    return ids;
+    return { ids, interrupted: false, failed: false };
   }
 
   // Falhou: itens que já esgotaram as tentativas são dados como processados; os demais voltam à fila.
@@ -193,6 +221,7 @@ async function claimAndRunBatch(phone: string): Promise<string[]> {
   const retry = ordered.filter((r) => r.attempts < MAX_ATTEMPTS).map((r) => r.id);
   if (giveUp.length > 0) {
     console.error("[whatsapp-bot] desistindo de itens após tentativas esgotadas:", giveUp.length);
+    await alertStore(phone);
     await db
       .update(whatsappInboxBuffer)
       .set({ processed: true, lockedUntil: null })
@@ -204,11 +233,47 @@ async function claimAndRunBatch(phone: string): Promise<string[]> {
       .set({ lockedUntil: null })
       .where(inArray(whatsappInboxBuffer.id, retry));
   }
-  return ids;
+  // Os que voltam à fila NÃO entram em `seen`: a próxima rodada (ou a varredura do cron) os reprocessa.
+  const handledIds = ordered.filter((r) => r.attempts >= MAX_ATTEMPTS).map((r) => r.id);
+  return { ids: handledIds, interrupted: false, failed: retry.length > 0 };
 }
 
-/** true = lote concluído (resposta entregue ou bot pausado); false = falhou e deve voltar à fila. */
-async function handleBatch(phone: string, batch: InboundMessage[]): Promise<boolean> {
+/**
+ * Esgotou as tentativas: o cliente não recebe nada. Fica só o registro no histórico (aparece no painel como
+ * atendimento pendente); NÃO se manda WhatsApp para a loja, porque o número do bot é o mesmo do atendente.
+ */
+async function alertStore(phone: string): Promise<void> {
+  await db
+    .insert(whatsappMessages)
+    .values({ phone, role: "system", content: "HANDOFF: o assistente não conseguiu responder (falha após várias tentativas)", mediaType: "text" })
+    .catch(() => undefined);
+}
+
+/**
+ * Varredura (chamada pelo cron): mensagens do cliente paradas na fila, por falha anterior ou função que morreu,
+ * são reprocessadas. Nada é enviado ao cliente além da resposta normal.
+ */
+export async function retryStalledInbox(limit = 10): Promise<number> {
+  const cutoff = new Date(Date.now() - STALLED_AFTER_MS);
+  const rows = await db
+    .select({ phone: whatsappInboxBuffer.phone, wamid: whatsappInboxBuffer.wamid, receivedAt: whatsappInboxBuffer.receivedAt })
+    .from(whatsappInboxBuffer)
+    .where(and(eq(whatsappInboxBuffer.processed, false), lt(whatsappInboxBuffer.receivedAt, cutoff)))
+    .orderBy(desc(whatsappInboxBuffer.receivedAt))
+    .limit(200);
+  const latestByPhone = new Map<string, string>();
+  for (const r of rows) if (!latestByPhone.has(r.phone)) latestByPhone.set(r.phone, r.wamid);
+  let count = 0;
+  for (const [phone, wamid] of latestByPhone) {
+    if (count >= limit) break;
+    count++;
+    await processAfterDebounce(phone, wamid, 0).catch((e) => console.error("[whatsapp-bot] varredura falhou:", errorSummary(e)));
+  }
+  return count;
+}
+
+/** true = lote concluído (resposta entregue ou bot pausado); false = falhou e deve voltar à fila; "superseded" = chegou mensagem nova no meio. */
+async function handleBatch(phone: string, batch: InboundMessage[]): Promise<boolean | "superseded"> {
   // Histórico (idempotente por wamid).
   await db
     .insert(whatsappMessages)

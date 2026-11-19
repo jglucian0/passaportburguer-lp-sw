@@ -54,8 +54,8 @@ const withName = (firstName: string | null | undefined, sep: string) => {
 /** Primeiro contato do dia (exemplo aprovado pela loja). `greeting` = "Boa noite" / "Bom dia" / "Boa tarde". */
 export function welcomeMessage(greeting: string, firstName?: string | null): string {
   return [
-    `${capitalize(greeting)}${withName(firstName, ", ")}! Tudo bem? Bem-vindo a bordo do Passaporte Burguer! ✈️`,
-    "Pronto para embarcar no seu pedido de hoje? Se preferir, posso te mandar o nosso cardápio digital ou já anotar tudo direto por aqui!"
+    `${capitalize(greeting)}${withName(firstName, ", ")}! Bem-vindo a bordo do Passaporte Burguer! ✈️`,
+    "Quer ver o cardápio digital ou já me conta o que vai querer?"
   ].join("\n\n");
 }
 
@@ -63,19 +63,15 @@ export function welcomeMessage(greeting: string, firstName?: string | null): str
 export function returningMessage(firstName?: string | null): string {
   return [
     `Oi de novo${withName(firstName, ", ")}! ✈️`,
-    "Quer dar uma olhada no cardápio digital ou já me conta qual vai ser o destino do seu pedido hoje?"
+    "Quer ver o cardápio ou já me conta o que vai pedir?"
   ].join("\n\n");
 }
 
 /** Texto do Cardápio Rápido (vira o corpo do botão). */
-export function menuMessage(firstName?: string | null): string {
-  const intro = `Com certeza${withName(firstName, ", ")}! Você pode conferir todos os nossos lanches, combos e acompanhamentos direto no nosso cardápio digital`;
-  const cta = MENU_SHOW_LINK_IN_BODY ? `${intro} por este link 👇` : `${intro}. É só tocar no botão abaixo 👇`;
-
-  return [
-    cta,
-    "Dá uma olhada lá com calma. Se bater alguma dúvida sobre os ingredientes ou quiser finalizar o pedido por aqui mesmo, é só me chamar!"
-  ].join("\n\n");
+export function menuMessage(_firstName?: string | null): string {
+  return MENU_SHOW_LINK_IN_BODY
+    ? "Aqui está nosso cardápio digital 👇\nQualquer dúvida, é só chamar!"
+    : "Aqui está nosso cardápio digital 👇\nQualquer dúvida ou se quiser pedir por aqui, é só chamar!";
 }
 
 /** "PARAR", "Sair", "Não quero receber mensagens": o cliente não quer mais mensagens ativas da loja. */

@@ -23,6 +23,25 @@ export type GeminiRequest = {
   functionDeclarations: GeminiFunctionDeclaration[];
 };
 
+/**
+ * Deixa o histórico aceitável para o Gemini (a causa clássica de "400 INVALID_ARGUMENT"):
+ * sem partes de texto vazias, sem turnos vazios, papéis alternados (junta os consecutivos) e começando por "user".
+ */
+export function normalizeContents(contents: GeminiContent[]): GeminiContent[] {
+  const out: GeminiContent[] = [];
+  for (const c of contents) {
+    const parts = (c.parts ?? []).filter(
+      (p) => !(p.text !== undefined && p.text.trim() === "" && !p.inlineData && !p.functionCall && !p.functionResponse && !p.thoughtSignature),
+    ).filter((p) => !(p.text !== undefined && p.text.trim() === "" && !p.thoughtSignature && Object.keys(p).length === 1));
+    if (parts.length === 0) continue;
+    const last = out[out.length - 1];
+    if (last && last.role === c.role) last.parts = [...last.parts, ...parts];
+    else out.push({ role: c.role, parts: [...parts] });
+  }
+  while (out.length > 0 && out[0].role !== "user") out.shift();
+  return out;
+}
+
 const ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models";
 
 /** Aceita "models/x" ou "x" e devolve "x" (evita models/models/ na URL). */

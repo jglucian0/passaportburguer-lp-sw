@@ -7,7 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Input } from "@/components/ui/input";
 import { validateCardExpiry } from "@/core/validation/card-expiry";
-import { formatDocument } from "@/core/validation/document";
+import { documentError, formatDocument } from "@/core/validation/document";
 import { cn, formatCents } from "@/lib/utils";
 
 type PixData = { payload: string; qrCodeBase64: string; expiresAt: string | null };
@@ -32,6 +32,8 @@ type Props = {
   totalCents: number;
   customerEmail: string;
   initialPix: PixData | null;
+  /** O pedido/cadastro já tem CPF no servidor: não precisa pedir de novo (nunca é enviado ao navegador anônimo). */
+  documentKnown?: boolean;
 };
 
 const POLL_MS = 2500;
@@ -81,6 +83,7 @@ export function PaymentView({
   totalCents,
   customerEmail,
   initialPix,
+  documentKnown = false,
 }: Props) {
   /* O cliente pode trocar Pix <-> cartão no mesmo pedido (ex.: cartão recusado). null = ainda vai escolher. */
   const [method, setMethod] = useState<"PIX" | "CREDIT_CARD" | null>(askMethod ? null : initialMethod);
@@ -104,6 +107,13 @@ export function PaymentView({
     postalCode: billingKnown ? maskCep(defaults.postalCode) : "",
     addressNumber: billingKnown ? defaults.addressNumber : "",
   });
+  /* CPF do pagador: coletado ANTES de liberar Pix/cartão (o Asaas não gera o QR Code sem ele). */
+  const [payerDocument, setPayerDocument] = useState(defaults.holderCpf);
+  const [documentConfirmed, setDocumentConfirmed] = useState(documentKnown || initialPix !== null);
+  const [documentTouched, setDocumentTouched] = useState(false);
+  const documentMessage = documentError(payerDocument);
+  /** CPF válido digitado agora (vai junto da cobrança); undefined quando o servidor já tem o CPF. */
+  const documentNumber = documentMessage === null ? payerDocument : undefined;
   const [email, setEmail] = useState(customerEmail);
   const [submitting, setSubmitting] = useState(false);
   const [cardError, setCardError] = useState<string | null>(null);
@@ -121,7 +131,7 @@ export function PaymentView({
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "pix" }),
+        body: JSON.stringify({ mode: "pix", documentNumber }),
       });
       const data = (await res.json().catch(() => ({}))) as { pix?: PixData; error?: string };
       if (!res.ok || !data.pix) {
@@ -132,14 +142,14 @@ export function PaymentView({
     } catch {
       setPixError("Sem conexão. Tente novamente.");
     }
-  }, [endpoint]);
+  }, [endpoint, documentNumber]);
 
   useEffect(() => {
-    if (method !== "PIX" || pix || requestedPix.current) return;
+    if (!documentConfirmed || method !== "PIX" || pix || requestedPix.current) return;
     // (o guard evita dupla chamada em StrictMode; trocar de método passa por switchMethod)
     requestedPix.current = true;
     void loadPix();
-  }, [method, pix, loadPix]);
+  }, [documentConfirmed, method, pix, loadPix]);
 
   /* ---------------- Polling do status (webhook confirma) ---------------- */
   useEffect(() => {
@@ -222,7 +232,7 @@ export function PaymentView({
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "pix" }),
+        body: JSON.stringify({ mode: "pix", documentNumber }),
       });
       const data = (await res.json().catch(() => ({}))) as { pix?: PixData; error?: string };
       if (!res.ok || !data.pix) {
@@ -348,7 +358,7 @@ export function PaymentView({
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "hosted" }),
+        body: JSON.stringify({ mode: "hosted", documentNumber }),
       });
       const data = (await res.json().catch(() => ({}))) as { invoiceUrl?: string; error?: string };
       if (!res.ok || !data.invoiceUrl?.startsWith("https://")) {
@@ -405,7 +415,47 @@ export function PaymentView({
         <span className="text-xl font-bold">{formatCents(totalCents)}</span>
       </div>
 
-      {method === null ? (
+      {!documentConfirmed ? (
+        <form
+          className={cardClass}
+          onSubmit={(e) => {
+            e.preventDefault();
+            setDocumentTouched(true);
+            if (documentMessage) return;
+            // O mesmo CPF já vem preenchido no formulário do cartão.
+            setCard((c) => ({ ...c, holderCpfCnpj: c.holderCpfCnpj || payerDocument }));
+            setDocumentConfirmed(true);
+          }}
+        >
+          <h2 className="font-bold">Seu CPF</h2>
+          <p className="text-sm text-slate-600">Precisamos do CPF para gerar o pagamento (Pix ou cartão).</p>
+          <Input
+            className={inputClass}
+            placeholder="000.000.000-00"
+            inputMode="numeric"
+            autoComplete="off"
+            aria-label="CPF"
+            aria-invalid={documentTouched && !!documentMessage}
+            maxLength={18}
+            required
+            value={payerDocument}
+            onChange={(e) => setPayerDocument(formatDocument(e.target.value))}
+            onBlur={() => setDocumentTouched(true)}
+          />
+          {documentTouched && documentMessage ? (
+            <p role="alert" className="-mt-2 text-sm text-red-600">
+              {documentMessage}
+            </p>
+          ) : null}
+          <button
+            type="submit"
+            disabled={!!documentMessage}
+            className="flex h-12 w-full items-center justify-center rounded-xl bg-[#F59E0B] font-semibold text-[#071329] transition-colors hover:bg-[#d98a09] disabled:opacity-60"
+          >
+            Continuar
+          </button>
+        </form>
+      ) : method === null ? (
         <section className={cardClass}>
           <h2 className="font-bold">Como você prefere pagar?</h2>
           <button

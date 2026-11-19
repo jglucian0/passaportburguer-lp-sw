@@ -42,6 +42,16 @@ export function stripUrlsAndMarkdownLinks(text: string): string {
     .trim();
 }
 
+/** Divide a resposta em blocos (linha em branco) para sair como mensagens curtas separadas; no máximo `max`. */
+export function splitReply(text: string, max = 3): string[] {
+  const parts = text
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length <= max) return parts.length > 0 ? parts : [text.trim()];
+  return [...parts.slice(0, max - 1), parts.slice(max - 1).join("\n\n")];
+}
+
 /* ------------------------------------------------------------------ */
 
 const TIME_OF_DAY = String.raw`(?:bom dia|boa tarde|boa noite)(?![\p{L}])`;

@@ -4,6 +4,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { runWinbackCampaign } from "@/infra/marketing/campaigns";
 import { dispatchDueFollowups } from "@/infra/whatsapp/followups";
+import { retryStalledInbox } from "@/infra/whatsapp/inbox";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -25,11 +26,13 @@ export async function GET(request: NextRequest) {
   if (!secret || !authorized(request.headers.get("authorization"), secret)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  // Primeiro, atendimentos que ficaram sem resposta por falha momentânea (reenvio silencioso).
+  const retried = await retryStalledInbox().catch(() => 0);
   const summary = await dispatchDueFollowups();
   // Mesmo agendador: depois dos retornos, roda a campanha de resgate (desligada por padrão).
   const campaign = await runWinbackCampaign().catch((error) => {
     console.error("[marketing] campanha falhou:", error instanceof Error ? error.message : "erro");
     return { ran: false, reason: "ERROR" };
   });
-  return NextResponse.json({ ok: true, ...summary, campaign }, { headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json({ ok: true, retried, ...summary, campaign }, { headers: { "Cache-Control": "no-store" } });
 }

@@ -70,3 +70,12 @@ describe("stripRepeatedGreeting (só atua em IN_CONVERSATION)", () => {
     }
   });
 });
+
+describe("splitReply", () => {
+  it("separa blocos por linha em branco em mensagens curtas", async () => {
+    const { splitReply } = await import("./sanitizer");
+    expect(splitReply("Oi!\n\nQuer ver o cardápio?")).toEqual(["Oi!", "Quer ver o cardápio?"]);
+    expect(splitReply("Só uma\nmensagem")).toEqual(["Só uma\nmensagem"]);
+    expect(splitReply("a\n\nb\n\nc\n\nd", 3)).toEqual(["a", "b", "c\n\nd"]);
+  });
+});

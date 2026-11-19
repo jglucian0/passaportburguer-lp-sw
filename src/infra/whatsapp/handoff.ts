@@ -1,8 +1,6 @@
 import { db } from "@/infra/db";
 import { whatsappMessages, whatsappSessions } from "@/infra/db/schema";
 
-import { sendTextMessage } from "./client";
-
 export const HANDOFF_MINUTES = 30;
 
 export async function requestHumanHandoff(phone: string, reason: string) {
@@ -25,14 +23,7 @@ export async function requestHumanHandoff(phone: string, reason: string) {
     mediaType: "text",
   });
 
-  /* Alerta ativo no WhatsApp da loja (best-effort: fora da janela de 24h a Meta pode recusar). */
-  const store = process.env.STORE_WHATSAPP?.replace(/\D/g, "");
-  if (store) {
-    await sendTextMessage(
-      store,
-      `🔔 Cliente ${phone} pediu atendimento humano.\nMotivo: ${cleanReason}\nO bot ficará pausado por ${HANDOFF_MINUTES} min.`,
-    ).catch(() => undefined);
-  }
+  /* Sem WhatsApp para a loja: o número do bot é o mesmo do atendente. O aviso é o HANDOFF no histórico, lido pelo painel. */
 
   return { ok: true, pausedUntil: until.toISOString() };
 }

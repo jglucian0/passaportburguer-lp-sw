@@ -1,9 +1,11 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { OTHER_ZONE_NAME } from "@/core/store/maringa-zones";
 import { resolveDeliveryZone } from "@/core/delivery/quote";
-import { cleanText } from "@/core/schemas/auth";
+import bcrypt from "bcryptjs";
+
+import { cleanText, emailInput, passwordInput } from "@/core/schemas/auth";
 import { documentError, onlyDigits } from "@/core/validation/document";
 import { db } from "@/infra/db";
 import { loadDeliveryZones } from "@/infra/db/queries";
@@ -34,6 +36,9 @@ export const registrationBodySchema = z
           .refine((v) => v.includes(" "), "Informe nome e sobrenome."),
       ),
     document: z.string().max(18),
+    /** Só para quem ainda não tem senha: cria o acesso ao site (login por telefone + senha). */
+    email: emailInput.optional(),
+    password: passwordInput.optional(),
     street: z.string().trim().min(2, "Informe a rua.").max(120),
     number: z.string().trim().min(1, "Informe o número.").max(20),
     complement: z.string().trim().max(80).nullish(),
@@ -73,6 +78,9 @@ async function orderAddress(customerId: string, orderId: string | undefined) {
 
 export type RegistrationPrefill = {
   name: string;
+  email: string;
+  /** Conta ainda sem senha: o formulário pede e-mail e senha. */
+  needsPassword: boolean;
   address: { street: string; number: string; complement: string; reference: string };
 };
 
@@ -82,6 +90,8 @@ export async function loadRegistrationPrefill(claims: WhatsAppTokenPayload): Pro
   const a = customer ? await orderAddress(customer.id, claims.orderId) : null;
   return {
     name: customer?.name ?? "",
+    email: customer?.email ?? "",
+    needsPassword: !customer?.passwordHash,
     address: {
       street: a?.street ?? "",
       number: a?.number ?? "",
@@ -141,6 +151,24 @@ export async function completeRegistration(raw: unknown): Promise<RegistrationRe
     })
     .where(and(eq(customers.id, customer.id), eq(customers.tenantId, tenantId)));
 
+  /* Acesso ao site: quem ainda não tem senha cria e-mail + senha aqui (nunca sobrescreve senha existente). */
+  const needsPassword = !customer.passwordHash;
+  let credentials: { email: string; passwordHash: string } | null = null;
+  if (needsPassword) {
+    if (!data.email || !data.password) {
+      return { status: 400, body: { ok: false, error: "Informe e-mail e senha (mínimo 8 caracteres)." } };
+    }
+    const [taken] = await db
+      .select({ id: customers.id })
+      .from(customers)
+      .where(and(eq(customers.tenantId, tenantId), eq(customers.email, data.email)))
+      .limit(1);
+    if (taken && taken.id !== customer.id) {
+      return { status: 409, body: { ok: false, error: "Este e-mail já está em uso." } };
+    }
+    credentials = { email: data.email, passwordHash: await bcrypt.hash(data.password, 10) };
+  }
+
   /* Zona do endereço: a do pedido pago se rua/número não mudaram; senão geocodifica. Falha não bloqueia. */
   const snap = await orderAddress(customer.id, claims.orderId);
   const same =
@@ -173,6 +201,17 @@ export async function completeRegistration(raw: unknown): Promise<RegistrationRe
       complement: data.complement || null,
       reference: data.reference || null,
     });
+  }
+
+  if (credentials) {
+    try {
+      await db
+        .update(customers)
+        .set(credentials)
+        .where(and(eq(customers.id, customer.id), eq(customers.tenantId, tenantId), isNull(customers.passwordHash)));
+    } catch {
+      return { status: 409, body: { ok: false, error: "Este e-mail já está em uso." } };
+    }
   }
 
   /* Vincula a sessão: o próximo contato cai no Fluxo A (cliente cadastrado). */

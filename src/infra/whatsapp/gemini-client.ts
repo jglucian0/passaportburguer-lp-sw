@@ -1,5 +1,6 @@
 import {
   GeminiHttpError,
+  normalizeContents,
   GeminiUnavailableError,
   geminiUrl,
   normalizeModel,
@@ -80,7 +81,7 @@ export async function generateContent(req: GeminiRequest, deps: GenerateDeps = {
   const buildBody = (withThinking: boolean) =>
     JSON.stringify({
       systemInstruction: { parts: [{ text: req.systemInstruction }] },
-      contents: req.contents,
+      contents: normalizeContents(req.contents),
       tools: [{ functionDeclarations: req.functionDeclarations }],
       toolConfig: { functionCallingConfig: { mode: "AUTO" } },
       generationConfig: withThinking
@@ -91,6 +92,8 @@ export async function generateContent(req: GeminiRequest, deps: GenerateDeps = {
   const bodyWithoutThinking = buildBody(false);
 
   const log: string[] = [];
+  /** 400 de um modelo não encerra o turno: outro modelo pode aceitar. Só falha se TODOS recusarem. */
+  let lastBadRequest: GeminiHttpError | null = null;
   const chain = modelChain();
   const alive = chain.filter((m) => (deadModels.get(m) ?? 0) <= now());
   const candidates = alive.length > 0 ? alive : chain; // tudo "morto": tenta mesmo assim
@@ -144,8 +147,14 @@ export async function generateContent(req: GeminiRequest, deps: GenerateDeps = {
         attempt--; // não consome uma repetição do backoff
         continue;
       }
+      if (res.status === 400) {
+        lastBadRequest = httpError;
+        log.push(`${model}: 400 ${errorBody.slice(0, 120)}`);
+        console.error("[whatsapp-bot] gemini 400:", model, errorBody.slice(0, 200), describeShape(req));
+        break; // este modelo recusou o pedido: tenta o próximo
+      }
       if (!TRANSIENT_STATUSES.has(res.status)) {
-        throw httpError; // 400/401/403/...: definitivo, não gasta retries nem modelos
+        throw httpError; // 401/403/...: chave/permissão, trocar de modelo não ajuda
       }
 
       log.push(`${model}: ${res.status}`);
@@ -157,5 +166,12 @@ export async function generateContent(req: GeminiRequest, deps: GenerateDeps = {
     }
   }
 
+  if (lastBadRequest) throw lastBadRequest;
   throw new GeminiUnavailableError(log);
+}
+
+/** Forma do pedido (papéis e tipos de parte, sem conteúdo): ajuda a achar a causa de um 400 sem vazar a conversa. */
+function describeShape(req: GeminiRequest): string {
+  const shape = req.contents.map((c) => `${c.role[0]}:${(c.parts ?? []).map((p) => (p.text !== undefined ? "t" : p.inlineData ? "i" : p.functionCall ? "fc" : p.functionResponse ? "fr" : "?")).join("")}`);
+  return shape.join(" ");
 }

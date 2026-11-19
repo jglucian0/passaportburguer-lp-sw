@@ -186,13 +186,45 @@ export async function POST(request: NextRequest, { params }: Ctx) {
     .limit(1);
   if (!customer) return unauthorizedResponse();
 
+  /* CPF do pagador: o Asaas exige para gerar Pix/fatura. Vem do corpo, do pedido ou do cadastro. */
+  const providedDocument =
+    input.mode === "pix" || input.mode === "hosted"
+      ? (input.documentNumber ?? null)
+      : input.mode === "card"
+        ? input.card.holderCpfCnpj
+        : null;
+  // No cartão o CPF do titular pode ser de outra pessoa: só preenche o pedido se ele ainda não tiver CPF.
+  const documentNumber =
+    input.mode === "card"
+      ? order.documentNumber || customer.documentNumber || providedDocument
+      : providedDocument || order.documentNumber || customer.documentNumber || null;
+  if (input.mode !== "card" && !documentNumber) {
+    return NextResponse.json(
+      { error: "Informe o CPF para gerar o pagamento.", needsDocument: true },
+      { status: 400, headers: NO_STORE },
+    );
+  }
+  if (documentNumber && order.documentNumber !== documentNumber) {
+    await db
+      .update(orders)
+      .set({ documentNumber, updatedAt: new Date() })
+      .where(and(eq(orders.id, order.id), eq(orders.tenantId, session.tenantId)));
+    order.documentNumber = documentNumber;
+  }
+  if (providedDocument && customer.documentNumber !== providedDocument && !customer.documentNumber) {
+    await db
+      .update(customers)
+      .set({ documentNumber: providedDocument })
+      .where(and(eq(customers.id, customer.id), eq(customers.tenantId, session.tenantId)));
+  }
+
   const asaasCustomer: AsaasCustomerInput = {
     id: customer.id,
     name: customer.name,
     phone: customer.phone,
     email: customer.email,
     asaasCustomerId: customer.asaasCustomerId,
-    cpfCnpj: order.documentNumber,
+    cpfCnpj: documentNumber,
   };
 
   try {

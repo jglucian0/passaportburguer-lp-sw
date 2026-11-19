@@ -38,8 +38,8 @@ beforeEach(() => {
 });
 
 describe("debounce", () => {
-  it("espera 1,8 s (e não mais 5 s)", () => {
-    expect(DEBOUNCE_MS).toBe(1800);
+  it("espera 3,5 s de silêncio do cliente (e não mais 5 s)", () => {
+    expect(DEBOUNCE_MS).toBe(3500);
   });
 });
 
