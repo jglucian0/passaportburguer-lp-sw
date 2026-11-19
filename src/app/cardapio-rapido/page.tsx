@@ -2,11 +2,15 @@ import { MessageCircle } from "lucide-react";
 import type { Metadata } from "next";
 
 import { getStorefrontData } from "@/actions/storefront";
+import { QuickCheckoutForm } from "@/components/quick-menu/quick-checkout-form";
 import { QuickMenu } from "@/components/quick-menu/quick-menu";
 import { db } from "@/infra/db";
-import { whatsappMessages } from "@/infra/db/schema";
+import { whatsappMessages, whatsappSessions } from "@/infra/db/schema";
+import { priceCart } from "@/infra/whatsapp/order-flow";
 import { quickMenuClaimKey, businessWhatsAppNumber } from "@/infra/whatsapp/quick-cart";
+import { loadQuickCheckoutPrefill } from "@/infra/whatsapp/quick-checkout";
 import { verifyWhatsAppToken } from "@/infra/whatsapp/session-token";
+import { getTenantId } from "@/infra/whatsapp/shared";
 import { eq } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
@@ -48,7 +52,7 @@ export default async function QuickMenuPage({
   const token = typeof raw === "string" ? raw : "";
   const claims = token ? verifyWhatsAppToken(token) : null;
 
-  if (!claims || claims.purpose !== "QUICK_MENU") {
+  if (!claims || (claims.purpose !== "QUICK_MENU" && claims.purpose !== "QUICK_CHECKOUT")) {
     return (
       <Notice
         title="Este link expirou"
@@ -65,8 +69,41 @@ export default async function QuickMenuPage({
   if (used) {
     return (
       <Notice
-        title="Seus itens já foram enviados"
-        text="Esse link já foi usado. Se quiser mudar algo, peça um novo Cardápio Rápido ao atendente no WhatsApp."
+        title="Esse pedido já foi enviado"
+        text="Esse link já foi usado. Para fazer outro pedido, peça um novo Cardápio Rápido no WhatsApp."
+      />
+    );
+  }
+
+  const tenantId = await getTenantId();
+  if (!tenantId) return <Notice title="Loja indisponível" text="Não conseguimos carregar o cardápio agora. Tente de novo em instantes." />;
+  const prefill = await loadQuickCheckoutPrefill(tenantId, claims.phone);
+
+  /* Atalho "Repetir pedido": itens já salvos na sessão; só falta entrega/endereço (e cadastro, se novo). */
+  if (claims.purpose === "QUICK_CHECKOUT") {
+    const [session] = await db.select().from(whatsappSessions).where(eq(whatsappSessions.phone, claims.phone)).limit(1);
+    const draft = session?.draftCart ?? [];
+    const priced = draft.length > 0 ? await priceCart(tenantId, draft, "PICKUP", null, null) : null;
+    if (!priced || !priced.ok) {
+      return (
+        <Notice
+          title={priced && !priced.ok ? priced.error : "Seu pedido não está mais salvo"}
+          text="Peça um novo Cardápio Rápido no WhatsApp para escolher seus itens."
+        />
+      );
+    }
+    return (
+      <QuickCheckoutForm
+        token={token}
+        prefill={prefill}
+        subtotalCents={priced.calc.subtotalCents}
+        items={null}
+        lines={priced.calc.lines.map((l, i) => ({
+          key: String(i),
+          text: `${l.quantity}x ${l.productName}`,
+          detail: l.addons.length ? `+ ${l.addons.map((a) => `${a.quantity > 1 ? `${a.quantity}x ` : ""}${a.name}`).join(", ")}` : undefined,
+          totalCents: l.totalItemCents,
+        }))}
       />
     );
   }
@@ -76,5 +113,5 @@ export default async function QuickMenuPage({
     return <Notice title="Loja indisponível" text="Não conseguimos carregar o cardápio agora. Tente de novo em instantes." />;
   }
 
-  return <QuickMenu tenant={data.tenant} store={data.store} categories={data.categories} token={token} />;
+  return <QuickMenu tenant={data.tenant} store={data.store} categories={data.categories} token={token} prefill={prefill} />;
 }

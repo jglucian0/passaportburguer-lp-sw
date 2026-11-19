@@ -1,7 +1,7 @@
 "use client";
 
-import { Check, ChevronDown, ChevronUp, Loader2, Minus, Plus, Send, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronUp, Minus, Plus, ShoppingBag, Trash2 } from "lucide-react";
+import { useState } from "react";
 
 import type { PublicTenant } from "@/actions/storefront";
 import type { CatalogCategory } from "@/core/schemas/product";
@@ -12,84 +12,55 @@ import { lineUnitTotal } from "@/components/storefront/cart-storage";
 import { OverlayProvider, useOverlayOpen } from "@/components/storefront/overlay-context";
 import { brandStyle, cn, formatCents } from "@/lib/utils";
 
-type Phase = "idle" | "sending" | "done";
+import { QuickCheckoutForm, type CheckoutPrefill } from "./quick-checkout-form";
 
 function QuickMenuInner({
   tenant,
   store,
   categories,
   token,
+  prefill,
 }: {
   tenant: PublicTenant;
   store: StoreStatus;
   categories: CatalogCategory[];
   token: string;
+  prefill: CheckoutPrefill;
 }) {
   const { lines, count, subtotalCents, hydrated, setQuantity, removeLine, clear } = useCart();
   const overlayOpen = useOverlayOpen();
   const [bagOpen, setBagOpen] = useState(false);
-  const [phase, setPhase] = useState<Phase>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const timer = useRef<number | null>(null);
-
-  useEffect(() => () => {
-    if (timer.current) window.clearTimeout(timer.current);
-  }, []);
+  const [step, setStep] = useState<"menu" | "details">("menu");
 
   const empty = !hydrated || count === 0;
 
-  async function submit() {
-    if (phase !== "idle" || empty) return;
-    setPhase("sending");
-    setError(null);
-    try {
-      const res = await fetch("/api/whatsapp/cart-submit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token,
-          items: lines.map((l) => ({
-            productId: l.productId,
-            quantity: l.quantity,
-            addons: l.addons.map((a) => ({ addonId: a.addonId, quantity: a.quantity })),
-            notes: l.note || undefined,
-          })),
-        }),
-      });
-      const data = (await res.json().catch(() => null)) as
-        | { ok: true; redirectUrl: string }
-        | { ok: false; error?: string }
-        | null;
-      if (!res.ok || !data || !data.ok) {
-        setError((data && !data.ok && data.error) || "Não foi possível enviar. Tente novamente.");
-        setPhase("idle");
-        return;
-      }
-      clear();
-      setBagOpen(false);
-      setPhase("done");
-      const url = data.redirectUrl;
-      timer.current = window.setTimeout(() => {
-        window.location.href = url;
-      }, 1000);
-    } catch {
-      setError("Sem conexão. Tente novamente.");
-      setPhase("idle");
-    }
-  }
-
-  if (phase === "done") {
+  if (step === "details" && !empty) {
     return (
-      <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-[#071329] p-8 text-center text-white">
-        <span className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/20 text-emerald-400">
-          <Check className="h-8 w-8" />
-        </span>
-        <p className="text-lg font-bold">Itens enviados para o atendente!</p>
-        <p className="flex items-center gap-2 text-sm text-white/70">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Voltando para o WhatsApp...
-        </p>
-      </div>
+      <QuickCheckoutForm
+        token={token}
+        prefill={prefill}
+        subtotalCents={subtotalCents}
+        lines={lines.map((l) => ({
+          key: l.key,
+          text: `${l.quantity}x ${l.name}`,
+          detail:
+            [
+              l.addons.length ? `+ ${l.addons.map((a) => `${a.quantity > 1 ? `${a.quantity}x ` : ""}${a.name}`).join(", ")}` : "",
+              l.note ? `obs: ${l.note}` : "",
+            ]
+              .filter(Boolean)
+              .join(" · ") || undefined,
+          totalCents: lineUnitTotal(l) * l.quantity,
+        }))}
+        items={lines.map((l) => ({
+          productId: l.productId,
+          quantity: l.quantity,
+          addons: l.addons.map((a) => ({ addonId: a.addonId, quantity: a.quantity })),
+          notes: l.note || undefined,
+        }))}
+        onBack={() => setStep("menu")}
+        onSubmitted={clear}
+      />
     );
   }
 
@@ -102,7 +73,7 @@ function QuickMenuInner({
 
       <main className="pb-40">
         <p className="bg-[#0A2540] px-4 py-3 text-center text-sm text-white/80">
-          Escolha seus itens e toque em enviar: o atendente continua o pedido no WhatsApp.
+          Escolha seus itens, informe a entrega e pague pelo link. Eu aviso no WhatsApp quando o pagamento cair.
         </p>
         <Menu categories={categories} storeOpen={store.isOpen} />
       </main>
@@ -156,11 +127,6 @@ function QuickMenuInner({
           ) : null}
 
           <div className="space-y-2 p-3">
-            {error ? (
-              <p role="alert" className="rounded-lg bg-red-50 px-3 py-2 text-center text-sm text-red-700">
-                {error}
-              </p>
-            ) : null}
             {!store.isOpen ? (
               <p className="text-center text-xs text-slate-500">A loja está fechada no momento.</p>
             ) : null}
@@ -176,8 +142,8 @@ function QuickMenuInner({
             ) : null}
             <button
               type="button"
-              onClick={submit}
-              disabled={empty || phase === "sending" || !store.isOpen}
+              onClick={() => setStep("details")}
+              disabled={empty || !store.isOpen}
               className={cn(
                 "flex h-14 w-full items-center justify-center gap-2 rounded-2xl px-4 font-bold shadow-lg transition active:scale-[0.99]",
                 empty || !store.isOpen
@@ -185,8 +151,8 @@ function QuickMenuInner({
                   : "bg-[#25D366] text-[#052e16] hover:brightness-105",
               )}
             >
-              {phase === "sending" ? <Loader2 className="h-5 w-5 animate-spin" /> : <Send className="h-5 w-5" />}
-              {empty ? "Escolha seus itens" : `Enviar itens para o WhatsApp (${formatCents(subtotalCents)})`}
+              <ShoppingBag className="h-5 w-5" />
+              {empty ? "Escolha seus itens" : `Continuar (${formatCents(subtotalCents)})`}
             </button>
           </div>
         </div>
@@ -196,7 +162,8 @@ function QuickMenuInner({
 }
 
 /**
- * Cardápio Rápido: mesmo cardápio do site (Menu + ProductModal), sem login, endereço nem pagamento.
+ * Cardápio Rápido: mesmo cardápio do site (Menu + ProductModal), sem login. Depois da sacola vem a etapa de
+ * dados (entrega/endereço/cadastro) e o pagamento.
  * A sacola usa chave de armazenamento própria para não misturar com o carrinho do site.
  */
 export function QuickMenu(props: {
@@ -204,6 +171,7 @@ export function QuickMenu(props: {
   store: StoreStatus;
   categories: CatalogCategory[];
   token: string;
+  prefill: CheckoutPrefill;
 }) {
   return (
     <CartProvider tenantId={`quick-${props.tenant.id}`}>

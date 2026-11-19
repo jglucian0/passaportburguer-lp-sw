@@ -2,19 +2,13 @@ import { formatCents } from "@/lib/utils";
 
 import { updateCartTool } from "./draft-flow";
 import type { CustomerContext } from "./customer-context";
-import type { ToolContext } from "./shared";
-
-/** Perguntas (entrega/retirada) depois de o carrinho estar pronto. */
-export function nextQuestion(customer: CustomerContext): string {
-  if (customer.isRegistered && customer.defaultAddress) {
-    return `Entrego em *${customer.defaultAddress.street}, ${customer.defaultAddress.number}* ou você vai retirar?`;
-  }
-  return "É para entrega ou você vai retirar?";
-}
+import { signWhatsAppToken } from "./session-token";
+import { appUrl, type ToolContext } from "./shared";
 
 /**
- * Atalho "Repetir pedido": grava os itens do último pedido entregue no rascunho (validados no catálogo atual).
- * Devolve o texto (blocos separados por linha em branco = mensagens separadas) ou null se não deu para repetir.
+ * Atalho "Repetir pedido": grava os itens do último pedido entregue no rascunho (validados no catálogo atual) e arma
+ * UM botão "Finalizar pedido" que abre direto a etapa de entrega/endereço/pagamento (sem passar pelo cardápio).
+ * Devolve o corpo do botão ou null se não deu para repetir (item sumiu do cardápio, preço mudou etc.).
  */
 export async function repeatLastOrder(ctx: ToolContext, customer: CustomerContext): Promise<string | null> {
   if (!customer.isRegistered || customer.lastOrderItems.length === 0) return null;
@@ -28,10 +22,13 @@ export async function repeatLastOrder(ctx: ToolContext, customer: CustomerContex
   if (items.length === 0) return null;
 
   const result = await updateCartTool(ctx, { items });
-  if (!result.ok) return null; // item sem estoque/mudou de preço: segue pelo cardápio
+  if (!result.ok) return null;
 
   const lines = result.lines
     .map((l) => `• ${l.quantity}x ${l.name}${l.addons.length ? ` (+ ${l.addons.join(", ")})` : ""}`)
     .join("\n");
-  return [`Anotei o de sempre!\n${lines}\nSubtotal: *${formatCents(result.subtotalCents)}*`, nextQuestion(customer)].join("\n\n");
+  const token = signWhatsAppToken({ phone: ctx.phone, purpose: "QUICK_CHECKOUT" });
+  const body = `Anotei o de sempre!\n${lines}\nSubtotal: ${formatCents(result.subtotalCents)}\n\nToque abaixo pra escolher entrega ou retirada e pagar 👇`;
+  ctx.cta = { buttonText: "Finalizar pedido", url: `${appUrl()}/cardapio-rapido?token=${encodeURIComponent(token)}`, bodyText: body };
+  return body;
 }

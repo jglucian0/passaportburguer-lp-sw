@@ -1,6 +1,7 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, notInArray } from "drizzle-orm";
 
 import { db } from "@/infra/db";
+import { getMilesBalance } from "@/infra/miles/miles";
 import { customerAddresses, customers, orderItems, orders, whatsappSessions } from "@/infra/db/schema";
 
 import { getBrazilianPhoneVariants } from "./phone";
@@ -29,6 +30,10 @@ export type CustomerContext =
       lastOrderSummary: string | null;
       /** Itens do último pedido (ids reais) para repetir via saveDraftOrder. */
       lastOrderItems: { productId: string | null; name: string; quantity: number; addonIds: string[] }[];
+      /** Pedido das últimas 24 h ainda em andamento (a ÚNICA fonte para falar do status do pedido). */
+      activeOrder?: { number: number; status: string; deliveryType: "DELIVERY" | "PICKUP" } | null;
+      /** Saldo de milhas disponível (programa ativo); nulo se desligado/indisponível. */
+      milesBalance?: number | null;
     };
 
 export async function getCustomerContext(phone: string): Promise<CustomerContext> {
@@ -56,6 +61,23 @@ export async function getCustomerContext(phone: string): Promise<CustomerContext
     .where(and(eq(orders.customerId, customer.id), eq(orders.status, "DELIVERED")))
     .orderBy(desc(orders.createdAt))
     .limit(1);
+
+  const [active] = await db
+    .select({ number: orders.orderNumber, status: orders.status, deliveryType: orders.deliveryType })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.customerId, customer.id),
+        gte(orders.createdAt, new Date(Date.now() - 24 * 60 * 60 * 1000)),
+        notInArray(orders.status, ["DELIVERED", "CANCELED"]),
+      ),
+    )
+    .orderBy(desc(orders.createdAt))
+    .limit(1)
+    .catch(() => []);
+  const milesBalance = await getMilesBalance(tenantId, customer.id)
+    .then((b) => b.available)
+    .catch(() => null);
 
   let lastOrderItems: Extract<CustomerContext, { isRegistered: true }>["lastOrderItems"] = [];
   if (last) {
@@ -104,5 +126,7 @@ export async function getCustomerContext(phone: string): Promise<CustomerContext
     lastOrderSummary:
       lastOrderItems.length > 0 ? lastOrderItems.map((i) => `${i.quantity}x ${i.name}`).join(" + ") : null,
     lastOrderItems,
+    activeOrder: active ? { number: active.number, status: active.status, deliveryType: active.deliveryType } : null,
+    milesBalance,
   };
 }

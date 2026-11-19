@@ -152,7 +152,7 @@ const deliveryPaymentSchema = z.object({
   documentNumber: z.string().trim().max(18).nullish(),
 });
 
-async function buildSnapshot(
+export async function buildSnapshot(
   tenantId: string,
   address: AddressInput,
 ): Promise<{ ok: true; snapshot: AddressSnapshot; coords: Coords } | { ok: false; error: string }> {

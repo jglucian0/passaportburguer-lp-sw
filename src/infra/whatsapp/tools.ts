@@ -164,36 +164,6 @@ export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
     parameters: { type: "object", properties: { reason: { type: "string", description: "Motivo curto para a equipe." } }, required: ["reason"] },
   },
   {
-    name: "setDeliveryAndPayment",
-    description:
-      "Grava entrega/retirada e endereço na sessão. Chame assim que o cliente informar ou confirmar. Entrega com addressConfirmed=true e sem address usa o endereço salvo do cliente cadastrado. Não existe forma de pagamento no chat: quando carrinho + endereço (ou retirada) estiverem prontos o pedido é fechado AUTOMATICAMENTE pelo servidor, que envia o botão para a página de pagamento.",
-    parameters: {
-      type: "object",
-      properties: {
-        deliveryType: { type: "string", enum: ["DELIVERY", "PICKUP"] },
-        address: {
-          type: "object",
-          description: "Endereço novo em Maringá-PR. Omita ao usar o endereço salvo.",
-          properties: {
-            street: { type: "string" },
-            number: { type: "string" },
-            complement: { type: "string" },
-            reference: { type: "string" },
-            neighborhood: { type: "string" },
-          },
-          required: ["street", "number"],
-        },
-        addressConfirmed: {
-          type: "boolean",
-          description: "true quando o cliente CONFIRMOU o endereço ('sim', 'no mesmo endereço') ou acabou de informá-lo. Retirada: true.",
-        },
-        customerName: { type: "string", description: "Só para cliente novo." },
-        documentNumber: { type: "string", description: "CPF, SOMENTE se o sistema pedir. Quem tem hasDocument=true nunca informa." },
-      },
-      required: ["deliveryType", "addressConfirmed"],
-    },
-  },
-  {
     name: "cancelUnpaidOrder",
     description:
       "Cancela o pedido do cliente que AINDA NÃO FOI PAGO (aguardando pagamento) e libera a sessão para um novo pedido; o bot segue ativo. Se o pedido já foi pago ou está em preparo/entrega, passa automaticamente para um atendente humano. O telefone é o da conversa.",
@@ -282,12 +252,13 @@ export async function executeTool(ctx: ToolContext, name: string, args: Args = {
         return sendQuickMenuTool(ctx, args);
       case "updateCart":
         return { ...(await updateCartTool(ctx, args)) };
+      // Fora de TOOL_DECLARATIONS: o chat não coleta mais endereço (é o Cardápio Rápido). Mantida só para a lógica de endereço reutilizada.
+      case "setDeliveryAndPayment":
+        return { ...(await setDeliveryAndPaymentTool(ctx, args)) };
       case "escalateToHuman":
         ctx.silent = true;
         await escalateForToday(ctx.phone, String(args.reason ?? ""));
         return { ok: true, note: "Um atendente humano assume. Não escreva nada ao cliente." };
-      case "setDeliveryAndPayment":
-        return { ...(await setDeliveryAndPaymentTool(ctx, args)) };
       case "cancelUnpaidOrder":
         return { ...(await cancelUnpaidOrderTool({ phone: ctx.phone, reason: String(args.reason ?? "") })) };
       case "sendReviewRequest":

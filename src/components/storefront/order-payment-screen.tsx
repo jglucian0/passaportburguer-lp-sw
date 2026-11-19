@@ -10,6 +10,7 @@ import { getAuthSession } from "@/infra/auth/customer-session";
 import { db } from "@/infra/db";
 import { customers, orders, payments } from "@/infra/db/schema";
 import { resolveTokenAccess, type OrderAccess } from "@/infra/payments/order-access";
+import { businessWhatsAppNumber } from "@/infra/whatsapp/quick-cart";
 import { loadMaskedOrderSummary, type MaskedOrderSummary } from "@/infra/payments/order-privacy";
 import { formatCents } from "@/lib/utils";
 
@@ -134,6 +135,8 @@ export async function OrderPaymentScreen({ orderId, token }: { orderId: string; 
             // Link do WhatsApp: escolhe Pix/cartão na própria página (sem cobrança até escolher).
             askMethod={anonymous && !pixValid}
             totalCents={order.totalCents}
+            // Link do WhatsApp: depois de pago, o cliente volta para a conversa por este botão.
+            whatsappUrl={anonymous && businessWhatsAppNumber() ? `https://wa.me/${businessWhatsAppNumber()}` : null}
             documentKnown={!!knownDocument}
             // Anônimo: nada de dados pessoais no HTML (o titular digita os dados do cartão).
             customerEmail={anonymous ? "" : (customer?.email ?? "")}

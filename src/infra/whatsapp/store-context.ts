@@ -2,14 +2,15 @@ import { getStoreStatus, DEFAULT_TIME_ZONE, type OpeningHours } from "@/core/sto
 import { effectiveMinOrderCents } from "@/core/store/min-order";
 import { db } from "@/infra/db";
 import { loadStoreSettings, type StoreSettingsRow } from "@/infra/db/store-settings";
-import { tenants } from "@/infra/db/schema";
+import { milesRewards, tenants } from "@/infra/db/schema";
+import { loadMilesConfig } from "@/infra/miles/config";
 import { formatCents } from "@/lib/utils";
-import { eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 
 import { getTenantId } from "./shared";
 
 /** Situação operacional da loja, já em texto, para o prompt do atendente. */
-export type StoreContext = { statusText: string; rulesText: string };
+export type StoreContext = { statusText: string; rulesText: string; /** Programa de milhas real (nunca inventar). */ milesText?: string };
 
 const WEEKDAYS = ["domingo", "segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado"];
 const SHORT_DAY: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
@@ -88,17 +89,33 @@ export function describeStoreRules(settings: StoreSettingsRow, minOrderCents: nu
   ].join(" ");
 }
 
+/** Regras REAIS do programa de milhas, para a atendente responder sem inventar. */
+async function describeMiles(tenantId: string): Promise<string> {
+  const config = await loadMilesConfig(tenantId);
+  if (!config.enabled) return "O programa de milhas está desligado no momento: não prometa nem explique milhas.";
+  const rewards = await db
+    .select({ name: milesRewards.name, milesCost: milesRewards.milesCost })
+    .from(milesRewards)
+    .where(and(eq(milesRewards.tenantId, tenantId), eq(milesRewards.isActive, true)))
+    .orderBy(asc(milesRewards.milesCost))
+    .limit(6);
+  const list = rewards.length > 0 ? ` Recompensas: ${rewards.map((r) => `${r.name} (${r.milesCost} milhas)`).join(", ")}.` : "";
+  return `Programa de milhas ATIVO: cada R$ 1 em itens de pedido pago rende ${config.milesPerReal} milhas (a taxa de entrega não conta). As milhas chegam depois do pagamento, valem ${config.validityMonths} meses e são trocadas por cupons de desconto na página "Minhas milhas" do site (entrando com a conta).${list}`;
+}
+
 /** Lê as configurações reais da loja (sem cache: o status muda com o relógio e com a pausa manual). */
 export async function loadStoreContext(now: Date = new Date()): Promise<StoreContext | null> {
   const tenantId = await getTenantId();
   if (!tenantId) return null;
-  const [settings, [tenant]] = await Promise.all([
+  const [settings, [tenant], milesText] = await Promise.all([
     loadStoreSettings(tenantId),
     db.select({ minOrderCents: tenants.minOrderCents }).from(tenants).where(eq(tenants.id, tenantId)).limit(1),
+    describeMiles(tenantId).catch(() => undefined),
   ]);
   if (!settings) return null;
   return {
     statusText: describeStoreStatus(settings, now),
     rulesText: describeStoreRules(settings, effectiveMinOrderCents(tenant?.minOrderCents ?? 0)),
+    ...(milesText ? { milesText } : {}),
   };
 }

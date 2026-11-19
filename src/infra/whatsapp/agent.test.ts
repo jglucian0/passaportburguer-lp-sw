@@ -614,7 +614,6 @@ describe("runBotTurn (Gemini mockado)", () => {
     expect(sys).toContain('"hasDocument":true');
     expect(sys).not.toContain("52998224725"); // CPF nunca vai ao modelo
     expect(sys).toContain("Nova York");
-    expect(sys).toContain('"addressConfirmed":true');
     expect(sys).not.toContain("sessionStartedAt");
     expect(sent).toEqual(["Fala, João!"]);
   });

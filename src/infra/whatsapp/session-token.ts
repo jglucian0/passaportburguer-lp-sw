@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-export type WhatsAppTokenPurpose = "QUICK_MENU" | "COMPLETE_REGISTRATION" | "ORDER_PAYMENT";
+/** QUICK_MENU: cardápio + dados + pagamento. QUICK_CHECKOUT: só dados + pagamento, com o rascunho já salvo (atalho Repetir pedido). */
+export type WhatsAppTokenPurpose = "QUICK_MENU" | "QUICK_CHECKOUT" | "COMPLETE_REGISTRATION" | "ORDER_PAYMENT";
 
 export type WhatsAppTokenPayload = {
   phone: string;
@@ -10,7 +11,7 @@ export type WhatsAppTokenPayload = {
 
 type Claims = WhatsAppTokenPayload & { exp: number };
 
-const PURPOSES: readonly string[] = ["QUICK_MENU", "COMPLETE_REGISTRATION", "ORDER_PAYMENT"];
+const PURPOSES: readonly string[] = ["QUICK_MENU", "QUICK_CHECKOUT", "COMPLETE_REGISTRATION", "ORDER_PAYMENT"];
 
 function secret(): string {
   const s = process.env.WHATSAPP_SESSION_SECRET;

@@ -39,7 +39,7 @@ export function buildStartFlow(greeting: string, mode: GreetingMode, customer: S
     return {
       preface: [
         `${capitalize(greeting)}! Bem-vindo a bordo do Passaporte Burguer! ✈️`,
-        "Aqui é simples: você escolhe seu lanche no cardápio digital, diz se é entrega ou retirada e paga pelo link.",
+        "Aqui é simples: escolhe no cardápio digital, informa a entrega e paga pelo link. Eu aviso por aqui quando cair.",
       ],
       ctaBody: "Escolha o destino de hoje 👇",
       repeatSummary: null,

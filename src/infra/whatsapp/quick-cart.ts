@@ -5,27 +5,24 @@ import { z } from "zod";
 
 import { cartItemInputSchema } from "@/core/schemas/cart";
 import { db } from "@/infra/db";
-import {
-  whatsappMessages,
-  whatsappSessions,
-  type WhatsAppDraftCartItem,
-} from "@/infra/db/schema";
+import { whatsappMessages, whatsappSessions, type WhatsAppDraftCartItem } from "@/infra/db/schema";
 import { checkRateLimit } from "@/infra/security/rate-limit";
 import { formatCents } from "@/lib/utils";
 
-import { sendTextMessage } from "./client";
-import { priceCart } from "./order-flow";
+import { finalizeOrderAndCheckout, priceCart } from "./order-flow";
+import { checkoutInputSchema, prepareCheckout, saveCheckoutSession } from "./quick-checkout";
 import { verifyWhatsAppToken } from "./session-token";
-import { getTenantId } from "./shared";
-import { getCustomerContext } from "./tools";
+import { getTenantId, type ToolContext } from "./shared";
 import { errorSummary } from "./log";
 
 const bodySchema = z.object({
   token: z.string().min(10).max(2000),
+  /** Atalho "Repetir pedido" (QUICK_CHECKOUT): sem itens, usa o rascunho já salvo na sessão. */
   items: z
     .array(cartItemInputSchema.extend({ notes: z.string().trim().max(140).nullish() }))
-    .min(1, "Sacola vazia.")
-    .max(30),
+    .max(30)
+    .optional(),
+  checkout: checkoutInputSchema,
 });
 
 export type QuickCartResult = { status: number; body: Record<string, unknown> };
@@ -56,15 +53,19 @@ function describeItems(
     .join("\n");
 }
 
+/**
+ * Fim do Cardápio Rápido: valida itens e dados do cliente, cria a conta (se nova), fecha o pedido AGORA no servidor
+ * e devolve o link da página de pagamento. A confirmação do pedido é a própria página de pagamento; o bot não escreve nada.
+ */
 export async function submitQuickCart(raw: unknown): Promise<QuickCartResult> {
   const parsed = bodySchema.safeParse(raw);
   if (!parsed.success) {
     return { status: 400, body: { ok: false, error: parsed.error.issues[0]?.message ?? "Dados inválidos." } };
   }
-  const { token, items: rawItems } = parsed.data;
+  const { token, items: rawItems, checkout } = parsed.data;
 
   const claims = verifyWhatsAppToken(token);
-  if (!claims || claims.purpose !== "QUICK_MENU") {
+  if (!claims || (claims.purpose !== "QUICK_MENU" && claims.purpose !== "QUICK_CHECKOUT")) {
     return { status: 401, body: { ok: false, error: "Link inválido ou expirado. Peça um novo no WhatsApp." } };
   }
   const phone = claims.phone;
@@ -78,26 +79,42 @@ export async function submitQuickCart(raw: unknown): Promise<QuickCartResult> {
   if (!tenantId) return { status: 500, body: { ok: false, error: "Loja não encontrada." } };
 
   /* Preço, adicionais e disponibilidade vêm 100% do banco; o cliente só diz "o quê" e "quantos". */
-  const items: WhatsAppDraftCartItem[] = rawItems.map((i) => ({
-    productId: i.productId,
-    quantity: i.quantity,
-    notes: i.notes ?? null,
-    addons: i.addons.map((a) => ({ addonId: a.addonId, quantity: a.quantity })),
-  }));
-  const priced = await priceCart(tenantId, items, "PICKUP", null, null);
-  if (!priced.ok) return { status: 422, body: { ok: false, error: priced.error } };
-  const { calc } = priced;
+  let items: WhatsAppDraftCartItem[];
+  if (claims.purpose === "QUICK_CHECKOUT") {
+    const [session] = await db.select().from(whatsappSessions).where(eq(whatsappSessions.phone, phone)).limit(1);
+    items = session?.draftCart ?? [];
+    if (items.length === 0) {
+      return { status: 422, body: { ok: false, error: "Seu pedido não está mais salvo. Peça um novo no WhatsApp." } };
+    }
+  } else {
+    if (!rawItems || rawItems.length === 0) return { status: 400, body: { ok: false, error: "Sacola vazia." } };
+    items = rawItems.map((i) => ({
+      productId: i.productId,
+      quantity: i.quantity,
+      notes: i.notes ?? null,
+      addons: i.addons.map((a) => ({ addonId: a.addonId, quantity: a.quantity })),
+    }));
+  }
+
+  const itemsPriced = await priceCart(tenantId, items, "PICKUP", null, null);
+  if (!itemsPriced.ok) return { status: 422, body: { ok: false, error: itemsPriced.error } };
+
+  /* Conta, endereço, loja aberta, área e mínimo: tudo validado ANTES de gravar qualquer coisa. */
+  const prepared = await prepareCheckout(tenantId, phone, items, checkout);
+  if (!prepared.ok) return { status: prepared.status, body: { ok: false, error: prepared.error } };
 
   /* Uso único: o claim é um insert com wamid unique; só depois de validar, para erros não queimarem o link. */
   const claimKey = quickMenuClaimKey(token);
-  const itemsText = describeItems(calc.lines, items.map((i) => i.notes));
+  const itemsText = describeItems(itemsPriced.calc.lines, items.map((i) => i.notes));
   const claimed = await db
     .insert(whatsappMessages)
     .values({
       wamid: claimKey,
       phone,
       role: "user",
-      content: `[Cliente montou o pedido no Cardápio Rápido]\n${itemsText}\nSubtotal: ${formatCents(calc.subtotalCents)}`,
+      content: `[Cliente montou o pedido no Cardápio Rápido e foi para o pagamento]
+${itemsText}
+Subtotal: ${formatCents(itemsPriced.calc.subtotalCents)}`,
       mediaType: "interactive",
     })
     .onConflictDoNothing({ target: whatsappMessages.wamid })
@@ -105,59 +122,24 @@ export async function submitQuickCart(raw: unknown): Promise<QuickCartResult> {
   if (claimed.length === 0) {
     return { status: 409, body: { ok: false, error: "Esse link já foi usado. Peça um novo no WhatsApp." } };
   }
+  const release = () => db.delete(whatsappMessages).where(eq(whatsappMessages.wamid, claimKey)).catch(() => undefined);
 
-  let paused = false;
   try {
-    const [session] = await db
-      .insert(whatsappSessions)
-      .values({ phone, state: "CONFIRMING_ORDER", draftCart: items })
-      .onConflictDoUpdate({
-        target: whatsappSessions.phone,
-        set: {
-          state: "CONFIRMING_ORDER",
-          draftCart: items,
-          lastInteractionAt: new Date(),
-          updatedAt: new Date(),
-        },
-      })
-      .returning({ botPausedUntil: whatsappSessions.botPausedUntil });
-    paused = !!session?.botPausedUntil && session.botPausedUntil.getTime() > Date.now();
-  } catch (error) {
-    await db.delete(whatsappMessages).where(eq(whatsappMessages.wamid, claimKey)).catch(() => undefined);
-    console.error("[quick-menu] falha ao salvar rascunho:", errorSummary(error));
-    return { status: 500, body: { ok: false, error: "Não foi possível salvar seus itens. Tente de novo." } };
-  }
-
-  /* Mensagem ativa no WhatsApp (best-effort: o rascunho já está salvo). Atendimento humano pausou o bot => silêncio. */
-  if (!paused) {
-    try {
-      const ctx = await getCustomerContext(phone);
-      const summary = `Anotei seus itens!
-
-${itemsText}
-
-Subtotal: *${formatCents(calc.subtotalCents)}* (+ taxa, se for entrega)`;
-      const next = ctx.isRegistered
-        ? ctx.defaultAddress
-          ? `Entrego em *${ctx.defaultAddress.street}, ${ctx.defaultAddress.number}* ou você vai retirar?`
-          : "É para entrega ou você vai retirar?"
-        : "Me diz seu nome e se é entrega (com rua e número) ou retirada.";
-      // Duas mensagens curtas em vez de um textão.
-      for (const text of [summary, next]) {
-        await sendTextMessage(phone, text);
-        await db
-          .insert(whatsappMessages)
-          .values({ phone, role: "assistant", content: text, mediaType: "text" })
-          .catch(() => undefined);
-      }
-    } catch (error) {
-      console.error("[quick-menu] falha ao enviar confirmação:", errorSummary(error));
+    const saved = await saveCheckoutSession(tenantId, phone, items, prepared);
+    if (!saved.ok) {
+      await release();
+      return { status: saved.status, body: { ok: false, error: saved.error } };
     }
+    const ctx: ToolContext = { phone, afterReply: [], cta: null };
+    const order = await finalizeOrderAndCheckout(ctx, {});
+    if (!order.ok || !order.checkoutUrl) {
+      await release();
+      return { status: 422, body: { ok: false, error: order.ok ? "Não foi possível abrir o pagamento." : order.error } };
+    }
+    return { status: 200, body: { ok: true, redirectUrl: order.checkoutUrl, orderNumber: order.orderNumber } };
+  } catch (error) {
+    await release();
+    console.error("[quick-menu] falha ao fechar o pedido:", errorSummary(error));
+    return { status: 500, body: { ok: false, error: "Não foi possível fechar seu pedido. Tente de novo." } };
   }
-
-  const number = businessWhatsAppNumber();
-  return {
-    status: 200,
-    body: { ok: true, redirectUrl: number ? `https://wa.me/${number}` : "https://wa.me/" },
-  };
 }

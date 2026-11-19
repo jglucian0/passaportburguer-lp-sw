@@ -30,6 +30,8 @@ type Props = {
   /** Link do WhatsApp: o cliente escolhe Pix ou cartão aqui dentro (nenhuma cobrança é criada antes). */
   askMethod?: boolean;
   totalCents: number;
+  /** Link do WhatsApp (acesso por token): após o pagamento, botão para voltar à conversa. */
+  whatsappUrl?: string | null;
   customerEmail: string;
   initialPix: PixData | null;
   /** O pedido/cadastro já tem CPF no servidor: não precisa pedir de novo (nunca é enviado ao navegador anônimo). */
@@ -81,6 +83,7 @@ export function PaymentView({
   method: initialMethod,
   askMethod = false,
   totalCents,
+  whatsappUrl = null,
   customerEmail,
   initialPix,
   documentKnown = false,
@@ -393,6 +396,17 @@ export function PaymentView({
           <Check className="h-5 w-5" />{" "}
           {confirmedStatus === "PREPARING" || token ? "Pagamento confirmado! Seu pedido está na chapa." : "Pagamento confirmado! Redirecionando…"}
         </p>
+        {whatsappUrl ? (
+          <>
+            <p className="text-sm text-slate-600">Pronto! Agora é só voltar ao WhatsApp: lá eu aviso quando o pedido sair.</p>
+            <a
+              href={whatsappUrl}
+              className="flex h-12 w-full items-center justify-center rounded-xl bg-[#25D366] font-bold text-[#052e16]"
+            >
+              Voltar ao WhatsApp
+            </a>
+          </>
+        ) : null}
       </div>
     );
   }
