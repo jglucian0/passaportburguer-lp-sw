@@ -14,7 +14,24 @@ type Step = "phone" | "password" | "send" | "register" | "forgot" | "reset";
 const POLL_MS = 3000;
 const PENDING_OTP_KEY = "pb_pending_otp";
 
-type PendingOtp = { phone: string; code: string; expiresAt: number; returnTo: string; waUrl: string; sandbox: boolean };
+type Delivery = "inbound" | "window" | "template";
+
+/** "inbound": o código aparece aqui e o cliente o envia. "window"/"template": o código chega no WhatsApp e o cliente o digita (code fica vazio). */
+type PendingOtp = {
+  phone: string;
+  code: string;
+  expiresAt: number;
+  returnTo: string;
+  waUrl: string;
+  sandbox: boolean;
+  delivery: Delivery;
+};
+
+/** Aceita "ab12", "PASS-AB12" ou "pass ab12" e devolve PASS-AB12 (ou "" se incompleto). */
+function toFullCode(value: string): string {
+  const clean = value.toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/^PASS/, "");
+  return clean.length === 4 ? `PASS-${clean}` : "";
+}
 
 function readPendingOtp(): PendingOtp | null {
   try {
@@ -28,7 +45,7 @@ function readPendingOtp(): PendingOtp | null {
       typeof p.expiresAt === "number" &&
       Date.now() < p.expiresAt
     ) {
-      return { returnTo: "", sandbox: false, ...p } as PendingOtp;
+      return { returnTo: "", sandbox: false, delivery: "inbound", ...p } as PendingOtp;
     }
     window.localStorage.removeItem(PENDING_OTP_KEY);
   } catch {
@@ -93,6 +110,8 @@ export function PhoneLookup({
   const [phone, setPhone] = useState(initialPhone ? formatPhone(initialPhone) : "");
   const [code, setCode] = useState("");
   const [waUrl, setWaUrl] = useState("");
+  const [delivery, setDelivery] = useState<Delivery>("inbound");
+  const [typedCode, setTypedCode] = useState("");
   const [sandbox, setSandbox] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -111,6 +130,7 @@ export function PhoneLookup({
     setPhone(formatPhone(pending.phone));
     setCode(pending.code);
     setWaUrl(pending.waUrl);
+    setDelivery(pending.delivery);
     setSandbox(pending.sandbox);
     setStep("send");
   }, [startAtRegister]);
@@ -139,12 +159,12 @@ export function PhoneLookup({
       try {
         const { ok, status, data } = await postJson<CheckResponse>("/api/auth/whatsapp/check", {
           phone,
-          code,
+          code: delivery === "inbound" ? code : toFullCode(typedCode),
           confirm,
         });
         if (!ok) {
           setError(data.error ?? "Não foi possível verificar agora.");
-          if (status === 410) {
+          if (status === 410 || status === 429) {
             clearPendingOtp();
             setStep("phone"); // expirado: recomeça
           }
@@ -170,12 +190,12 @@ export function PhoneLookup({
         checking.current = false;
       }
     },
-    [phone, code],
+    [phone, code, delivery, typedCode],
   );
 
   /* Polling leve enquanto o cliente está no WhatsApp. */
   useEffect(() => {
-    if (step !== "send") return;
+    if (step !== "send" || delivery !== "inbound") return;
     void check(false); // checagem imediata (ex.: aba restaurada após o WhatsApp)
     const id = setInterval(() => void check(false), POLL_MS);
     const onReturn = () => {
@@ -188,7 +208,7 @@ export function PhoneLookup({
       document.removeEventListener("visibilitychange", onReturn);
       window.removeEventListener("focus", onReturn);
     };
-  }, [step, check]);
+  }, [step, delivery, check]);
 
   /** Envolve um envio de formulário: bloqueia duplo clique e trata falha de rede. */
   async function run(event: React.FormEvent, task: () => Promise<void>) {
@@ -227,6 +247,7 @@ export function PhoneLookup({
         error?: string;
         code?: string;
         waUrl?: string;
+        delivery?: Delivery;
         mode?: string;
         expiresAt?: number;
         expiresIn?: number;
@@ -238,18 +259,23 @@ export function PhoneLookup({
         setStep("password");
         return;
       }
-      if (!init.ok || !init.data.code || !init.data.waUrl) {
+      const mode: Delivery = init.data.delivery ?? "inbound";
+      const missing = mode === "inbound" ? !init.data.code || !init.data.waUrl : mode === "window" && !init.data.waUrl;
+      if (!init.ok || missing) {
         setError(init.data.error ?? "Não foi possível gerar o código.");
         return;
       }
-      setCode(init.data.code);
-      setWaUrl(init.data.waUrl);
+      setCode(init.data.code ?? "");
+      setWaUrl(init.data.waUrl ?? "");
+      setDelivery(mode);
+      setTypedCode("");
       const isSandbox = init.data.mode === "sandbox";
       setSandbox(isSandbox);
       writePendingOtp({
         phone: digitsOf(phone),
-        code: init.data.code,
-        waUrl: init.data.waUrl,
+        code: init.data.code ?? "",
+        waUrl: init.data.waUrl ?? "",
+        delivery: mode,
         sandbox: isSandbox,
         expiresAt: init.data.expiresAt ?? Date.now() + (init.data.expiresIn ?? 600) * 1000,
         returnTo: window.location.pathname,
@@ -403,7 +429,60 @@ export function PhoneLookup({
           </form>
         ) : null}
 
-        {step === "send" ? (
+        {step === "send" && delivery !== "inbound" ? (
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!toFullCode(typedCode)) return setError("Digite os 4 caracteres do código.");
+              setError(null);
+              void check(false);
+            }}
+            className="relative space-y-4"
+          >
+            {delivery === "window" ? (
+              <>
+                <p className="text-center text-sm text-slate-600">
+                  1. Abra o WhatsApp e envie a mensagem que já vem pronta. Respondemos na hora com o seu código.
+                </p>
+                <a
+                  href={waUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex h-12 w-full items-center justify-center gap-2 cursor-pointer rounded-xl bg-[#22bb5a] text-base font-bold text-white shadow-lg shadow-green-600/30 transition hover:-translate-y-0.5 hover:brightness-105 active:translate-y-0 active:brightness-95"
+                >
+                  <MessageCircle className="h-5 w-5" />
+                  Receber código no WhatsApp
+                </a>
+                <p className="text-center text-sm text-slate-600">2. Volte aqui e digite o código recebido.</p>
+              </>
+            ) : (
+              <p className="text-center text-sm text-slate-600">
+                Enviamos um código para o seu WhatsApp ({phone}). Digite-o abaixo.
+              </p>
+            )}
+            {field(
+              "Código de embarque",
+              <Input
+                value={typedCode}
+                onChange={(e) => setTypedCode(e.target.value.toUpperCase().slice(0, 9))}
+                autoComplete="one-time-code"
+                autoCapitalize="characters"
+                placeholder="PASS-XXXX"
+                inputMode="text"
+                maxLength={9}
+                className={`${inputClass} text-center text-xl font-bold tracking-widest`}
+              />,
+            )}
+            <button type="submit" disabled={!toFullCode(typedCode)} className={submitClass}>
+              {submitLabel("Confirmar código")}
+            </button>
+            <button type="button" onClick={() => goTo("phone")} className={linkClass}>
+              Alterar número
+            </button>
+          </form>
+        ) : null}
+
+        {step === "send" && delivery === "inbound" ? (
           <div className="relative space-y-4">
             <div className="rounded-xl border-2 border-dashed border-[#F59E0B] bg-amber-50 py-4 text-center">
               <p className="text-xs font-medium uppercase tracking-wider text-slate-500">

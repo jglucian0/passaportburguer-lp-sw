@@ -131,15 +131,15 @@ function FloatingCartBar({ categories }: { categories: CatalogCategory[] }) {
         type="button"
         onClick={openCart}
         className={cn(
-          "flex h-14 w-full items-center justify-between bg-[#0A2540] px-5 font-bold text-white shadow-xl ring-2 ring-[#F59E0B] transition duration-200 hover:brightness-110 active:scale-[0.99]",
+          "flex h-14 w-full items-center justify-between bg-[#F59E0B] px-5 font-bold text-[#0A2540] shadow-xl transition duration-200 hover:brightness-105 active:scale-[0.99]",
           nudge ? "rounded-b-2xl" : "rounded-2xl",
         )}
       >
         <span className="flex items-center gap-2">
-          <ShoppingBag className="h-5 w-5 text-[#F59E0B]" />
+          <ShoppingBag className="h-5 w-5" />
           Ver sacola • {count} {count === 1 ? "item" : "itens"}
         </span>
-        <span className="text-[#F59E0B]">{formatCents(subtotalCents)}</span>
+        <span>{formatCents(subtotalCents)}</span>
       </button>
     </div>
   );

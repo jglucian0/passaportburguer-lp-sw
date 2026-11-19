@@ -16,6 +16,44 @@ export function getWhatsappAuthMode(): "sandbox" | "meta" {
 }
 
 /**
+ * Como o código chega ao cliente (env WHATSAPP_OTP_DELIVERY). A validação é a mesma em "window" e "template":
+ * o cliente DIGITA no site o código que recebeu no WhatsApp.
+ * - "window" (padrão, sem custo): o cliente abre o WhatsApp com uma mensagem qualquer (abre a janela de 24 h)
+ *   e o bot responde com o código.
+ * - "template": o servidor envia o código direto por template de autenticação aprovado (produção; o cliente
+ *   não precisa mandar mensagem nenhuma).
+ * - "inbound": fluxo antigo invertido (o cliente envia PASS-XXXX e o Webhook confirma).
+ * Em sandbox (dev) vale sempre "inbound".
+ */
+export type OtpDelivery = "inbound" | "window" | "template";
+
+export function getOtpDelivery(): OtpDelivery {
+  if (getWhatsappAuthMode() === "sandbox") return "inbound";
+  const v = (process.env.WHATSAPP_OTP_DELIVERY ?? "").trim().toLowerCase();
+  return v === "template" || v === "inbound" ? v : "window";
+}
+
+/** Mensagem que o cliente envia no modo "window". O Webhook a reconhece (e o bot de atendimento a ignora). */
+export const OTP_REQUEST_TEXT = "Olá Passaporte Burguer! Quero meu código de acesso 🔐";
+
+export function isOtpRequestMessage(text: string | undefined | null): boolean {
+  return typeof text === "string" && /quero meu c[oó]digo de acesso/i.test(text);
+}
+
+export function buildOtpRequestUrl(): string | null {
+  const store = process.env.STORE_WHATSAPP?.replace(/D/g, "");
+  if (!store) return null;
+  return `https://wa.me/${store}?text=${encodeURIComponent(OTP_REQUEST_TEXT)}`;
+}
+
+/** Texto enviado pelo bot com o código (modo "window"). */
+export function otpReplyText(code: string): string {
+  return `🔐 Seu código de acesso do Passaporte Burguer é *${code}*.
+
+Digite-o no site para continuar. Vale por ${OTP_TTL_MS / 60000} minutos. Não compartilhe com ninguém.`;
+}
+
+/**
  * Normaliza para o padrão internacional brasileiro (55 + DDD + número).
  * Retorna null se não tiver 12 ou 13 dígitos (ou 10/11 sem o 55).
  */

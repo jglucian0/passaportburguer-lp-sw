@@ -1,13 +1,13 @@
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
 import { whatsappCheckBody } from "@/core/schemas/auth";
 import { fail, findCustomerByPhone, isRegistered, parseBody } from "@/infra/auth/account";
 import { createCustomerSession } from "@/infra/auth/customer-session";
-import { getWhatsappAuthMode } from "@/infra/auth/otp";
+import { getOtpDelivery, getWhatsappAuthMode } from "@/infra/auth/otp";
 import { db } from "@/infra/db";
 import { customers, whatsappOtps } from "@/infra/db/schema";
-import { enforceRateLimit } from "@/infra/security/rate-limit";
+import { checkRateLimit, enforceRateLimit } from "@/infra/security/rate-limit";
 import { getTenantRef } from "@/infra/tenant/resolve";
 
 export const dynamic = "force-dynamic";
@@ -22,10 +22,17 @@ export async function POST(request: Request) {
   const { phone: local, code, confirm } = body.data;
   const phone = `55${local}`;
 
+  const typedMode = getOtpDelivery() !== "inbound";
+
   const [otp] = await db
     .select()
     .from(whatsappOtps)
-    .where(and(eq(whatsappOtps.phone, phone), eq(whatsappOtps.code, code)))
+    .where(
+      typedMode
+        ? eq(whatsappOtps.phone, phone)
+        : and(eq(whatsappOtps.phone, phone), eq(whatsappOtps.code, code)),
+    )
+    .orderBy(desc(whatsappOtps.createdAt))
     .limit(1);
 
   if (!otp || otp.expiresAt.getTime() < Date.now()) {
@@ -43,6 +50,25 @@ export async function POST(request: Request) {
   }
 
   let verified = otp.verified;
+  /* Códigos digitados ("window"/"template"): acertar o código que chegou no WhatsApp É a prova de posse.
+     Erros são contados por telefone para barrar tentativa e erro (espaço de 32^4 códigos). */
+  if (typedMode && !verified) {
+    if (otp.code !== code) {
+      const attempt = await checkRateLimit({
+        identifier: phone,
+        route: "auth:otp-wrong-code",
+        limit: 5,
+        windowSeconds: 600,
+        failClosed: true,
+      });
+      if (!attempt.allowed) {
+        await db.delete(whatsappOtps).where(eq(whatsappOtps.id, otp.id));
+        return fail("Muitas tentativas incorretas. Gere um novo código.", 429);
+      }
+      return fail("Código incorreto. Confira a mensagem do WhatsApp e tente de novo.", 400);
+    }
+    verified = true;
+  }
   /* Sandbox: a confirmação do cliente no site basta. Em "meta", só o Webhook verifica. */
   if (!verified && confirm === true && getWhatsappAuthMode() === "sandbox") {
     verified = true;

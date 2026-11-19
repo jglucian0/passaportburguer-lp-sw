@@ -235,6 +235,25 @@ export function sendTemplateMessage(to: string, name: string, languageCode: stri
   });
 }
 
+/**
+ * Template de AUTENTICAÇÃO (código OTP): o código vai no corpo e no botão "copiar código".
+ * Fora da janela de 24 h é a única forma de entregar o código sem o cliente falar primeiro.
+ */
+export function sendAuthTemplate(to: string, name: string, languageCode: string, code: string) {
+  return graphPost({
+    to,
+    type: "template",
+    template: {
+      name,
+      language: { code: languageCode },
+      components: [
+        { type: "body", parameters: [{ type: "text", text: code }] },
+        { type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: code }] },
+      ],
+    },
+  });
+}
+
 /** Marca como lida (dois tiques azuis). */
 export function markMessageAsRead(wamid: string) {
   return graphPost({ status: "read", message_id: wamid });

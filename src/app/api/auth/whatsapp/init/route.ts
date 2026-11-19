@@ -3,13 +3,40 @@ import { NextResponse } from "next/server";
 
 import { whatsappInitBody } from "@/core/schemas/auth";
 import { fail, findCustomerByPhone, isRegistered, parseBody } from "@/infra/auth/account";
-import { buildWaUrl, generateEmbarkCode, getWhatsappAuthMode, OTP_TTL_MS, phoneVariants } from "@/infra/auth/otp";
+import {
+  buildOtpRequestUrl,
+  buildWaUrl,
+  generateEmbarkCode,
+  getOtpDelivery,
+  getWhatsappAuthMode,
+  OTP_TTL_MS,
+  phoneVariants,
+  type OtpDelivery,
+} from "@/infra/auth/otp";
 import { db } from "@/infra/db";
 import { whatsappOtps } from "@/infra/db/schema";
 import { enforceRateLimit } from "@/infra/security/rate-limit";
 import { getTenantRef } from "@/infra/tenant/resolve";
+import { errorSummary } from "@/infra/whatsapp/log";
+import { sendAuthTemplate } from "@/infra/whatsapp/client";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * Resposta ao cliente. No modo "inbound" o código é exibido (o cliente o envia pelo wa.me).
+ * Nos modos "window"/"template" o código NUNCA sai daqui: ele só chega pelo WhatsApp e o cliente o digita.
+ */
+function payload(delivery: OtpDelivery, code: string, expiresAt: Date, now: Date) {
+  const base = {
+    delivery,
+    mode: getWhatsappAuthMode(),
+    expiresIn: Math.max(1, Math.round((expiresAt.getTime() - now.getTime()) / 1000)),
+    expiresAt: expiresAt.getTime(),
+  };
+  if (delivery === "inbound") return { ...base, code, waUrl: buildWaUrl(code) };
+  if (delivery === "window") return { ...base, waUrl: buildOtpRequestUrl() };
+  return base;
+}
 
 export async function POST(request: Request) {
   const limited = await enforceRateLimit(request, "auth:whatsapp-init", 5, 300);
@@ -20,8 +47,15 @@ export async function POST(request: Request) {
   const local = body.data.phone;
   const phone = `55${local}`;
 
-  if (!buildWaUrl("PASS-0000")) {
-    console.error("[whatsapp] STORE_WHATSAPP não configurado.");
+  const delivery = getOtpDelivery();
+  const templateName = process.env.WHATSAPP_OTP_TEMPLATE?.trim();
+  const templateLang = process.env.WHATSAPP_OTP_TEMPLATE_LANG?.trim() || "pt_BR";
+
+  /* "window" e "inbound" dependem do número da loja (wa.me); "template" depende do template aprovado. */
+  if (delivery === "template" ? !templateName : !buildWaUrl("PASS-0000")) {
+    console.error(
+      delivery === "template" ? "[whatsapp] WHATSAPP_OTP_TEMPLATE não configurado." : "[whatsapp] STORE_WHATSAPP não configurado.",
+    );
     return fail("Login por WhatsApp indisponível no momento.", 503);
   }
 
@@ -38,7 +72,7 @@ export async function POST(request: Request) {
   await db.delete(whatsappOtps).where(lt(whatsappOtps.expiresAt, now));
 
   /* Idempotência: se já há código ativo (não verificado, dentro da validade) para o número
-     (com/sem 9º dígito), devolve o mesmo — a aba pode ter sido recarregada ao voltar do WhatsApp. */
+     (com/sem 9º dígito), reaproveita — a aba pode ter sido recarregada ao voltar do WhatsApp. */
   const phones = phoneVariants(local).map((v) => `55${v}`);
   const [active] = await db
     .select({ code: whatsappOtps.code, expiresAt: whatsappOtps.expiresAt })
@@ -53,16 +87,9 @@ export async function POST(request: Request) {
     .orderBy(desc(whatsappOtps.createdAt))
     .limit(1);
   if (active) {
-    return NextResponse.json(
-      {
-        code: active.code,
-        waUrl: buildWaUrl(active.code),
-        mode: getWhatsappAuthMode(),
-        expiresIn: Math.max(1, Math.round((active.expiresAt.getTime() - now.getTime()) / 1000)),
-        expiresAt: active.expiresAt.getTime(),
-      },
-      { headers: { "Cache-Control": "no-store" } },
-    );
+    return NextResponse.json(payload(delivery, active.code, active.expiresAt, now), {
+      headers: { "Cache-Control": "no-store" },
+    });
   }
 
   /* Sem código ativo: limpa resíduos (ex.: verificados não consumidos) e cria um novo. */
@@ -76,18 +103,22 @@ export async function POST(request: Request) {
       .values({ phone, code, verified: false, expiresAt })
       .onConflictDoNothing({ target: whatsappOtps.code })
       .returning({ id: whatsappOtps.id });
-    if (inserted.length > 0) {
-      return NextResponse.json(
-        {
-          code,
-          waUrl: buildWaUrl(code),
-          mode: getWhatsappAuthMode(),
-          expiresIn: OTP_TTL_MS / 1000,
-          expiresAt: expiresAt.getTime(),
-        },
-        { headers: { "Cache-Control": "no-store" } },
-      );
+    if (inserted.length === 0) continue;
+
+    /* Produção: o servidor entrega o código por template de autenticação, sem o cliente mandar nada. */
+    if (delivery === "template") {
+      try {
+        await sendAuthTemplate(phone, templateName!, templateLang, code);
+      } catch (error) {
+        console.error("[whatsapp-otp] falha ao enviar o template:", errorSummary(error));
+        await db.delete(whatsappOtps).where(eq(whatsappOtps.id, inserted[0].id));
+        return fail("Não foi possível enviar o código agora. Tente novamente.", 503);
+      }
     }
+
+    return NextResponse.json(payload(delivery, code, expiresAt, now), {
+      headers: { "Cache-Control": "no-store" },
+    });
   }
   return fail("Não foi possível gerar o código. Tente novamente.", 503);
 }

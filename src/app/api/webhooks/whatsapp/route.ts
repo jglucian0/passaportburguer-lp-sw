@@ -1,7 +1,16 @@
-import { and, eq, gt } from "drizzle-orm";
+import { and, desc, eq, gt, inArray } from "drizzle-orm";
 import { after } from "next/server";
 
-import { CODE_REGEX, samePhone } from "@/infra/auth/otp";
+import {
+  CODE_REGEX,
+  getOtpDelivery,
+  isOtpRequestMessage,
+  otpReplyText,
+  phoneVariants,
+  samePhone,
+  toLocalPhone,
+} from "@/infra/auth/otp";
+import { checkRateLimit } from "@/infra/security/rate-limit";
 import { db } from "@/infra/db";
 import { maskPhone } from "@/infra/security/mask";
 import { whatsappOtps } from "@/infra/db/schema";
@@ -47,7 +56,7 @@ type MetaPayload = {
 };
 
 /** Resposta automática (best-effort): nunca lança erro nem atrasa o webhook por mais de 4s. */
-async function sendConfirmation(phoneNumberId: string | undefined, to: string) {
+async function sendConfirmation(phoneNumberId: string | undefined, to: string, text?: string) {
   const token = process.env.WHATSAPP_ACCESS_TOKEN;
   const numberId = phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID;
   if (!token || !numberId) {
@@ -65,7 +74,9 @@ async function sendConfirmation(phoneNumberId: string | undefined, to: string) {
           to,
           type: "text",
           text: {
-            body: "✅ Código confirmado! Agora volte para a página do Passaporte Burguer no seu navegador para concluir seu cadastro.",
+            body:
+              text ??
+              "✅ Código confirmado! Agora volte para a página do Passaporte Burguer no seu navegador para concluir seu cadastro.",
           },
         }),
         signal: AbortSignal.timeout(4000),
@@ -97,6 +108,33 @@ export async function POST(request: Request) {
       for (const change of entry.changes ?? []) {
         for (const message of change.value?.messages ?? []) {
           const from = message.from;
+
+          /* Modo "window": a mensagem do cliente abre a janela de 24 h e o bot responde com o código dele. */
+          if (from && isOtpRequestMessage(message.text?.body)) {
+            if (getOtpDelivery() === "window") {
+              const phones = phoneVariants(toLocalPhone(from)).map((v) => `55${v}`);
+              const [pending] = await db
+                .select({ code: whatsappOtps.code })
+                .from(whatsappOtps)
+                .where(
+                  and(
+                    inArray(whatsappOtps.phone, phones),
+                    eq(whatsappOtps.verified, false),
+                    gt(whatsappOtps.expiresAt, new Date()),
+                  ),
+                )
+                .orderBy(desc(whatsappOtps.createdAt))
+                .limit(1);
+              const reply = pending
+                ? await checkRateLimit({ identifier: from, route: "otp-window-reply", limit: 5, windowSeconds: 600 })
+                : null;
+              if (pending && reply?.allowed) {
+                await sendConfirmation(change.value?.metadata?.phone_number_id, from, otpReplyText(pending.code));
+              }
+            }
+            continue;
+          }
+
           const match = message.text?.body?.match(CODE_REGEX);
           if (!from || !match) continue;
 
@@ -126,7 +164,7 @@ export async function POST(request: Request) {
     const botNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
     const botMessages = extractInboundMessages(payload).filter(
       (m) =>
-        !(m.mediaType === "text" && CODE_REGEX.test(m.content)) &&
+        !(m.mediaType === "text" && (CODE_REGEX.test(m.content) || isOtpRequestMessage(m.content))) &&
         (!botNumberId || !m.phoneNumberId || m.phoneNumberId === botNumberId),
     );
     if (botMessages.length > 0) {
