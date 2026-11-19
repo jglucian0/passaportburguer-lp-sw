@@ -192,8 +192,29 @@ export function PaymentView({
     setCardError(null);
     setPixError(null);
     if (next === "CREDIT_CARD") {
-      // O servidor troca o método do pedido quando o cartão for enviado (cobrança Pix pendente é cancelada).
-      setMethod("CREDIT_CARD");
+      // Invalida o QR Code pendente no servidor e tira da tela: não dá para pagar um Pix "esquecido".
+      setSwitching(true);
+      try {
+        if (pix) {
+          const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mode: "cancel-pix" }),
+          });
+          if (!res.ok) {
+            const data = (await res.json().catch(() => ({}))) as { error?: string };
+            setPixError(data.error ?? "Não foi possível trocar para cartão agora. Tente novamente.");
+            return;
+          }
+        }
+        setPix(null);
+        requestedPix.current = false;
+        setMethod("CREDIT_CARD");
+      } catch {
+        setPixError("Sem conexão. Tente novamente.");
+      } finally {
+        setSwitching(false);
+      }
       return;
     }
     setSwitching(true);
@@ -405,6 +426,11 @@ export function PaymentView({
       ) : method === "PIX" ? (
         <section className={cardClass}>
           <h2 className="font-bold">Pague com Pix</h2>
+          {pix && pixError ? (
+            <p role="alert" className="text-sm font-medium text-red-700">
+              {pixError}
+            </p>
+          ) : null}
 
           {pix ? (
             <>
@@ -608,6 +634,14 @@ export function PaymentView({
                 className="w-full text-center text-sm font-medium text-slate-600 underline"
               >
                 Prefiro pagar na página segura do Asaas
+              </button>
+              <button
+                type="button"
+                onClick={() => void switchMethod("PIX")}
+                disabled={switching}
+                className="w-full text-center text-sm font-medium text-slate-600 underline disabled:opacity-60"
+              >
+                {switching ? "Gerando Pix…" : "Prefiro pagar com Pix"}
               </button>
             </form>
           )}

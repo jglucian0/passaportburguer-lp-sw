@@ -1,17 +1,18 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, gte, like } from "drizzle-orm";
 
 import { db } from "@/infra/db";
 import { loadCatalog } from "@/infra/db/queries";
-import { whatsappSessions } from "@/infra/db/schema";
+import { whatsappMessages, whatsappSessions } from "@/infra/db/schema";
 import { formatCents } from "@/lib/utils";
 
 import type { GeminiFunctionDeclaration } from "./gemini";
+import { sendTextMessage } from "./client";
 import { cancelUnpaidOrderTool } from "./cancel-order";
 import { setDeliveryAndPaymentTool, updateCartTool } from "./draft-flow";
 import { requestHumanHandoff } from "./handoff";
 import { stripUrlsAndMarkdownLinks } from "./sanitizer";
 import { signWhatsAppToken } from "./session-token";
-import { appUrl, getTenantId, type ToolContext } from "./shared";
+import { appUrl, getTenantId, GOOGLE_REVIEW_URL, type ToolContext } from "./shared";
 import { errorSummary } from "./log";
 
 export { getCustomerContext, type CustomerContext } from "./customer-context";
@@ -233,6 +234,12 @@ export const TOOL_DECLARATIONS: GeminiFunctionDeclaration[] = [
     },
   },
   {
+    name: "sendReviewRequest",
+    description:
+      "Use quando o cliente ELOGIAR ou der feedback POSITIVO sobre o hambúrguer, o lanche, a comida ou o atendimento (ex.: 'estava delicioso', 'melhor burger da cidade'). Depois da SUA resposta de agradecimento, o sistema envia sozinho outra mensagem pedindo a avaliação no Google. Escreva só o agradecimento (curto, sem link). Não use em reclamação (use requestHumanHandoff) nem em simples 'obrigado'.",
+    parameters: { type: "object", properties: {} },
+  },
+  {
     name: "requestHumanHandoff",
     description:
       "Passa a conversa para um atendente humano (pausa o bot por 30 min). Use em reclamações, problemas com pedido já feito, pedidos fora do comum ou quando o cliente pedir uma pessoa.",
@@ -263,6 +270,38 @@ export function sendQuickMenuTool(
   return { sent: true, note: "O botão com o seu messageText já será enviado. Não escreva outra mensagem." };
 }
 
+const REVIEW_MESSAGE = `Se puder, deixa sua avaliação pra gente? Leva só um minutinho e ajuda muito o Passaporte Burguer ✈️\n\n${GOOGLE_REVIEW_URL}`;
+
+/**
+ * Elogio do cliente: depois da resposta da IA, sai UMA segunda mensagem (texto do sistema) com o link de avaliação.
+ * No máximo uma vez por cliente a cada 30 dias.
+ */
+export async function sendReviewRequestTool(ctx: ToolContext): Promise<{ queued: boolean; note: string }> {
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+  const [already] = await db
+    .select({ id: whatsappMessages.id })
+    .from(whatsappMessages)
+    .where(
+      and(
+        eq(whatsappMessages.phone, ctx.phone),
+        eq(whatsappMessages.role, "assistant"),
+        gte(whatsappMessages.createdAt, since),
+        like(whatsappMessages.content, `%${GOOGLE_REVIEW_URL}%`),
+      ),
+    )
+    .limit(1);
+  if (already) return { queued: false, note: "O pedido de avaliação já foi enviado a este cliente. Apenas agradeça." };
+
+  ctx.afterReply.push(async () => {
+    await sendTextMessage(ctx.phone, REVIEW_MESSAGE);
+    await db
+      .insert(whatsappMessages)
+      .values({ phone: ctx.phone, role: "assistant", content: REVIEW_MESSAGE, mediaType: "text" })
+      .catch(() => undefined);
+  });
+  return { queued: true, note: "O link de avaliação sai sozinho em outra mensagem. Responda só com o agradecimento, sem link." };
+}
+
 /** Executa uma tool no servidor. O fechamento do pedido NÃO é tool: o backend o dispara no fim do turno. */
 export async function executeTool(ctx: ToolContext, name: string, args: Args = {}): Promise<Record<string, unknown>> {
   try {
@@ -277,6 +316,8 @@ export async function executeTool(ctx: ToolContext, name: string, args: Args = {
         return { ...(await setDeliveryAndPaymentTool(ctx, args)) };
       case "cancelUnpaidOrder":
         return { ...(await cancelUnpaidOrderTool({ phone: ctx.phone, reason: String(args.reason ?? "") })) };
+      case "sendReviewRequest":
+        return { ...(await sendReviewRequestTool(ctx)) };
       case "requestHumanHandoff":
         return { ...(await requestHumanHandoff(ctx.phone, String(args.reason ?? ""))) };
       default:

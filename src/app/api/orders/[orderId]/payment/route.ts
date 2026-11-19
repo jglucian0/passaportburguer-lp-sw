@@ -8,6 +8,7 @@ import { customers, orders, payments } from "@/infra/db/schema";
 import {
   AsaasError,
   PaymentConflictError,
+  cancelPendingCharges,
   createCreditCardCharge,
   createPixCharge,
   type AsaasCustomerInput,
@@ -116,6 +117,22 @@ export async function POST(request: NextRequest, { params }: Ctx) {
       { error: "Pagamento em análise de segurança. Assim que aprovado, seu pedido será enviado para a cozinha." },
       { status: 409, headers: NO_STORE },
     );
+  }
+
+  /* Desistiu do Pix: o QR Code pendente deixa de valer (não dá para pagar um Pix "esquecido"). */
+  if (input.mode === "cancel-pix") {
+    try {
+      const { blocked } = await cancelPendingCharges(order.id);
+      if (blocked) {
+        return NextResponse.json(
+          { error: blocked === "PAID" ? "Pagamento anterior já foi confirmado." : "Não foi possível cancelar o Pix agora." },
+          { status: 409, headers: NO_STORE },
+        );
+      }
+      return NextResponse.json({ ok: true }, { headers: NO_STORE });
+    } catch {
+      return NextResponse.json({ error: "Não foi possível cancelar o Pix agora." }, { status: 502, headers: NO_STORE });
+    }
   }
 
   /* Recuperação: cartão recusado -> outro cartão ou Pix no MESMO pedido (troca o método, mantém o carrinho). */

@@ -63,6 +63,8 @@ export const cardDataSchema = z
 export const payOrderSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("pix") }).strict(),
   z.object({ mode: z.literal("hosted") }).strict(),
+  /** Cliente desistiu do Pix (foi para o cartão): invalida o QR Code pendente. */
+  z.object({ mode: z.literal("cancel-pix") }).strict(),
   z.object({ mode: z.literal("card"), card: cardDataSchema }).strict(),
 ]);
 

@@ -37,6 +37,10 @@ export function appUrl(): string {
   return base;
 }
 
+/** Avaliação da loja no Google (enviada pelo sistema depois de um elogio; a IA nunca escreve este link). */
+export const GOOGLE_REVIEW_URL =
+  process.env.GOOGLE_REVIEW_URL?.trim() || "https://search.google.com/local/writereview?placeid=ChIJXdJk2CbR7JQRPkk5dxkCbH8";
+
 /** Validade do link de pagamento enviado pelo WhatsApp. */
 export const ORDER_PAYMENT_TOKEN_MINUTES = 120;
 
