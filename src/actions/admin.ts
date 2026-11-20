@@ -1104,6 +1104,7 @@ const marketingSettingsInputSchema = z
     sendUntilHour: z.number().int().min(1).max(24),
     targetAtRisk: z.boolean(),
     targetLost: z.boolean(),
+    targetNew: z.boolean(),
   })
   .refine((v) => v.discountMinPercent <= v.discountMaxPercent, {
     path: ["discountMaxPercent"],

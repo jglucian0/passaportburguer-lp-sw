@@ -25,6 +25,7 @@ async function main() {
       target_lost boolean NOT NULL DEFAULT true,
       updated_at timestamptz NOT NULL DEFAULT now()
     )`;
+  await sql`ALTER TABLE marketing_settings ADD COLUMN IF NOT EXISTS target_new boolean NOT NULL DEFAULT true`;
   await sql`ALTER TABLE orders ADD COLUMN IF NOT EXISTS attribution jsonb`;
   await sql`ALTER TABLE whatsapp_sessions ADD COLUMN IF NOT EXISTS ad_referral jsonb`;
   await sql`

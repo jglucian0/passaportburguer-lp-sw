@@ -15,7 +15,12 @@ export type MarketingConfig = {
   sendUntilHour: number;
   targetAtRisk: boolean;
   targetLost: boolean;
+  /** Cliente de um pedido só: incentivo ao segundo pedido (uma vez, a partir de NEW_CUSTOMER_MIN_DAYS dias). */
+  targetNew: boolean;
 };
+
+/** Dias depois do primeiro pedido para convidar ao segundo. */
+export const NEW_CUSTOMER_MIN_DAYS = 7;
 
 export const DEFAULT_MARKETING_CONFIG: MarketingConfig = {
   enabled: false,
@@ -29,6 +34,7 @@ export const DEFAULT_MARKETING_CONFIG: MarketingConfig = {
   sendUntilHour: 21,
   targetAtRisk: true,
   targetLost: true,
+  targetNew: true,
 };
 
 /** Desconto sorteado entre o mínimo e o máximo do admin; fã ganha o bônus, sempre limitado ao máximo. */
@@ -48,10 +54,10 @@ export function isWithinSendHours(hour: number, config: Pick<MarketingConfig, "s
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sem 0/O/1/I, fácil de ditar
 
 /** Ex.: VOLTA-7K2QX, FAMILIA-9TR4M. */
-export function couponCodeFor(isFan: boolean, random: () => number = Math.random): string {
+export function couponCodeFor(isFan: boolean, random: () => number = Math.random, prefix?: string): string {
   let suffix = "";
   for (let i = 0; i < 5; i++) suffix += CODE_ALPHABET[Math.floor(random() * CODE_ALPHABET.length)];
-  return `${isFan ? "FAMILIA" : "VOLTA"}-${suffix}`;
+  return `${prefix ?? (isFan ? "FAMILIA" : "VOLTA")}-${suffix}`;
 }
 
 /** "quinta, 19/11 às 21h" (hora de Brasília). */
@@ -79,6 +85,17 @@ export type WinbackCopyInput = {
   deadline: string;
   isFan: boolean;
 };
+
+/** Segundo pedido: quem fez só um pedido e ainda não voltou. Tom de "gostou?", não de saudade. */
+export function secondOrderMessage(input: WinbackCopyInput, variant: number): string {
+  const { firstName, favoriteName, percent, deadline } = input;
+  const fav = favoriteName ? `o seu ${favoriteName}` : "o seu burger";
+  const variants = [
+    `Oi, ${firstName}! Aqui é do Passaporte Burguer 🍔 Curtiu ${fav}? Separei ${percent}% de desconto nos itens do seu próximo pedido, válido até ${deadline}. É só pedir que o desconto entra sozinho!`,
+    `${firstName}, tudo certo com ${fav}? 😋 Liberei ${percent}% de desconto no seu segundo pedido, válido até ${deadline}. O desconto entra sozinho, é só pedir.`,
+  ];
+  return variants[((variant % variants.length) + variants.length) % variants.length];
+}
 
 /** Textos de resgate. Variam por sorteio (variant) e mudam de tom para o fã ("da família"). */
 export function winbackMessage(input: WinbackCopyInput, variant: number): string {

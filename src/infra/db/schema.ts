@@ -935,6 +935,7 @@ export const marketingSettings = pgTable("marketing_settings", {
   sendUntilHour: integer("send_until_hour").notNull().default(21),
   targetAtRisk: boolean("target_at_risk").notNull().default(true),
   targetLost: boolean("target_lost").notNull().default(true),
+  targetNew: boolean("target_new").notNull().default(true),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 

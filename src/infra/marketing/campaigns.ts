@@ -4,7 +4,9 @@ import {
   couponCodeFor,
   formatCouponDeadline,
   isWithinSendHours,
+  NEW_CUSTOMER_MIN_DAYS,
   pickDiscountPercent,
+  secondOrderMessage,
   winbackMessage,
   type MarketingConfig,
 } from "@/core/marketing/campaign";
@@ -32,6 +34,13 @@ const MENU_LINK_MINUTES = 6 * 60;
 /** Template aprovado na Meta para falar fora das 24 h (plug-and-play: só informar o nome no ambiente). */
 export function winbackTemplate(): { name: string; language: string } | null {
   const name = process.env.WHATSAPP_TEMPLATE_WINBACK?.trim();
+  if (!name) return null;
+  return { name, language: process.env.WHATSAPP_TEMPLATE_LANG?.trim() || "pt_BR" };
+}
+
+/** Template do convite ao segundo pedido (mesmas 4 variáveis do resgate; texto próprio). */
+export function secondOrderTemplate(): { name: string; language: string } | null {
+  const name = process.env.WHATSAPP_TEMPLATE_SECOND_ORDER?.trim();
   if (!name) return null;
   return { name, language: process.env.WHATSAPP_TEMPLATE_LANG?.trim() || "pt_BR" };
 }
@@ -65,6 +74,10 @@ function localHour(now: Date): number {
 
 function eligibleSegment(profile: CustomerProfile, config: MarketingConfig): boolean {
   if (profile.orderCount < 1) return false;
+  // Segundo pedido: só quem tem exatamente um pedido e já passou alguns dias dele.
+  if (profile.segment === "NEW") {
+    return config.targetNew && profile.orderCount === 1 && (profile.daysSinceLastOrder ?? 0) >= NEW_CUSTOMER_MIN_DAYS;
+  }
   return (profile.segment === "AT_RISK" && config.targetAtRisk) || (profile.segment === "LOST" && config.targetLost);
 }
 
@@ -103,6 +116,13 @@ export async function runWinbackCampaign(now: Date = new Date(), deps: Deps = de
     if (r.status === "SENT" || now.getTime() - r.createdAt.getTime() < DAY_MS) blocked.add(r.customerId);
   }
 
+  // Convite ao segundo pedido: uma vez só por cliente (quem já recebeu não recebe de novo).
+  const alreadyInvited = await db
+    .select({ customerId: marketingSends.customerId })
+    .from(marketingSends)
+    .where(and(eq(marketingSends.tenantId, tenantId), eq(marketingSends.segment, "NEW"), eq(marketingSends.status, "SENT")));
+  for (const r of alreadyInvited) blocked.add(r.customerId);
+
   // Pagamento pendente nas últimas 2 h: o cliente está pedindo agora, não incomoda.
   const pending = await db
     .select({ customerId: orders.customerId })
@@ -122,8 +142,6 @@ export async function runWinbackCampaign(now: Date = new Date(), deps: Deps = de
     .sort((a, b) => Number(b.isFan) - Number(a.isFan) || (b.daysSinceLastOrder ?? 0) - (a.daysSinceLastOrder ?? 0));
   summary.ran = true;
   summary.candidates = candidates.length;
-
-  const template = winbackTemplate();
 
   for (const profile of candidates) {
     if (summary.sent >= MAX_SENDS_PER_RUN) break;
@@ -153,6 +171,8 @@ export async function runWinbackCampaign(now: Date = new Date(), deps: Deps = de
           ...extra,
         });
 
+      const isNew = profile.segment === "NEW";
+      const template = isNew ? secondOrderTemplate() : winbackTemplate();
       const [lastUser] = await db
         .select({ createdAt: whatsappMessages.createdAt })
         .from(whatsappMessages)
@@ -174,7 +194,7 @@ export async function runWinbackCampaign(now: Date = new Date(), deps: Deps = de
       let couponId: string | null = null;
       let couponCode = "";
       for (let attempt = 0; attempt < 5 && !couponId; attempt++) {
-        couponCode = couponCodeFor(profile.isFan);
+        couponCode = couponCodeFor(profile.isFan, Math.random, isNew ? "SEGUNDO" : undefined);
         try {
           const [row] = await db
             .insert(coupons)
@@ -219,12 +239,12 @@ export async function runWinbackCampaign(now: Date = new Date(), deps: Deps = de
       try {
         let body: string;
         if (insideWindow) {
-          body = winbackMessage(copy, Math.floor(Math.random() * 2));
+          body = (isNew ? secondOrderMessage : winbackMessage)(copy, Math.floor(Math.random() * 2));
           const { url } = generateQuickMenuLink(session.phone, MENU_LINK_MINUTES);
           await deps.cta(session.phone, body, "Ver cardápio", url, photo);
         } else {
           // {{1}} nome, {{2}} lanche, {{3}} desconto, {{4}} validade
-          body = winbackMessage(copy, 0);
+          body = (isNew ? secondOrderMessage : winbackMessage)(copy, 0);
           await deps.template(session.phone, template!.name, template!.language, [
             profile.firstName,
             favoriteName ?? "burger",

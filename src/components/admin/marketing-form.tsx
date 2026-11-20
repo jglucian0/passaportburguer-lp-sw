@@ -46,6 +46,7 @@ export function MarketingForm({ data }: { data: AdminMarketing }) {
   const [untilHour, setUntilHour] = useState(String(config.sendUntilHour));
   const [targetAtRisk, setTargetAtRisk] = useState(config.targetAtRisk);
   const [targetLost, setTargetLost] = useState(config.targetLost);
+  const [targetNew, setTargetNew] = useState(config.targetNew);
 
   function handleSave() {
     const values = {
@@ -68,6 +69,7 @@ export function MarketingForm({ data }: { data: AdminMarketing }) {
           enabled,
           targetAtRisk,
           targetLost,
+          targetNew,
           ...(values as { [K in keyof typeof values]: number }),
         }),
       () => setToast({ kind: "success", message: "Configurações de marketing salvas." }),
@@ -147,6 +149,10 @@ export function MarketingForm({ data }: { data: AdminMarketing }) {
         <div className="flex items-center justify-between gap-4 rounded-xl bg-slate-50 p-3">
           <p className="text-sm font-semibold text-slate-900">Clientes perdidos (60+ dias sem pedir)</p>
           <Switch aria-label="Incluir clientes perdidos" checked={targetLost} onCheckedChange={setTargetLost} />
+        </div>
+        <div className="flex items-center justify-between gap-4 rounded-xl bg-slate-50 p-3">
+          <p className="text-sm font-semibold text-slate-900">Clientes novos (um pedido só: convite ao segundo pedido, uma vez)</p>
+          <Switch aria-label="Incluir clientes novos" checked={targetNew} onCheckedChange={setTargetNew} />
         </div>
         <div className="grid gap-4 sm:grid-cols-3">
           <Field label="Intervalo entre mensagens (dias)">

@@ -20,5 +20,6 @@ export async function loadMarketingConfig(tenantId: string): Promise<MarketingCo
     sendUntilHour: row.sendUntilHour,
     targetAtRisk: row.targetAtRisk,
     targetLost: row.targetLost,
+    targetNew: row.targetNew,
   };
 }
