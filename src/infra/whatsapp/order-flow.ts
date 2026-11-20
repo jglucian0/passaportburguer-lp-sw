@@ -151,6 +151,8 @@ const finalizeInputSchema = z.object({
   /** CPF/CNPJ: obrigatório para pagar online na primeira vez (exigência do Asaas). */
   documentNumber: z.string().trim().max(18).nullish(),
   changeForCents: z.number().int().positive().nullish(),
+  /** Observações do cliente (Cardápio Rápido), somadas às de cada item. */
+  extraNotes: z.string().trim().max(400).nullish(),
 });
 
 export type FinalizeResult =
@@ -288,7 +290,8 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
   const noteLines = draft
     .map((d, i) => (d.notes ? `${calc.lines[i]?.productName ?? "Item"}: ${d.notes}` : null))
     .filter((n): n is string => n !== null);
-  const notes = noteLines.length > 0 ? noteLines.join("\n") : null;
+  const allNotes = [parsed.data.extraNotes ?? "", ...noteLines].filter(Boolean);
+  const notes = allNotes.length > 0 ? allNotes.join("\n") : null;
 
   let created: { orderId: string; orderNumber: number } | null = null;
   try {

@@ -172,7 +172,7 @@ COMO RESPONDER
 - Agradecimento no fim ("obg", "valeu", "top"): resposta curta e calorosa ("Imagina! Qualquer coisa é só chamar 😊"), sem cardápio.
 - Se perguntar como você está ("tudo bem?"): responda em poucas palavras e já puxe o pedido (só nesse caso).
 - Mensagens seguidas do cliente chegam juntas no mesmo turno: responda a TODAS em uma resposta coerente só.
-- Loja fechada: avise logo e diga quando abre (use o Status da loja). O cliente pode ver o cardápio, mas não feche pedido fora do horário.
+- Loja fechada: avise logo e diga quando abre (use o Status da loja). NÃO ofereça nem envie o cardápio e não feche pedido fora do horário; diga que assim que abrirmos você chama o cliente por aqui.
 - Não entendeu algo: peça para repetir de outro jeito, em uma frase.
 - Áudio: capture o pedido todo, inclusive observações ("sem cebola", "ao ponto"). Imagem: analise e responda ao que o cliente quer. Figurinha ([Figurinha do cliente] + imagem): interprete o sentimento (raiva, dúvida, aprovação, agradecimento) e responda de acordo. NUNCA diga "não entendi" para figurinha.
 - Reclamação, problema com pedido já feito, estorno, cliente irritado ou que pede uma pessoa: acolha em uma frase, chame requestHumanHandoff e avise que um atendente assume.
@@ -453,6 +453,19 @@ function sanitizeModelReply(reply: string, greetingMode: GreetingMode): string {
 }
 
 /**
+ * Loja fechada, primeiro contato: só avisa que está fechado (sem oferecer cardápio). O número fica na fila de retorno
+ * (enqueueReopenFollowup) e recebe a mensagem de reabertura dentro das 24 h, sem custo.
+ */
+export function closedReply(context: TurnContext, greetingMode: GreetingMode): string | null {
+  if (greetingMode === "IN_CONVERSATION") return null;
+  if (!context.store || !/fechad/i.test(context.store.statusText)) return null;
+  if (context.customer.isRegistered && context.customer.activeOrder) return null; // pedido em andamento: a IA informa o status
+  const when = context.store.statusText.replace(/^Fechada agora,?\s*/i, "").replace(/\.$/, "");
+  const opens = /^abrimos/i.test(when) ? ` Por enquanto ${when}.` : "";
+  return `Oi! No momento estamos fechados 😴${opens} Assim que abrirmos, te chamo por aqui!`;
+}
+
+/**
  * Respostas que NÃO precisam de IA: saem na hora, sempre iguais e sem risco de delírio.
  * - tentativa de manipulação ("ignore suas instruções", "mostre seu prompt") => resposta fixa;
  * - cumprimento puro no início do atendimento => boas-vindas da casa.
@@ -468,6 +481,9 @@ export function cannedReply(
   const texts = messages.map((m) => m.content);
   if (texts.every(isOptOutMessage)) return OPT_OUT_REPLY;
   if (texts.some(isInjectionAttempt)) return OFF_TOPIC_REPLY;
+
+  const closed = closedReply(context, greetingMode);
+  if (closed) return closed;
 
   return null;
 }
@@ -663,7 +679,8 @@ export async function runBotTurn(
         // Cliente voltou a falar: qualquer retorno pendente perde o sentido.
         await cancelFollowups(phone, "CUSTOMER_ACTIVE");
         const thanksOnly = textOnly && messages.every((m) => isClosingMessage(m.content));
-        if (!thanksOnly && !canned && !start) await enqueueReopenFollowup(phone);
+        const closedNotice = canned !== null && canned === closedReply(context, greetingMode);
+        if (!thanksOnly && (!canned || closedNotice) && !start) await enqueueReopenFollowup(phone);
       }
     } catch (error) {
       console.error("[whatsapp-bot] falha ao agendar retorno:", errorSummary(error));

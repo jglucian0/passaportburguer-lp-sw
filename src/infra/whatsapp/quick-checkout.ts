@@ -19,6 +19,12 @@ import { customerPhoneVariants, toCustomerPhone } from "./shared";
  */
 export const checkoutInputSchema = z.object({
   deliveryType: z.enum(["DELIVERY", "PICKUP"]),
+  /** "Consumir no local": retirada no salão (vai para a cozinha com essa observação). */
+  dineIn: z.boolean().optional(),
+  /** Opção já marcada na tela de pagamento (sempre online; lá o cliente ainda pode trocar). */
+  paymentMethod: z.enum(["PIX", "CREDIT_CARD"]).optional(),
+  /** Observações do pedido (cozinha/entregador). */
+  notes: z.string().trim().max(300).optional(),
   name: z.string().max(120).optional(),
   /** CPF (com ou sem máscara); só exigido de quem ainda não tem CPF salvo. */
   document: z.string().max(18).optional(),

@@ -131,7 +131,10 @@ Subtotal: ${formatCents(itemsPriced.calc.subtotalCents)}`,
       return { status: saved.status, body: { ok: false, error: saved.error } };
     }
     const ctx: ToolContext = { phone, afterReply: [], cta: null };
-    const order = await finalizeOrderAndCheckout(ctx, {});
+    const order = await finalizeOrderAndCheckout(ctx, {
+      ...(checkout.paymentMethod ? { paymentMethod: checkout.paymentMethod } : {}),
+      extraNotes: [checkout.dineIn ? "CONSUMIR NO LOCAL (salão)." : "", checkout.notes ?? ""].filter(Boolean).join("\n") || undefined,
+    });
     if (!order.ok || !order.checkoutUrl) {
       await release();
       return { status: 422, body: { ok: false, error: order.ok ? "Não foi possível abrir o pagamento." : order.error } };
