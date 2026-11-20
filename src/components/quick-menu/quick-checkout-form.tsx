@@ -3,12 +3,16 @@
 import { ArrowLeft, Check, Loader2, Lock } from "lucide-react";
 import { useState, type FormEvent } from "react";
 
+import { documentError, formatDocument, onlyDigits } from "@/core/validation/document";
 import { cn, formatCents } from "@/lib/utils";
 
 export type CheckoutPrefill = {
-  needsCredentials: boolean;
+  /** Cadastro incompleto: pede só o que falta (nome e/ou CPF). */
+  needsProfile: boolean;
+  /** Nome já cadastrado ("" se não houver). */
   name: string;
-  email: string;
+  /** CPF já salvo: não pede de novo. */
+  hasDocument: boolean;
   addresses: { id: string; street: string; number: string; complement: string; reference: string }[];
   primaryFeeCents?: number | null;
 };
@@ -31,7 +35,8 @@ const NEW_ADDRESS = "new";
 
 /**
  * 2ª etapa do Cardápio Rápido: entrega/retirada, endereço (com sugestão dos salvos) e, só para quem ainda não
- * tem conta, nome + e-mail + senha. Ao enviar, o servidor cria o pedido e devolve o link do pagamento.
+ * tem nome/CPF cadastrados, nome + CPF (sem senha e sem validar o número: o link assinado já prova o telefone).
+ * Cliente conhecido é chamado pelo nome e não digita nada. Ao enviar, o servidor cria o pedido e devolve o link do pagamento.
  */
 export function QuickCheckoutForm({
   token,
@@ -53,8 +58,7 @@ export function QuickCheckoutForm({
 }) {
   const [deliveryType, setDeliveryType] = useState<"DELIVERY" | "PICKUP">("DELIVERY");
   const [name, setName] = useState(prefill.name);
-  const [email, setEmail] = useState(prefill.email);
-  const [password, setPassword] = useState("");
+  const [document, setDocument] = useState("");
   const [addressId, setAddressId] = useState<string>(prefill.addresses[0]?.id ?? NEW_ADDRESS);
   const [street, setStreet] = useState("");
   const [number, setNumber] = useState("");
@@ -73,9 +77,12 @@ export function QuickCheckoutForm({
   async function onSubmit(event: FormEvent) {
     event.preventDefault();
     if (phase !== "idle") return;
-    if (prefill.needsCredentials) {
-      if (name.trim().length < 2) return setError("Informe seu nome.");
-      if (password.length < 8) return setError("A senha deve ter no mínimo 8 caracteres.");
+    const askName = prefill.needsProfile && !prefill.name;
+    const askDocument = prefill.needsProfile && !prefill.hasDocument;
+    if (askName && name.trim().length < 2) return setError("Informe seu nome.");
+    if (askDocument) {
+      const docErr = documentError(document);
+      if (docErr || onlyDigits(document).length !== 11) return setError(docErr ?? "Informe um CPF válido.");
     }
     if (deliveryType === "DELIVERY" && !usingSaved && (street.trim().length < 2 || !number.trim())) {
       return setError("Informe rua e número para a entrega.");
@@ -91,7 +98,12 @@ export function QuickCheckoutForm({
           ...(items ? { items } : {}),
           checkout: {
             deliveryType,
-            ...(prefill.needsCredentials ? { name, email, password } : {}),
+            ...(prefill.needsProfile
+              ? {
+                  ...(prefill.name ? {} : { name }),
+                  ...(prefill.hasDocument ? {} : { document }),
+                }
+              : {}),
             ...(deliveryType === "DELIVERY"
               ? usingSaved
                 ? { savedAddressId: addressId }
@@ -195,36 +207,32 @@ export function QuickCheckoutForm({
           ))}
         </div>
 
-        {prefill.needsCredentials ? (
+        {prefill.name ? (
+          <p className="pt-1 text-base font-bold text-white">Olá, {prefill.name.trim().split(/\s+/)[0]}! 👋</p>
+        ) : null}
+
+        {prefill.needsProfile ? (
           <>
             <p className="pt-1 text-sm font-bold text-[#F59E0B]">Seu cadastro</p>
-            <Field label="Nome completo">
-              <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" required maxLength={80} />
-            </Field>
-            <Field label="E-mail">
-              <input
-                className={inputClass}
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                autoComplete="email"
-                required
-                maxLength={160}
-              />
-            </Field>
-            <Field label="Crie uma senha (mín. 8 caracteres)">
-              <input
-                className={inputClass}
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="new-password"
-                required
-                minLength={8}
-                maxLength={72}
-              />
-            </Field>
-            <p className="-mt-2 text-xs text-white/60">Com e-mail e senha você também entra no site depois.</p>
+            {!prefill.name ? (
+              <Field label="Nome completo">
+                <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" required maxLength={80} />
+              </Field>
+            ) : null}
+            {!prefill.hasDocument ? (
+              <Field label="CPF">
+                <input
+                  className={inputClass}
+                  value={document}
+                  onChange={(e) => setDocument(formatDocument(e.target.value).slice(0, 14))}
+                  inputMode="numeric"
+                  autoComplete="off"
+                  placeholder="000.000.000-00"
+                  required
+                />
+              </Field>
+            ) : null}
+            <p className="-mt-2 text-xs text-white/60">Só na primeira vez: da próxima, seu pedido já vai preenchido.</p>
           </>
         ) : null}
 

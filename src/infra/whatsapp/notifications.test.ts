@@ -88,12 +88,6 @@ describe("notifyPaymentConfirmed", () => {
     expect(wa.cta).not.toHaveBeenCalled();
   });
 
-  it("quem tem conta no site (senha) não recebe o convite", async () => {
-    f.ctx.rows.set(customers, [{ id: "cu1", name: "Maria", phone: "43999999999", passwordHash: "x", documentNumber: null }]);
-    await notifyPaymentConfirmed(ORDER);
-    expect(wa.cta).not.toHaveBeenCalled();
-  });
-
   it("pedido sem sessão de WhatsApp: nada é enviado", async () => {
     f.ctx.rows.set(whatsappSessions, []);
     await notifyPaymentConfirmed(ORDER);

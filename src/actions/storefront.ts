@@ -18,6 +18,8 @@ import { createPixCharge } from "@/infra/payments/asaas";
 import { consumeOrderCoupon, lookupCoupon } from "@/infra/coupons";
 import type { CatalogDeliveryZone } from "@/core/schemas/product";
 import { getStoreStatus, type OpeningHours, type StoreStatus } from "@/core/store/opening-hours";
+import { nameInput } from "@/core/schemas/auth";
+import { isProfileComplete } from "@/infra/auth/account";
 import { getAuthSession } from "@/infra/auth/customer-session";
 import { checkRateLimit, getClientIp } from "@/infra/security/rate-limit";
 import { sendOrderToSaipos } from "@/lib/saipos";
@@ -93,7 +95,7 @@ export type CustomerOrderView = {
 
 export type CustomerOrdersData = {
   customerName: string;
-  /** Sem senha definida: ainda precisa concluir o cadastro (nome, e-mail, senha). */
+  /** Falta nome ou CPF: ainda precisa concluir o cadastro (sem senha). */
   needsRegistration: boolean;
   /** Apenas dígitos; exibido no card de dados do Meu Passaporte. */
   customerPhone: string;
@@ -279,8 +281,8 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
     .from(customers)
     .where(and(eq(customers.id, session.customerId), eq(customers.tenantId, tenant.id)))
     .limit(1);
-  if (!customer || customer.passwordHash === null) {
-    return failure("Conclua seu cadastro no Meu Passaporte antes de pedir.");
+  if (!customer || customer.phoneVerifiedAt === null || customer.name.trim().length < 2) {
+    return failure("Valide seu WhatsApp e conclua seu cadastro (nome e CPF) antes de pedir.");
   }
 
   /* Endereço (snapshot imutável + reaproveitamento no cadastro do cliente). */
@@ -528,7 +530,6 @@ export async function getCheckoutCustomer(): Promise<{
     .select({
       name: customers.name,
       phone: customers.phone,
-      passwordHash: customers.passwordHash,
       documentNumber: customers.documentNumber,
     })
     .from(customers)
@@ -568,7 +569,7 @@ export async function getCheckoutCustomer(): Promise<{
   return {
     name: customer.name,
     phone: customer.phone,
-    needsRegistration: customer.passwordHash === null,
+    needsRegistration: !isProfileComplete(customer),
     documentNumber,
     lastAddress,
   };
@@ -586,7 +587,7 @@ export async function getCustomerOrders(): Promise<CustomerOrdersData | null> {
       id: customers.id,
       name: customers.name,
       phone: customers.phone,
-      passwordHash: customers.passwordHash,
+      documentNumber: customers.documentNumber,
     })
     .from(customers)
     .where(and(eq(customers.id, session.customerId), eq(customers.tenantId, ref.id)))
@@ -596,12 +597,34 @@ export async function getCustomerOrders(): Promise<CustomerOrdersData | null> {
 
   return {
     customerName: customer.name,
-    needsRegistration: customer.passwordHash === null,
+    needsRegistration: !isProfileComplete(customer),
     customerPhone: customer.phone,
     orders: await loadCustomerOrders(ref.id, customer.id),
   };
 }
 
+
+/** Altera o nome do perfil. O telefone é imutável (identidade do cliente); o CPF só é pedido quando falta. */
+export async function updateCustomerName(input: unknown): Promise<ActionResult<{ name: string }>> {
+  const parsed = nameInput.safeParse(input);
+  if (!parsed.success) return failure(parsed.error.issues[0]?.message ?? "Nome inválido.");
+  const session = await getAuthSession();
+  if (!session) return failure("Sessão expirada. Entre novamente.");
+  const limit = await checkRateLimit({
+    identifier: session.customerId,
+    route: "update-name",
+    limit: 10,
+    windowSeconds: 600,
+  });
+  if (!limit.allowed) return failure("Muitas alterações. Tente novamente em alguns minutos.");
+  const updated = await db
+    .update(customers)
+    .set({ name: parsed.data })
+    .where(and(eq(customers.id, session.customerId), eq(customers.tenantId, session.tenantId)))
+    .returning({ name: customers.name });
+  if (updated.length === 0) return failure("Cadastro não encontrado.");
+  return success({ name: updated[0].name });
+}
 
 /** Confere o cupom para o checkout (o desconto real é recalculado no servidor ao criar o pedido). */
 export async function validateCoupon(

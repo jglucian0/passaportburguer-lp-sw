@@ -2,9 +2,16 @@ import { and, desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 
 import { whatsappCheckBody } from "@/core/schemas/auth";
-import { fail, findCustomerByPhone, isRegistered, parseBody } from "@/infra/auth/account";
+import { fail, findCustomerByPhone, isProfileComplete, parseBody } from "@/infra/auth/account";
 import { createCustomerSession } from "@/infra/auth/customer-session";
-import { getOtpDelivery, getWhatsappAuthMode } from "@/infra/auth/otp";
+import {
+  getOtpDelivery,
+  getWhatsappAuthMode,
+  isLockedAfterWrong,
+  isOtpExpired,
+  OTP_MAX_WRONG_ATTEMPTS,
+  OTP_TTL_MS,
+} from "@/infra/auth/otp";
 import { db } from "@/infra/db";
 import { customers, whatsappOtps } from "@/infra/db/schema";
 import { checkRateLimit, enforceRateLimit } from "@/infra/security/rate-limit";
@@ -35,35 +42,31 @@ export async function POST(request: Request) {
     .orderBy(desc(whatsappOtps.createdAt))
     .limit(1);
 
-  if (!otp || otp.expiresAt.getTime() < Date.now()) {
+  if (!otp || isOtpExpired(otp.expiresAt)) {
     if (otp) await db.delete(whatsappOtps).where(eq(whatsappOtps.id, otp.id));
     return fail("Código expirado. Gere um novo código.", 410);
   }
 
-  /* Conta já registrada entra só por senha: o código do WhatsApp nunca gera sessão para ela. */
   const ref = await getTenantRef();
   if (!ref) return fail("Loja não encontrada.", 404);
   const existing = await findCustomerByPhone(ref.id, local);
-  if (existing && isRegistered(existing)) {
-    await db.delete(whatsappOtps).where(eq(whatsappOtps.id, otp.id));
-    return fail("Esta conta já foi verificada. Entre com sua senha.", 409);
-  }
 
   let verified = otp.verified;
   /* Códigos digitados ("window"/"template"): acertar o código que chegou no WhatsApp É a prova de posse.
-     Erros são contados por telefone para barrar tentativa e erro (espaço de 32^4 códigos). */
+     Erros são contados POR CÓDIGO: na 5ª errada o código é apagado e só um novo código (com cooldown) resolve. */
   if (typedMode && !verified) {
     if (otp.code !== code) {
       const attempt = await checkRateLimit({
-        identifier: phone,
+        identifier: otp.id,
         route: "auth:otp-wrong-code",
-        limit: 5,
-        windowSeconds: 600,
+        limit: OTP_MAX_WRONG_ATTEMPTS,
+        windowSeconds: OTP_TTL_MS / 1000,
         failClosed: true,
       });
-      if (!attempt.allowed) {
+      const wrongCount = attempt.allowed ? OTP_MAX_WRONG_ATTEMPTS - attempt.remaining : OTP_MAX_WRONG_ATTEMPTS + 1;
+      if (isLockedAfterWrong(wrongCount)) {
         await db.delete(whatsappOtps).where(eq(whatsappOtps.id, otp.id));
-        return fail("Muitas tentativas incorretas. Gere um novo código.", 429);
+        return fail("Muitas tentativas incorretas. Peça um novo código.", 429);
       }
       return fail("Código incorreto. Confira a mensagem do WhatsApp e tente de novo.", 400);
     }
@@ -82,12 +85,17 @@ export async function POST(request: Request) {
     .returning({ id: whatsappOtps.id });
   if (consumed.length === 0) return NextResponse.json({ status: "pending" });
 
-  /* Já existe (com ou sem o 9º dígito)? Reaproveita em vez de criar duplicata. */
+  /* Já existe (com ou sem o 9º dígito)? Reaproveita em vez de criar duplicata. O número está provado agora. */
   if (!existing) {
     await db
       .insert(customers)
-      .values({ tenantId: ref.id, name: "", phone: local })
+      .values({ tenantId: ref.id, name: "", phone: local, phoneVerifiedAt: new Date() })
       .onConflictDoNothing({ target: [customers.tenantId, customers.phone] });
+  } else if (!existing.phoneVerifiedAt) {
+    await db
+      .update(customers)
+      .set({ phoneVerifiedAt: new Date() })
+      .where(and(eq(customers.id, existing.id), eq(customers.tenantId, ref.id)));
   }
 
   const customer = await findCustomerByPhone(ref.id, local);
@@ -96,7 +104,7 @@ export async function POST(request: Request) {
   await createCustomerSession(customer.id);
 
   return NextResponse.json(
-    { status: "verified", needsRegistration: true, name: customer.name, phone: customer.phone },
+    { status: "verified", needsRegistration: !isProfileComplete(customer), name: customer.name, phone: customer.phone },
     { headers: { "Cache-Control": "no-store" } },
   );
 }

@@ -18,7 +18,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, useTransition } from "react";
 
-import { type CustomerOrderView } from "@/actions/storefront";
+import { updateCustomerName, type CustomerOrderView } from "@/actions/storefront";
 import { isTerminalStatus } from "@/core/orders/state-machine";
 import type { OrderStatus } from "@/core/schemas/common";
 import type { CatalogCategory, CatalogDeliveryZone } from "@/core/schemas/product";
@@ -34,7 +34,7 @@ import {
 } from "./cart-storage";
 import { DESTINATIONS, matchDestination, type Destination } from "./destinations";
 import { PassportStamp } from "./passport-stamp";
-import { loadSavedAddress, saveAddress, type SavedAddress } from "./use-customer";
+import { loadSavedAddress, saveAddress, saveCustomer, type SavedAddress } from "./use-customer";
 
 const POLL_INTERVAL_MS = 15_000;
 /** Pedidos entregues visíveis no histórico antes de "Ver mais". */
@@ -714,6 +714,27 @@ export function OrdersView({
     setSavedAddress(address);
   }
 
+  const [displayName, setDisplayName] = useState(customerName);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(customerName);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [savingName, startSavingName] = useTransition();
+
+  function saveName() {
+    setNameError(null);
+    startSavingName(async () => {
+      const res = await updateCustomerName(nameDraft);
+      if (!res.ok) {
+        setNameError(res.error);
+        return;
+      }
+      setDisplayName(res.data.name);
+      saveCustomer({ name: res.data.name });
+      setEditingName(false);
+      router.refresh();
+    });
+  }
+
   function handleLogout() {
     startLogout(async () => {
       try {
@@ -732,9 +753,67 @@ export function OrdersView({
 
   return (
     <div className="space-y-6">
-      <p className="text-sm text-slate-600">
-        Olá, <span className="font-semibold text-[#0A2540]">{customerName}</span>!
-      </p>
+      {editingName ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            saveName();
+          }}
+          className="space-y-2"
+        >
+          <label htmlFor="profile-name" className="text-sm font-medium text-slate-700">
+            Seu nome
+          </label>
+          <div className="flex gap-2">
+            <input
+              id="profile-name"
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              maxLength={80}
+              autoFocus
+              autoComplete="given-name"
+              className="h-11 min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 text-base text-slate-900 focus:border-[#F59E0B] focus:outline-none focus:ring-2 focus:ring-[#F59E0B]/30"
+            />
+            <button
+              type="submit"
+              disabled={savingName || nameDraft.trim().length < 2}
+              className="h-11 rounded-xl bg-[#F59E0B] px-4 text-sm font-bold text-[#0A2540] disabled:opacity-60"
+            >
+              Salvar
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingName(false);
+                setNameDraft(displayName);
+                setNameError(null);
+              }}
+              className="h-11 rounded-xl border border-slate-300 px-3 text-sm font-semibold text-slate-700"
+            >
+              Cancelar
+            </button>
+          </div>
+          {nameError ? <p className="text-xs font-medium text-red-700">{nameError}</p> : null}
+          <p className="text-xs text-slate-500">O número de WhatsApp não pode ser alterado.</p>
+        </form>
+      ) : (
+        <p className="flex items-center gap-2 text-sm text-slate-600">
+          <span>
+            Olá, <span className="font-semibold text-[#0A2540]">{displayName}</span>!
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setNameDraft(displayName);
+              setEditingName(true);
+            }}
+            aria-label="Alterar nome"
+            className="inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-100 hover:text-[#0A2540]"
+          >
+            <Pencil className="h-3 w-3" /> Alterar nome
+          </button>
+        </p>
+      )}
 
       {notice ? (
         <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">

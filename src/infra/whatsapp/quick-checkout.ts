@@ -1,11 +1,12 @@
-import bcrypt from "bcryptjs";
 import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 
 import { calculateDeliveryQuote } from "@/core/delivery/quote";
-import { cleanText, emailInput, passwordInput } from "@/core/schemas/auth";
+import { cleanText, cpfInput } from "@/core/schemas/auth";
 import { db } from "@/infra/db";
 import { customerAddresses, customers, whatsappSessions, type AddressSnapshot, type WhatsAppDraftCartItem } from "@/infra/db/schema";
+
+import { isProfileComplete } from "@/infra/auth/account";
 
 import { buildSnapshot } from "./draft-flow";
 import { priceCart, type Coords } from "./order-flow";
@@ -13,13 +14,14 @@ import { customerPhoneVariants, toCustomerPhone } from "./shared";
 
 /**
  * Dados que o cliente preenche NO cardápio (depois de escolher os itens): entrega/retirada, endereço e,
- * só para quem ainda não tem conta no site, nome + e-mail + senha. O telefone vem sempre do token assinado.
+ * só para quem ainda não tem nome/CPF cadastrados, nome + CPF (sem senha, sem validar o número: o token assinado
+ * do WhatsApp já prova o telefone). O telefone vem sempre do token.
  */
 export const checkoutInputSchema = z.object({
   deliveryType: z.enum(["DELIVERY", "PICKUP"]),
   name: z.string().max(120).optional(),
-  email: z.string().max(160).optional(),
-  password: z.string().max(72).optional(),
+  /** CPF (com ou sem máscara); só exigido de quem ainda não tem CPF salvo. */
+  document: z.string().max(18).optional(),
   /** Endereço já salvo do cliente (precisa ser dele). */
   savedAddressId: z.string().uuid().nullish(),
   address: z
@@ -34,10 +36,12 @@ export const checkoutInputSchema = z.object({
 export type CheckoutInput = z.infer<typeof checkoutInputSchema>;
 
 export type QuickCheckoutPrefill = {
-  /** Sem senha no site: o formulário pede nome, e-mail e senha. */
-  needsCredentials: boolean;
+  /** Cadastro incompleto (sem nome ou sem CPF): o formulário pede só o que falta. */
+  needsProfile: boolean;
+  /** Nome já cadastrado ("" se não houver): cliente conhecido é chamado pelo nome e não digita nada. */
   name: string;
-  email: string;
+  /** CPF já salvo (o número nunca vai para o navegador). */
+  hasDocument: boolean;
   addresses: { id: string; street: string; number: string; complement: string; reference: string }[];
   /** Taxa de entrega do 1º endereço salvo (null = não deu para calcular). O servidor recalcula ao fechar. */
   primaryFeeCents?: number | null;
@@ -57,7 +61,7 @@ async function findCustomer(tenantId: string, phone: string) {
 /** O que o formulário precisa saber do cliente deste telefone (sugestão de endereços, nome, se precisa de senha). */
 export async function loadQuickCheckoutPrefill(tenantId: string, phone: string): Promise<QuickCheckoutPrefill> {
   const customer = await findCustomer(tenantId, phone);
-  if (!customer) return { needsCredentials: true, name: "", email: "", addresses: [] };
+  if (!customer) return { needsProfile: true, name: "", hasDocument: false, addresses: [] };
   const rows = await db
     .select()
     .from(customerAddresses)
@@ -83,9 +87,9 @@ export async function loadQuickCheckoutPrefill(tenantId: string, phone: string):
     }
   }
   return {
-    needsCredentials: !customer.passwordHash,
+    needsProfile: !isProfileComplete(customer),
     name: customer.name,
-    email: customer.email ?? "",
+    hasDocument: !!customer.documentNumber,
     primaryFeeCents,
     addresses: rows.map((a) => ({
       id: a.id,
@@ -98,7 +102,7 @@ export async function loadQuickCheckoutPrefill(tenantId: string, phone: string):
 }
 
 export type PreparedCheckout =
-  | { ok: true; customerId: string | null; snapshot: AddressSnapshot | null; credentials: { name: string; email: string; passwordHash: string } | null }
+  | { ok: true; customerId: string | null; snapshot: AddressSnapshot | null; profile: { name: string; documentNumber: string } | null }
   | { ok: false; status: number; error: string };
 
 /**
@@ -113,22 +117,19 @@ export async function prepareCheckout(
 ): Promise<PreparedCheckout> {
   const customer = await findCustomer(tenantId, phone);
 
-  /* Conta no site: quem não tem senha cria agora (nunca sobrescreve senha existente). */
-  let credentials: { name: string; email: string; passwordHash: string } | null = null;
-  if (!customer?.passwordHash) {
-    const name = cleanText(input.name ?? customer?.name ?? "");
+  /* Cadastro: só nome + CPF, e só o que ainda falta. Quem já tem os dois segue direto (nada é pedido de novo). */
+  let profile: { name: string; documentNumber: string } | null = null;
+  const knownName = (customer?.name ?? "").trim();
+  if (knownName.length < 2 || !customer?.documentNumber) {
+    const name = knownName.length >= 2 ? knownName : cleanText(input.name ?? "").slice(0, 80);
     if (name.length < 2) return { ok: false, status: 400, error: "Informe seu nome." };
-    const email = emailInput.safeParse(input.email ?? "");
-    if (!email.success) return { ok: false, status: 400, error: email.error.issues[0]?.message ?? "Informe um e-mail válido." };
-    const password = passwordInput.safeParse(input.password ?? "");
-    if (!password.success) return { ok: false, status: 400, error: password.error.issues[0]?.message ?? "Senha inválida." };
-    const [taken] = await db
-      .select({ id: customers.id })
-      .from(customers)
-      .where(and(eq(customers.tenantId, tenantId), eq(customers.email, email.data)))
-      .limit(1);
-    if (taken && taken.id !== customer?.id) return { ok: false, status: 409, error: "Este e-mail já está em uso." };
-    credentials = { name: name.slice(0, 80), email: email.data, passwordHash: await bcrypt.hash(password.data, 10) };
+    let documentNumber = customer?.documentNumber ?? null;
+    if (!documentNumber) {
+      const doc = cpfInput.safeParse(input.document ?? "");
+      if (!doc.success) return { ok: false, status: 400, error: doc.error.issues[0]?.message ?? "Informe um CPF válido." };
+      documentNumber = doc.data;
+    }
+    profile = { name, documentNumber };
   }
 
   let snapshot: AddressSnapshot | null = null;
@@ -160,7 +161,7 @@ export async function prepareCheckout(
   const priced = await priceCart(tenantId, items, input.deliveryType, coords, snapshot?.district ?? snapshot?.neighborhood ?? null);
   if (!priced.ok) return { ok: false, status: 422, error: priced.error };
 
-  return { ok: true, customerId: customer?.id ?? null, snapshot, credentials };
+  return { ok: true, customerId: customer?.id ?? null, snapshot, profile };
 }
 
 /** Grava a conta (se nova) e o rascunho completo na sessão, prontos para o fechamento do pedido. */
@@ -175,17 +176,17 @@ export async function saveCheckoutSession(
   if (!local) return { ok: false, status: 400, error: "Telefone inválido." };
 
   try {
-    if (prepared.credentials) {
-      const { name, email, passwordHash } = prepared.credentials;
+    if (prepared.profile) {
+      const { name, documentNumber } = prepared.profile;
       if (customerId) {
         await db
           .update(customers)
-          .set({ name, email, passwordHash, phoneVerifiedAt: new Date() })
+          .set({ name, documentNumber, phoneVerifiedAt: new Date() })
           .where(and(eq(customers.id, customerId), eq(customers.tenantId, tenantId)));
       } else {
         await db
           .insert(customers)
-          .values({ tenantId, name, phone: local, email, passwordHash, phoneVerifiedAt: new Date() })
+          .values({ tenantId, name, phone: local, documentNumber, phoneVerifiedAt: new Date() })
           .onConflictDoNothing();
         customerId = (await findCustomer(tenantId, phone))?.id ?? null;
       }

@@ -1,4 +1,6 @@
 
+import { buildAuthTemplatePayload } from "./otp-template";
+
 function env(name: "WHATSAPP_PHONE_NUMBER_ID" | "WHATSAPP_ACCESS_TOKEN"): string {
   const v = process.env[name];
   if (!v) throw new Error(`${name} não definida.`);
@@ -240,18 +242,7 @@ export function sendTemplateMessage(to: string, name: string, languageCode: stri
  * Fora da janela de 24 h é a única forma de entregar o código sem o cliente falar primeiro.
  */
 export function sendAuthTemplate(to: string, name: string, languageCode: string, code: string) {
-  return graphPost({
-    to,
-    type: "template",
-    template: {
-      name,
-      language: { code: languageCode },
-      components: [
-        { type: "body", parameters: [{ type: "text", text: code }] },
-        { type: "button", sub_type: "url", index: "0", parameters: [{ type: "text", text: code }] },
-      ],
-    },
-  });
+  return graphPost(buildAuthTemplatePayload({ to, name, languageCode, code }));
 }
 
 /** Marca como lida (dois tiques azuis). */

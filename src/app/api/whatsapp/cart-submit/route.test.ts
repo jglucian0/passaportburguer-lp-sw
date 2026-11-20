@@ -74,7 +74,7 @@ const call = (body: unknown) =>
 const menuToken = () => signWhatsAppToken({ phone: PHONE, purpose: "QUICK_MENU" });
 const items = [{ productId: BURGER, quantity: 2, addons: [{ addonId: BACON, quantity: 1 }], notes: "sem cebola" }];
 const pickup = { deliveryType: "PICKUP" as const };
-const registered = { id: "c1", name: "João Silva", phone: "43999999999", passwordHash: "hash", email: "j@x.com" };
+const registered = { id: "c1", name: "João Silva", phone: "43999999999", documentNumber: "52998224725", phoneVerifiedAt: new Date() };
 
 beforeEach(() => {
   process.env.WHATSAPP_SESSION_SECRET = "test-secret-with-enough-length";
@@ -183,28 +183,31 @@ describe("POST /api/whatsapp/cart-submit", () => {
     expect(h.writes).toHaveLength(0);
   });
 
-  it("cliente sem senha no site: exige nome, e-mail e senha; cria o acesso (senha em hash) e segue para o pagamento", async () => {
-    h.rows.set(customers, [{ id: "c1", name: "Fulano", phone: "43999999999", passwordHash: null, email: null }]);
+  it("cliente sem CPF: exige o CPF (nome já cadastrado não é pedido), grava nome + CPF sem senha e segue para o pagamento", async () => {
+    h.rows.set(customers, [{ id: "c1", name: "Fulano", phone: "43999999999", documentNumber: null, phoneVerifiedAt: null }]);
 
-    const semSenha = await call({ token: menuToken(), items, checkout: { ...pickup, name: "Fulano de Tal", email: "fulano@x.com" } });
-    expect(semSenha.status).toBe(400);
+    const semCpf = await call({ token: menuToken(), items, checkout: { ...pickup } });
+    expect(semCpf.status).toBe(400);
     expect(h.writes).toHaveLength(0);
 
-    const res = await call({
-      token: menuToken(),
-      items,
-      checkout: { ...pickup, name: "Fulano de Tal", email: "Fulano@X.com", password: "senha-forte-123" },
-    });
+    const cpfInvalido = await call({ token: menuToken(), items, checkout: { ...pickup, document: "111.111.111-11" } });
+    expect(cpfInvalido.status).toBe(400);
+    expect(h.writes).toHaveLength(0);
+
+    const res = await call({ token: menuToken(), items, checkout: { ...pickup, document: "529.982.247-25" } });
     expect(res.status).toBe(200);
-    const update = h.writes.find((w) => w.table === customers && w.op === "update")?.values as {
-      name: string;
-      email: string;
-      passwordHash: string;
-    };
-    expect(update).toMatchObject({ name: "Fulano de Tal", email: "fulano@x.com" });
-    expect(update.passwordHash).toMatch(/^\$2[aby]\$/); // bcrypt; a senha nunca é gravada em claro
-    expect(JSON.stringify(h.writes.map((w) => w.values))).not.toContain("senha-forte-123");
+    const update = h.writes.find((w) => w.table === customers && w.op === "update")?.values as Record<string, unknown>;
+    expect(update).toMatchObject({ name: "Fulano", documentNumber: "52998224725" });
+    expect(update.phoneVerifiedAt).toBeInstanceOf(Date);
+    expect(update).not.toHaveProperty("passwordHash");
     expect(fin.finalize).toHaveBeenCalledTimes(1);
+  });
+
+  it("número novo no Cardápio Rápido: sem nome não passa (nome + CPF são pedidos)", async () => {
+    h.rows.set(customers, []);
+    const semNome = await call({ token: menuToken(), items, checkout: { ...pickup, document: "529.982.247-25" } });
+    expect(semNome.status).toBe(400);
+    expect(h.writes).toHaveLength(0);
   });
 
   it("409 quando o link já foi usado (claim em conflito); nada é salvo nem finalizado", async () => {

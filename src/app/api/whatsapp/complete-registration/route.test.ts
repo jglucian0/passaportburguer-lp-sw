@@ -24,7 +24,7 @@ import { signWhatsAppToken } from "@/infra/whatsapp/session-token";
 import { POST } from "./route";
 
 const PHONE = "5543999999999"; // dono do token
-const OTHER = "5511888888888";
+const OTHER = "5511988888888";
 const VALID_CPF = "529.982.247-25";
 const ORDER = "11111111-1111-4111-8111-111111111111";
 
@@ -41,8 +41,6 @@ const form = (over: Record<string, unknown> = {}) => ({
   token: token(),
   name: "Maria da Silva",
   document: VALID_CPF,
-  email: "maria@example.com",
-  password: "senha-forte-123",
   street: "Rua A",
   number: "10",
   ...over,
@@ -61,16 +59,10 @@ beforeEach(() => {
 });
 
 describe("POST /api/whatsapp/complete-registration", () => {
-  it("cliente sem senha: grava e-mail + hash bcrypt (login no site) e exige os dois", async () => {
-    const ok = await call(form());
-    expect(ok.status).toBe(200);
-    const creds = written(customers, "update").map((w) => w.set as Record<string, unknown>).find((x) => "passwordHash" in x);
-    expect(creds?.email).toBe("maria@example.com");
-    expect(String(creds?.passwordHash)).toMatch(/^[$]2[aby][$]/);
-
-    f.ctx.writes.length = 0;
-    const missing = await call(form({ password: undefined }));
-    expect(missing.status).toBe(400);
+  it("não existe mais senha/e-mail: campos extras são recusados (400) e nada é gravado", async () => {
+    const res = await call(form({ email: "maria@example.com", password: "senha-forte-123" }));
+    expect(res.status).toBe(400);
+    expect(f.ctx.writes).toHaveLength(0);
   });
 
   it("salva CPF e endereço, vincula a sessão do telefone do TOKEN e devolve o redirect", async () => {
@@ -95,7 +87,7 @@ describe("POST /api/whatsapp/complete-registration", () => {
   });
 
   it("identidade = token: outro telefone no token grava só para ele", async () => {
-    f.ctx.rows.set(customers, [{ id: "cu2", name: "João", phone: "11888888888", passwordHash: null, phoneVerifiedAt: null }]);
+    f.ctx.rows.set(customers, [{ id: "cu2", name: "João", phone: "11988888888", passwordHash: null, phoneVerifiedAt: null }]);
     await call(form({ token: token({ phone: OTHER }) }));
     expect(written(whatsappSessions, "insert")[0].values).toMatchObject({ phone: OTHER, customerId: "cu2" });
     expect(JSON.stringify(f.ctx.writes.map((w) => [w.values, w.set]))).not.toContain("43999999999");
@@ -118,14 +110,6 @@ describe("POST /api/whatsapp/complete-registration", () => {
     expect(values).toMatchObject({ phone: "43999999999", documentNumber: "52998224725" });
     expect(values.phoneVerifiedAt).toBeInstanceOf(Date);
     expect(values.passwordHash).toBeUndefined();
-  });
-
-  it("conta já concluída no site mantém o nome", async () => {
-    f.ctx.rows.set(customers, [
-      { id: "cu1", name: "Nome do Site", phone: "43999999999", passwordHash: "hash", phoneVerifiedAt: new Date() },
-    ]);
-    await call(form({ name: "Outro Nome Qualquer" }));
-    expect(written(customers, "update")[0].set).not.toHaveProperty("name");
   });
 
   it("usa a zona do pedido pago quando rua e número não mudam", async () => {

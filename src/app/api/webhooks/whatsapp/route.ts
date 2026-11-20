@@ -17,6 +17,7 @@ import { whatsappOtps } from "@/infra/db/schema";
 import { bufferInbound, processAfterDebounce } from "@/infra/whatsapp/inbox";
 import { errorSummary } from "@/infra/whatsapp/log";
 import { extractInboundMessages, safeEqual, verifyMetaSignature } from "@/infra/whatsapp/webhook";
+import { extractEchoRecipients, pauseBotForOwnerReply } from "@/infra/whatsapp/echo";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -101,6 +102,13 @@ export async function POST(request: Request) {
     payload = JSON.parse(raw) as MetaPayload;
   } catch {
     return new Response("Bad request", { status: 400 });
+  }
+
+  /* Coexistência: o dono respondeu pelo celular (smb_message_echoes) → o bot se cala naquele chat. */
+  try {
+    for (const phone of extractEchoRecipients(payload)) await pauseBotForOwnerReply(phone);
+  } catch (error) {
+    console.error("[whatsapp-webhook] falha ao pausar o bot (eco):", errorSummary(error));
   }
 
   try {

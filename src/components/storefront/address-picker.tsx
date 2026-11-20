@@ -436,6 +436,16 @@ export function AddressPicker({
             </button>
           </div>
         </div>
+        <button
+          type="button"
+          onClick={() => {
+            setMode("search");
+            setMsg(null);
+          }}
+          className="flex h-11 w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white text-sm font-semibold text-[#0A2540] transition hover:bg-slate-50"
+        >
+          + Adicionar novo endereço
+        </button>
       </div>
     );
   }

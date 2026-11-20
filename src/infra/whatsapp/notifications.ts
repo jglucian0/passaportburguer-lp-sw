@@ -82,8 +82,7 @@ export async function notifyPaymentConfirmed(orderId: string): Promise<void> {
       .where(eq(whatsappSessions.phone, session.phone))
       .catch(() => undefined);
 
-    /* Cadastro pós-pagamento (sem OTP: o telefone já foi provado pela conversa). Quem tem conta no site fica de fora. */
-    if (customer.passwordHash) return;
+    /* Cadastro pós-pagamento (sem OTP: o telefone já foi provado pela conversa). */
     // Já tem CPF: o cadastro está resolvido (o endereço é salvo no próprio pedido), não convida de novo.
     if (customer.documentNumber) return;
 

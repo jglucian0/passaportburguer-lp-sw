@@ -10,7 +10,9 @@ import { getClientIp } from "@/infra/security/rate-limit";
 import { getTenantRef } from "@/infra/tenant/resolve";
 
 export const CUSTOMER_COOKIE = "customer_token";
-const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 dias
+/** 30 dias. A sessão vive no cookie HttpOnly emitido pelo servidor (Set-Cookie), nunca em document.cookie (o ITP do Safari apagaria em 7 dias). */
+export const CUSTOMER_SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
+const SESSION_TTL_SECONDS = CUSTOMER_SESSION_TTL_SECONDS;
 
 export type AuthSession = {
   sessionId: string;
@@ -28,7 +30,7 @@ export class UnauthorizedError extends Error {
 
 const hashToken = (token: string) => createHash("sha256").update(token).digest("hex");
 
-function cookieOptions(maxAge: number) {
+export function customerCookieOptions(maxAge: number) {
   return {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
@@ -54,7 +56,7 @@ export async function createCustomerSession(customerId: string): Promise<void> {
     expiresAt: new Date(now.getTime() + SESSION_TTL_SECONDS * 1000),
   });
 
-  (await cookies()).set(CUSTOMER_COOKIE, token, cookieOptions(SESSION_TTL_SECONDS));
+  (await cookies()).set(CUSTOMER_COOKIE, token, customerCookieOptions(SESSION_TTL_SECONDS));
 }
 
 /** Sessão válida (existe, não expirou, não foi revogada, é desta loja) ou null. */
@@ -109,7 +111,7 @@ export async function revokeCurrentSession(): Promise<void> {
       .set({ revokedAt: new Date() })
       .where(and(eq(sessions.tokenHash, hashToken(token)), isNull(sessions.revokedAt)));
   }
-  jar.set(CUSTOMER_COOKIE, "", cookieOptions(0));
+  jar.set(CUSTOMER_COOKIE, "", customerCookieOptions(0));
 }
 
 /** Encerra todas as sessões ativas do cliente (ex.: após redefinir a senha). */

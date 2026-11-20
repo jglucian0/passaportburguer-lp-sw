@@ -7,8 +7,6 @@ import { documentError, formatDocument, onlyDigits } from "@/core/validation/doc
 
 type Prefill = {
   name: string;
-  email: string;
-  needsPassword: boolean;
   address: { street: string; number: string; complement: string; reference: string };
 };
 
@@ -35,8 +33,6 @@ export function CompleteRegistrationForm({
 }) {
   const [name, setName] = useState(prefill.name);
   const [document, setDocument] = useState("");
-  const [email, setEmail] = useState(prefill.email);
-  const [password, setPassword] = useState("");
   const [street, setStreet] = useState(prefill.address.street);
   const [number, setNumber] = useState(prefill.address.number);
   const [complement, setComplement] = useState(prefill.address.complement);
@@ -57,10 +53,6 @@ export function CompleteRegistrationForm({
       setError(docErr ?? "Informe um CPF válido.");
       return;
     }
-    if (prefill.needsPassword && password.length < 8) {
-      setError("A senha deve ter no mínimo 8 caracteres.");
-      return;
-    }
     setError(null);
     setPhase("sending");
     try {
@@ -72,7 +64,6 @@ export function CompleteRegistrationForm({
           token,
           name,
           document,
-          ...(prefill.needsPassword ? { email, password } : {}),
           street,
           number,
           complement: complement || undefined,
@@ -137,34 +128,6 @@ export function CompleteRegistrationForm({
           required
         />
       </Field>
-
-      {prefill.needsPassword ? (
-        <>
-          <Field label="E-mail">
-            <input
-              className={inputClass}
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
-              required
-              maxLength={160}
-            />
-          </Field>
-          <Field label="Crie uma senha (mín. 8 caracteres)">
-            <input
-              className={inputClass}
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="new-password"
-              required
-              minLength={8}
-              maxLength={72}
-            />
-          </Field>
-        </>
-      ) : null}
 
       <p className="pt-2 text-sm font-bold text-[#F59E0B]">Endereço padrão</p>
       <div className="grid grid-cols-[1fr_6rem] gap-3">

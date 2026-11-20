@@ -1,7 +1,22 @@
 import { randomInt } from "node:crypto";
 
-/** Validade do código de embarque (fluxo invertido via wa.me). */
-export const OTP_TTL_MS = 10 * 60 * 1000;
+/** Validade do código: 5 minutos (300 s). */
+export const OTP_TTL_MS = 5 * 60 * 1000;
+/** Erros de digitação toleráveis antes de invalidar o código. */
+export const OTP_MAX_WRONG_ATTEMPTS = 5;
+/** Intervalo mínimo entre dois envios para o mesmo número. */
+export const OTP_RESEND_COOLDOWN_SECONDS = 60;
+/** Máximo de envios por número a cada hora. */
+export const OTP_MAX_SENDS_PER_HOUR = 3;
+
+export function isOtpExpired(expiresAt: Date, now: Date = new Date()): boolean {
+  return expiresAt.getTime() <= now.getTime();
+}
+
+/** `wrongCount` já inclui a tentativa errada que acabou de acontecer. */
+export function isLockedAfterWrong(wrongCount: number): boolean {
+  return wrongCount >= OTP_MAX_WRONG_ATTEMPTS;
+}
 
 /**
  * "meta" (padrão): só o Webhook oficial confirma o código.
@@ -41,7 +56,7 @@ export function isOtpRequestMessage(text: string | undefined | null): boolean {
 }
 
 export function buildOtpRequestUrl(): string | null {
-  const store = process.env.STORE_WHATSAPP?.replace(/D/g, "");
+  const store = process.env.STORE_WHATSAPP?.replace(/\D/g, "");
   if (!store) return null;
   return `https://wa.me/${store}?text=${encodeURIComponent(OTP_REQUEST_TEXT)}`;
 }
@@ -62,7 +77,13 @@ export function normalizeBrPhone(input: string): string | null {
   if (digits.length === 10 || digits.length === 11) digits = `55${digits}`;
   if (!digits.startsWith("55")) return null;
   if (digits.length !== 12 && digits.length !== 13) return null;
-  return digits;
+  return isPlausibleLocalPhone(digits.slice(2)) ? digits : null;
+}
+
+/** DDD de 11 a 99; celular de 11 dígitos tem o 9 após o DDD (descarta lixo e números estrangeiros sem o 55). */
+function isPlausibleLocalPhone(local: string): boolean {
+  if (Number(local.slice(0, 2)) < 11) return false;
+  return local.length === 11 ? local[2] === "9" : /[2-9]/.test(local[2]);
 }
 
 /** Formato guardado em `customers.phone` (DDD + número, sem o 55). */
@@ -103,6 +124,11 @@ export function generateEmbarkCode(): string {
   let suffix = "";
   for (let i = 0; i < 4; i++) suffix += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
   return `PASS-${suffix}`;
+}
+
+/** Código numérico de 6 dígitos (modos "window"/"template"): o formato que o template de autenticação da Meta aceita. */
+export function generateOtpCode(): string {
+  return String(randomInt(1_000_000)).padStart(6, "0");
 }
 
 export function normalizeCode(input: unknown): string | null {

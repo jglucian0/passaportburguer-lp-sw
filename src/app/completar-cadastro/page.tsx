@@ -56,7 +56,7 @@ export default async function CompleteRegistrationPage({
         <img src="/logo_passaporteburguer_nav.min.webp" alt="Passaporte Burguer" className="mx-auto h-12 w-auto" />
         <div className="space-y-1 text-center text-white">
           <h1 className="text-xl font-bold">Peça com 1 clique da próxima vez</h1>
-          <p className="text-sm text-white/70">Leva 15 segundos. Com a senha que você criar, você também entra no site quando quiser.</p>
+          <p className="text-sm text-white/70">Leva 15 segundos: confirme seu nome e CPF e salve o endereço padrão.</p>
         </div>
         <CompleteRegistrationForm token={token} phoneLabel={phoneLabel} prefill={prefill} />
       </div>

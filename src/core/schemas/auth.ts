@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { documentError } from "@/core/validation/document";
+
 /** Remove caracteres de controle/invisíveis e normaliza espaços. */
 export const cleanText = (value: string) =>
   value
@@ -28,16 +30,19 @@ export const phoneInput = z
     return digits;
   });
 
-export const passwordInput = z
+/** CPF (só dígitos na saída), com dígitos verificadores válidos. */
+export const cpfInput = z
   .string()
-  .min(8, "A senha deve ter no mínimo 8 caracteres.")
-  .max(72, "A senha deve ter no máximo 72 caracteres.");
-
-export const emailInput = z
-  .string()
-  .max(160)
-  .transform((v) => cleanText(v).toLowerCase())
-  .pipe(z.string().email("Informe um e-mail válido."));
+  .max(18)
+  .transform((v, ctx) => {
+    const digits = v.replace(/\D/g, "");
+    const error = documentError(digits);
+    if (error || digits.length !== 11) {
+      ctx.addIssue({ code: "custom", message: error ?? "Informe um CPF válido." });
+      return z.NEVER;
+    }
+    return digits;
+  });
 
 export const nameInput = z
   .string()
@@ -46,19 +51,21 @@ export const nameInput = z
   .pipe(z.string().min(2, "Informe como podemos te chamar.").max(80, "Nome muito longo."));
 
 export const checkAccountBody = z.object({ phone: phoneInput }).strict();
-export const loginBody = z.object({ phone: phoneInput, password: z.string().min(1).max(72) }).strict();
-export const registerBody = z
-  .object({ name: nameInput, email: emailInput, password: passwordInput })
+/** Cadastro do cliente: só nome e CPF (o WhatsApp já foi validado pelo código). */
+export const registerBody = z.object({ name: nameInput, document: cpfInput }).strict();
+export const whatsappInitBody = z
+  .object({
+    phone: phoneInput,
+    /** Token do Cloudflare Turnstile (obrigatório quando as chaves estão configuradas). */
+    turnstileToken: z.string().max(2048).optional(),
+    /** Pede um código novo mesmo havendo um ativo (botão "Reenviar", após o cooldown). */
+    resend: z.boolean().optional(),
+  })
   .strict();
-export const recoverRequestBody = z.object({ phone: phoneInput }).strict();
-export const recoverResetBody = z
-  .object({ phone: phoneInput, code: z.string().regex(/^\d{6}$/), password: passwordInput })
-  .strict();
-export const whatsappInitBody = z.object({ phone: phoneInput }).strict();
 export const whatsappCheckBody = z
   .object({
     phone: phoneInput,
-    code: z.string().max(12).transform((v) => v.trim().toUpperCase()).pipe(z.string().regex(/^PASS-[A-Z0-9]{4}$/)),
+    code: z.string().max(12).transform((v) => v.trim().toUpperCase()).pipe(z.string().regex(/^(PASS-[A-Z0-9]{4}|\d{6})$/)),
     confirm: z.boolean().optional(),
   })
   .strict();

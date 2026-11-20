@@ -5,11 +5,13 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Input } from "@/components/ui/input";
+import { documentError, formatDocument, onlyDigits } from "@/core/validation/document";
 import { formatPhone } from "@/lib/utils";
 
+import { TURNSTILE_ENABLED, TurnstileWidget } from "./turnstile-widget";
 import { saveCustomer } from "./use-customer";
 
-type Step = "phone" | "password" | "send" | "register" | "forgot" | "reset";
+type Step = "phone" | "profile" | "send" | "register";
 
 const POLL_MS = 3000;
 const PENDING_OTP_KEY = "pb_pending_otp";
@@ -25,12 +27,14 @@ type PendingOtp = {
   waUrl: string;
   sandbox: boolean;
   delivery: Delivery;
+  /** Quando o botão "Reenviar" libera (epoch ms). */
+  resendAt?: number;
 };
 
-/** Aceita "ab12", "PASS-AB12" ou "pass ab12" e devolve PASS-AB12 (ou "" se incompleto). */
+/** Código digitado: 6 dígitos (aceita espaço/traço, ex.: "123 456"). Devolve "" se incompleto. */
 function toFullCode(value: string): string {
-  const clean = value.toUpperCase().replace(/[^A-Z0-9]/g, "").replace(/^PASS/, "");
-  return clean.length === 4 ? `PASS-${clean}` : "";
+  const digits = value.replace(/\D/g, "");
+  return digits.length === 6 ? digits : "";
 }
 
 function readPendingOtp(): PendingOtp | null {
@@ -79,6 +83,9 @@ type CheckResponse = {
   status?: "pending" | "verified";
   error?: string;
   phone?: string;
+  name?: string;
+  /** Nome ou CPF ainda não cadastrados. */
+  needsRegistration?: boolean;
 };
 
 type Identity = { error?: string; name?: string; phone?: string };
@@ -94,9 +101,9 @@ async function postJson<T>(url: string, body: unknown): Promise<{ ok: boolean; s
 }
 
 /**
- * Entrada no Meu Passaporte: conta verificada entra só com senha; número novo valida o WhatsApp
- * uma única vez (código wa.me) e conclui o cadastro. Esqueci a senha: código de 6 dígitos por e-mail.
- * `startAtRegister`: cliente já validado (cookie) que ainda não concluiu o cadastro.
+ * Entrada no Meu Passaporte, sem senha: número novo informa nome + CPF e valida o WhatsApp por código;
+ * cliente conhecido só valida o número a cada acesso. `startAtRegister`: cliente já validado (cookie)
+ * que ainda não tem nome/CPF cadastrados.
  */
 export function PhoneLookup({
   startAtRegister = false,
@@ -114,13 +121,23 @@ export function PhoneLookup({
   const [typedCode, setTypedCode] = useState("");
   const [sandbox, setSandbox] = useState(false);
   const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [resetCode, setResetCode] = useState("");
+  const [cpf, setCpf] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const checking = useRef(false);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  const [turnstileKey, setTurnstileKey] = useState(0);
+  const [resendAt, setResendAt] = useState(0);
+  const [tick, setTick] = useState(() => Date.now());
+
+  /* Contagem regressiva do cooldown de reenvio (só enquanto há algo a contar). */
+  useEffect(() => {
+    if (step !== "send" || Date.now() >= resendAt) return;
+    const id = setInterval(() => setTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [step, resendAt]);
+  const resendSeconds = Math.max(0, Math.ceil((resendAt - tick) / 1000));
 
   /* Restaura o fluxo OTP se o navegador descartou/recarregou a aba ao ir para o WhatsApp. */
   useEffect(() => {
@@ -131,6 +148,7 @@ export function PhoneLookup({
     setCode(pending.code);
     setWaUrl(pending.waUrl);
     setDelivery(pending.delivery);
+    setResendAt(pending.resendAt ?? 0);
     setSandbox(pending.sandbox);
     setStep("send");
   }, [startAtRegister]);
@@ -166,20 +184,25 @@ export function PhoneLookup({
           setError(data.error ?? "Não foi possível verificar agora.");
           if (status === 410 || status === 429) {
             clearPendingOtp();
-            setStep("phone"); // expirado: recomeça
-          }
-          if (status === 409) {
-            clearPendingOtp();
-            setStep("password"); // conta já verificada: só senha
+            setStep("phone"); // expirado ou tentativas esgotadas: recomeça
           }
           return;
         }
         if (data.status === "verified") {
           clearPendingOtp(); // código consumido no servidor
-
           saveCustomer({ phone: data.phone });
           setError(null);
-          setStep("register");
+          /* Número validado: grava nome + CPF já digitados (se o navegador perdeu os dados, pede de novo). */
+          if (data.needsRegistration) {
+            if (name.trim().length >= 2 && !documentError(cpf) && onlyDigits(cpf).length === 11) {
+              const res = await postJson<Identity>("/api/auth/register", { name, document: cpf });
+              if (res.ok) return enter(res.data);
+            }
+            if (data.name) setName(data.name);
+            setStep("register");
+          } else {
+            enter({ name: data.name, phone: data.phone });
+          }
         } else if (confirm) {
           setError("Ainda não recebemos sua mensagem. Envie o código no WhatsApp e tente de novo.");
         }
@@ -190,7 +213,7 @@ export function PhoneLookup({
         checking.current = false;
       }
     },
-    [phone, code, delivery, typedCode],
+    [phone, code, delivery, typedCode, name, cpf, enter],
   );
 
   /* Polling leve enquanto o cliente está no WhatsApp. */
@@ -226,104 +249,92 @@ export function PhoneLookup({
     }
   }
 
+  /** Pede o código de validação do número (WhatsApp). */
+  async function startOtp(resend = false): Promise<void> {
+    if (TURNSTILE_ENABLED && !turnstileToken) {
+      setError("Aguarde a verificação de segurança e tente de novo.");
+      return;
+    }
+    const init = await postJson<{
+      error?: string;
+      retryAfterSeconds?: number;
+      code?: string;
+      waUrl?: string;
+      delivery?: Delivery;
+      mode?: string;
+      expiresAt?: number;
+      expiresIn?: number;
+      resendAt?: number;
+    }>("/api/auth/whatsapp/init", { phone, ...(turnstileToken ? { turnstileToken } : {}), ...(resend ? { resend: true } : {}) });
+    /* O token do Turnstile vale uma verificação só: gera outro para a próxima chamada. */
+    setTurnstileKey((k) => k + 1);
+    if (init.data.retryAfterSeconds) setResendAt(Date.now() + init.data.retryAfterSeconds * 1000);
+    const mode: Delivery = init.data.delivery ?? "inbound";
+    const missing = mode === "inbound" ? !init.data.code || !init.data.waUrl : mode === "window" && !init.data.waUrl;
+    if (!init.ok || missing) {
+      setError(init.data.error ?? "Não foi possível gerar o código.");
+      return;
+    }
+    setCode(init.data.code ?? "");
+    setWaUrl(init.data.waUrl ?? "");
+    setDelivery(mode);
+    setTypedCode("");
+    setError(null);
+    const nextResendAt = init.data.resendAt ?? 0;
+    setResendAt(nextResendAt);
+    setTick(Date.now());
+    const isSandbox = init.data.mode === "sandbox";
+    setSandbox(isSandbox);
+    writePendingOtp({
+      phone: digitsOf(phone),
+      code: init.data.code ?? "",
+      waUrl: init.data.waUrl ?? "",
+      delivery: mode,
+      sandbox: isSandbox,
+      resendAt: nextResendAt,
+      expiresAt: init.data.expiresAt ?? Date.now() + (init.data.expiresIn ?? 300) * 1000,
+      returnTo: window.location.pathname,
+    });
+    setStep("send");
+  }
+
+  /** Sem senha: número novo/cadastro incompleto informa nome + CPF antes do código; os demais vão direto ao código. */
   const handlePhoneSubmit = (event: React.FormEvent) =>
     run(event, async () => {
       if (digitsOf(phone).length < 10) {
         setError("Informe o WhatsApp com DDD.");
         return;
       }
-      const account = await postJson<{ flow?: string; error?: string }>("/api/auth/check-account", { phone });
+      const account = await postJson<{ needsProfile?: boolean; error?: string }>("/api/auth/check-account", { phone });
       if (!account.ok) {
         setError(account.data.error ?? "Não foi possível continuar.");
         return;
       }
-      if (account.data.flow === "password") {
-        setPassword("");
-        setStep("password");
+      if (account.data.needsProfile) {
+        setStep("profile");
         return;
       }
-
-      const init = await postJson<{
-        error?: string;
-        code?: string;
-        waUrl?: string;
-        delivery?: Delivery;
-        mode?: string;
-        expiresAt?: number;
-        expiresIn?: number;
-      }>(
-        "/api/auth/whatsapp/init",
-        { phone },
-      );
-      if (init.status === 409) {
-        setStep("password");
-        return;
-      }
-      const mode: Delivery = init.data.delivery ?? "inbound";
-      const missing = mode === "inbound" ? !init.data.code || !init.data.waUrl : mode === "window" && !init.data.waUrl;
-      if (!init.ok || missing) {
-        setError(init.data.error ?? "Não foi possível gerar o código.");
-        return;
-      }
-      setCode(init.data.code ?? "");
-      setWaUrl(init.data.waUrl ?? "");
-      setDelivery(mode);
-      setTypedCode("");
-      const isSandbox = init.data.mode === "sandbox";
-      setSandbox(isSandbox);
-      writePendingOtp({
-        phone: digitsOf(phone),
-        code: init.data.code ?? "",
-        waUrl: init.data.waUrl ?? "",
-        delivery: mode,
-        sandbox: isSandbox,
-        expiresAt: init.data.expiresAt ?? Date.now() + (init.data.expiresIn ?? 600) * 1000,
-        returnTo: window.location.pathname,
-      });
-      setStep("send");
+      await startOtp();
     });
 
-  const handleLogin = (event: React.FormEvent) =>
+  /** Valida nome + CPF no aparelho e segue para o código (nada é salvo antes de o número ser validado). */
+  const handleProfileSubmit = (event: React.FormEvent) =>
     run(event, async () => {
-      const res = await postJson<Identity>("/api/auth/login", { phone, password });
-      if (!res.ok) {
-        setError(res.data.error ?? "Não foi possível entrar.");
-        return;
-      }
-      enter(res.data);
+      const docErr = documentError(cpf);
+      if (name.trim().length < 2) return setError("Informe seu nome.");
+      if (docErr || onlyDigits(cpf).length !== 11) return setError(docErr ?? "Informe um CPF válido.");
+      await startOtp();
     });
 
+  /** Cadastro pós-validação (cliente já validado que ainda não tem nome/CPF). */
   const handleRegister = (event: React.FormEvent) =>
     run(event, async () => {
-      if (name.trim().length < 2) return setError("Informe como podemos te chamar.");
-      if (password.length < 6) return setError("A senha deve ter no mínimo 6 caracteres.");
-      const res = await postJson<Identity>("/api/auth/register", { name, email, password });
+      const docErr = documentError(cpf);
+      if (name.trim().length < 2) return setError("Informe seu nome.");
+      if (docErr || onlyDigits(cpf).length !== 11) return setError(docErr ?? "Informe um CPF válido.");
+      const res = await postJson<Identity>("/api/auth/register", { name, document: cpf });
       if (!res.ok) {
         setError(res.data.error ?? "Não foi possível concluir o cadastro.");
-        return;
-      }
-      enter(res.data);
-    });
-
-  const handleForgot = (event: React.FormEvent) =>
-    run(event, async () => {
-      const res = await postJson<{ error?: string }>("/api/auth/recover/request", { phone });
-      if (!res.ok) {
-        setError(res.data.error ?? "Não foi possível enviar o código.");
-        return;
-      }
-      setResetCode("");
-      setPassword("");
-      setStep("reset");
-      setNotice("Se houver uma conta com e-mail cadastrado, enviamos um código de 6 dígitos.");
-    });
-
-  const handleReset = (event: React.FormEvent) =>
-    run(event, async () => {
-      if (password.length < 6) return setError("A senha deve ter no mínimo 6 caracteres.");
-      const res = await postJson<Identity>("/api/auth/recover/reset", { phone, code: resetCode, password });
-      if (!res.ok) {
-        setError(res.data.error ?? "Não foi possível redefinir a senha.");
         return;
       }
       enter(res.data);
@@ -350,19 +361,15 @@ export function PhoneLookup({
 
   const titles: Record<Step, string> = {
     phone: "Meu Passaporte",
-    password: "Bem-vindo de volta!",
-    send: "Meu Passaporte",
+    profile: "Primeira vez por aqui?",
+    send: "Confirme seu WhatsApp",
     register: "Quase lá!",
-    forgot: "Recuperar senha",
-    reset: "Nova senha",
   };
   const subtitles: Record<Step, string> = {
-    phone: "Informe seu WhatsApp para abrir seu passaporte.",
-    password: `Digite sua senha para entrar (${phone}).`,
-    send: `Envie o código abaixo para a gente pelo WhatsApp (${phone}). Você só faz isso uma vez.`,
-    register: "WhatsApp validado! Complete seu cadastro para abrir o passaporte.",
-    forgot: "Enviaremos um código de 6 dígitos para o e-mail cadastrado.",
-    reset: "Digite o código recebido por e-mail e escolha uma nova senha.",
+    phone: "Informe seu WhatsApp para abrir seu passaporte. Sem senha: você só confirma o número.",
+    profile: "Só nome e CPF. Depois confirmamos seu número por código no WhatsApp.",
+    send: `Vamos confirmar o número ${phone}.`,
+    register: "WhatsApp confirmado! Falta só seu nome e CPF para abrir o passaporte.",
   };
 
   return (
@@ -403,25 +410,37 @@ export function PhoneLookup({
           </form>
         ) : null}
 
-        {step === "password" ? (
-          <form onSubmit={handleLogin} className="relative space-y-4">
+        {step === "profile" ? (
+          <form onSubmit={handleProfileSubmit} className="relative space-y-4">
             {field(
-              "Senha",
+              "Nome",
               <Input
-                type="password"
-                autoComplete="current-password"
+                type="text"
+                autoComplete="given-name"
                 autoFocus
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Seu nome"
+                maxLength={80}
+                required
+                className={inputClass}
+              />,
+            )}
+            {field(
+              "CPF",
+              <Input
+                type="text"
+                inputMode="numeric"
+                autoComplete="off"
+                value={cpf}
+                onChange={(e) => setCpf(formatDocument(e.target.value).slice(0, 14))}
+                placeholder="000.000.000-00"
                 required
                 className={inputClass}
               />,
             )}
             <button type="submit" disabled={busy} className={submitClass}>
-              {submitLabel("Entrar")}
-            </button>
-            <button type="button" onClick={() => goTo("forgot")} className={linkClass}>
-              Esqueci minha senha
+              {submitLabel("Continuar")}
             </button>
             <button type="button" onClick={() => goTo("phone")} className={linkClass}>
               Alterar número
@@ -433,7 +452,7 @@ export function PhoneLookup({
           <form
             onSubmit={(event) => {
               event.preventDefault();
-              if (!toFullCode(typedCode)) return setError("Digite os 4 caracteres do código.");
+              if (!toFullCode(typedCode)) return setError("Digite os 6 dígitos do código.");
               setError(null);
               void check(false);
             }}
@@ -461,20 +480,34 @@ export function PhoneLookup({
               </p>
             )}
             {field(
-              "Código de embarque",
+              "Código de 6 dígitos",
               <Input
                 value={typedCode}
-                onChange={(e) => setTypedCode(e.target.value.toUpperCase().slice(0, 9))}
+                onChange={(e) => setTypedCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
                 autoComplete="one-time-code"
-                autoCapitalize="characters"
-                placeholder="PASS-XXXX"
-                inputMode="text"
-                maxLength={9}
+                placeholder="000000"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={6}
                 className={`${inputClass} text-center text-xl font-bold tracking-widest`}
               />,
             )}
             <button type="submit" disabled={!toFullCode(typedCode)} className={submitClass}>
               {submitLabel("Confirmar código")}
+            </button>
+            <button
+              type="button"
+              disabled={busy || resendSeconds > 0 || (TURNSTILE_ENABLED && !turnstileToken)}
+              onClick={() => {
+                setBusy(true);
+                setError(null);
+                void startOtp(true)
+                  .catch(() => setError("Sem conexão. Tente novamente."))
+                  .finally(() => setBusy(false));
+              }}
+              className="h-11 w-full rounded-xl border border-slate-300 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+            >
+              {resendSeconds > 0 ? `Reenviar código em ${resendSeconds}s` : "Reenviar código"}
             </button>
             <button type="button" onClick={() => goTo("phone")} className={linkClass}>
               Alterar número
@@ -546,28 +579,14 @@ export function PhoneLookup({
               />,
             )}
             {field(
-              "E-mail (para recuperação de senha)",
+              "CPF",
               <Input
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="voce@email.com"
-                maxLength={160}
-                required
-                className={inputClass}
-              />,
-            )}
-            {field(
-              "Criar senha",
-              <Input
-                type="password"
-                autoComplete="new-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Mínimo de 6 caracteres"
-                minLength={6}
-                maxLength={72}
+                type="text"
+                inputMode="numeric"
+                autoComplete="off"
+                value={cpf}
+                onChange={(e) => setCpf(formatDocument(e.target.value).slice(0, 14))}
+                placeholder="000.000.000-00"
                 required
                 className={inputClass}
               />,
@@ -577,58 +596,11 @@ export function PhoneLookup({
             </button>
           </form>
         ) : null}
-
-        {step === "forgot" ? (
-          <form onSubmit={handleForgot} className="relative space-y-4">
-            <button type="submit" disabled={busy} className={submitClass}>
-              {submitLabel("Enviar código por e-mail")}
-            </button>
-            <button type="button" onClick={() => goTo("password")} className={linkClass}>
-              Voltar
-            </button>
-          </form>
-        ) : null}
-
-        {step === "reset" ? (
-          <form onSubmit={handleReset} className="relative space-y-4">
-            {field(
-              "Código de 6 dígitos",
-              <Input
-                type="text"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                autoFocus
-                value={resetCode}
-                onChange={(e) => setResetCode(digitsOf(e.target.value).slice(0, 6))}
-                placeholder="000000"
-                maxLength={6}
-                required
-                className={inputClass}
-              />,
-            )}
-            {field(
-              "Nova senha",
-              <Input
-                type="password"
-                autoComplete="new-password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Mínimo de 6 caracteres"
-                minLength={6}
-                maxLength={72}
-                required
-                className={inputClass}
-              />,
-            )}
-            <button type="submit" disabled={busy} className={submitClass}>
-              {submitLabel("Redefinir e entrar")}
-            </button>
-            <button type="button" onClick={() => goTo("password")} className={linkClass}>
-              Voltar
-            </button>
-          </form>
-        ) : null}
       </div>
+
+      {TURNSTILE_ENABLED && (step === "phone" || step === "profile" || (step === "send" && delivery !== "inbound")) ? (
+        <TurnstileWidget onToken={setTurnstileToken} resetKey={turnstileKey} />
+      ) : null}
 
       {notice ? (
         <p className="relative rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
