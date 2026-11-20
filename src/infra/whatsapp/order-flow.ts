@@ -26,7 +26,7 @@ import {
 import { loadStoreSettings } from "@/infra/db/store-settings";
 import { recordTimelineEvent } from "@/infra/db/timeline";
 import { consumeOrderCoupon, findPersonalCoupons } from "@/infra/coupons";
-import { resolveOrderAttribution } from "@/infra/marketing/attribution";
+import { resolveOrderAttribution, sendPurchaseEvent } from "@/infra/marketing/attribution";
 import { sendOrderToSaipos } from "@/lib/saipos";
 import { formatCents } from "@/lib/utils";
 
@@ -409,6 +409,7 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     const orderIdToSync = created.orderId;
     after(() => sendOrderToSaipos(orderIdToSync));
     after(() => notifyOfflineOrderPlaced(orderIdToSync));
+    after(() => sendPurchaseEvent(orderIdToSync));
     return { ...base, offline: true };
   }
 

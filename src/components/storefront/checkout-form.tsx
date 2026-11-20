@@ -13,9 +13,10 @@ import {
   UtensilsCrossed,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 
 import { createOrder, validateCoupon } from "@/actions/storefront";
+import { trackInitiateCheckout } from "@/lib/track";
 import { Input, Textarea } from "@/components/ui/input";
 import { Sheet } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
@@ -235,6 +236,14 @@ export function CheckoutForm({
   const fee = deliveryType === "DELIVERY" && zone ? zone.feeCents : 0;
   const total = calc.ok ? calc.totalCents : subtotal + fee;
   const discount = calc.ok ? calc.discountCents : 0;
+
+  /* Anúncios: o cliente chegou ao checkout com itens no carrinho (uma vez por visita). */
+  const checkoutTracked = useRef(false);
+  useEffect(() => {
+    if (checkoutTracked.current || lines.length === 0) return;
+    checkoutTracked.current = true;
+    trackInitiateCheckout(subtotal, lines.length);
+  }, [lines.length, subtotal]);
 
   /* Pedido mínimo: só entrega, sobre o subtotal dos produtos (sem a taxa). */
   const missingMinCents = deliveryType === "DELIVERY" ? Math.max(0, minOrderCents - subtotal) : 0;

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/infra/payments/expire-orders", () => ({ expireAbandonedOrders: vi.fn(async () => 2) }));
+vi.mock("@/infra/miles/reminders", () => ({ runMilesExpiryReminders: vi.fn(async () => ({ sent: 0, skipped: 0 })) }));
+vi.mock("@/infra/miles/benefits", () => ({ issueMonthlyTierBenefits: vi.fn(async () => ({ issued: 0 })) }));
 
 import { expireAbandonedOrders } from "@/infra/payments/expire-orders";
 

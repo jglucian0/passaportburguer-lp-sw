@@ -18,6 +18,7 @@ import {
   saveCart,
   type CartLine,
 } from "./cart-storage";
+import { trackAddToCart } from "@/lib/track";
 
 type CartContextValue = {
   tenantId: string;
@@ -51,6 +52,7 @@ export function CartProvider({ tenantId, children }: { tenantId: string; childre
   }, [tenantId, lines, hydrated]);
 
   const addLine = useCallback((line: Omit<CartLine, "key">) => {
+    trackAddToCart({ id: line.productId, name: line.name, priceCents: line.unitPriceCents, quantity: line.quantity });
     const key = buildLineKey(line.productId, line.addons, line.note ?? "");
     setLines((prev) => {
       const existing = prev.find((l) => l.key === key);

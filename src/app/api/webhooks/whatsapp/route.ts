@@ -10,6 +10,7 @@ import {
   samePhone,
   toLocalPhone,
 } from "@/infra/auth/otp";
+import { saveAdReferral } from "@/infra/marketing/attribution";
 import { checkRateLimit } from "@/infra/security/rate-limit";
 import { db } from "@/infra/db";
 import { maskPhone } from "@/infra/security/mask";
@@ -116,6 +117,8 @@ export async function POST(request: Request) {
       for (const change of entry.changes ?? []) {
         for (const message of change.value?.messages ?? []) {
           const from = message.from;
+          const referral = (message as { referral?: unknown }).referral;
+          if (from && referral) await saveAdReferral(from, referral).catch(() => undefined);
 
           /* Modo "window": a mensagem do cliente abre a janela de 24 h e o bot responde com o código dele. */
           if (from && isOtpRequestMessage(message.text?.body)) {

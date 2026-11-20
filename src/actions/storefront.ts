@@ -17,7 +17,7 @@ import { isOnlinePaymentMethod } from "@/core/schemas/common";
 import { cancelPendingCharges, createPixCharge } from "@/infra/payments/asaas";
 import { expireAbandonedOrders } from "@/infra/payments/expire-orders";
 import { getMilesAccount } from "@/infra/miles/miles";
-import { resolveOrderAttribution } from "@/infra/marketing/attribution";
+import { resolveOrderAttribution, sendPurchaseEvent } from "@/infra/marketing/attribution";
 import { consumeOrderCoupon, lookupCoupon } from "@/infra/coupons";
 import type { CatalogDeliveryZone } from "@/core/schemas/product";
 import { getStoreStatus, type OpeningHours, type StoreStatus } from "@/core/store/opening-hours";
@@ -435,6 +435,7 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
     await consumeOrderCoupon(created.orderId).catch(() => undefined);
     const orderIdToSync = created.orderId;
     after(() => sendOrderToSaipos(orderIdToSync));
+    after(() => sendPurchaseEvent(orderIdToSync));
   }
 
   if (isOnlinePaymentMethod(data.paymentMethod)) {
