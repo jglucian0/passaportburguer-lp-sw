@@ -7,11 +7,15 @@ import { downloadMedia, sendCtaUrlButton, sendInteractiveButtons, sendTextMessag
 import { escalateForToday } from "./handoff";
 import { repeatLastOrder } from "./repeat-order";
 import {
+  MENU_BUTTON_BODIES,
   MENU_BUTTON_BODY,
+  MENU_BUTTON_FRESH_MS,
+  MENU_REMINDER_REPLIES,
   REPEAT_BUTTON_ID,
   REPEAT_BUTTON_TITLE,
   buildStartFlow,
   isRepeatRequest,
+  pickMenuReminder,
   repeatButtonBody,
   shouldUseStartFlow,
 } from "./start-flow";
@@ -201,9 +205,16 @@ ELOGIO / AVALIAÇÃO
 
 PEDIDO SÓ PELO CARDÁPIO RÁPIDO (REGRA PRINCIPAL)
 - Você NÃO anota itens, NÃO pede endereço, nome, e-mail, senha, CPF nem forma de pagamento pelo chat, e NÃO cria nem confirma pedido. Tudo acontece no Cardápio Rápido (botão): o cliente escolhe os itens, informa entrega ou retirada e endereço (e cria o cadastro, se for novo) e paga. O sistema avisa sozinho aqui no WhatsApp quando o pagamento é confirmado e quando o pedido sai para entrega.
-- Cliente quer pedir, escolher ou cita um item ("quero um México", "me vê um combo", "quais lanches tem?"): chame sendQuickMenu e, em messageText, uma frase curta ("É rapidinho pelo cardápio 👇"). Não discuta itens, combos nem adicionais.
-- Se você JÁ enviou o botão nesta conversa e o cliente continua pedindo pelo chat, ou você não entendeu o que ele quer: chame escalateToHuman e NÃO escreva texto (um atendente assume).
-- Dúvida (horário, ingrediente de item do CARDÁPIO, taxa, milhas, andamento): responda curto e, se fizer sentido, ofereça o botão.
+- Cliente quer FAZER o pedido ("quero um México", "me vê um combo", "vou querer dois"): chame sendQuickMenu e, em messageText, uma frase curta ("É rapidinho pelo cardápio 👇"). Não anote itens nem monte pedido pelo chat.
+- Se o link do cardápio JÁ foi enviado há pouco, o sistema não reenvia o botão: ele responde sozinho lembrando que o pedido é pelo link enviado. Você não precisa repetir o botão.
+- Se você não entendeu o que o cliente quer, peça para repetir de outro jeito em uma frase; só chame escalateToHuman se ele continuar sem ser entendido.
+- Dúvida (horário, ingrediente de item do CARDÁPIO, taxa, milhas, andamento): responda curto, SEM reenviar o botão a cada resposta. Só ofereça o botão se o cliente demonstrar vontade de pedir.
+
+DÚVIDAS SOBRE ITENS E PERSONALIZAÇÃO
+- Perguntas sobre o que vai em um item ("o México vai cebola?", "qual o molho do Tokyo?", "tem queijo?") você RESPONDE com o que estiver na descrição e nos adicionais do CARDÁPIO COMPLETO, citando só o que está lá. Se a descrição não diz, não chute: diga que vai confirmar com a equipe (requestHumanHandoff se ele precisar da resposta para decidir).
+- "Dá para tirar algum ingrediente?", "pode ser sem cebola?": explique que sim, ao escolher o item no cardápio digital existe o campo de observações para pedir sem algum ingrediente, e a cozinha vê o pedido. Nunca prometa o que não está no cardápio (trocar ingrediente, item extra grátis).
+- Depois de responder, NÃO envie o botão automaticamente: termine com a resposta (no máximo uma frase dizendo que o pedido é feito pelo link do cardápio, se ainda não disse).
+- Não repita o convite ao cardápio em toda mensagem: varie ou omita.
 - Saudação pura ("Oi") NÃO aciona sendQuickMenu. O messageText vira o texto do botão e é a ÚNICA mensagem do turno.
 
 ANDAMENTO DO PEDIDO (anti-delírio)
@@ -636,6 +647,23 @@ export async function runBotTurn(
     if (ctx.silent) {
       await cancelFollowups(phone, "CUSTOMER_ACTIVE").catch(() => undefined);
       return true;
+    }
+
+    // Link do cardápio já enviado há pouco e o cliente voltou a pedir: lembra em texto (variando) em vez de reenviar o botão.
+    if (!deterministic && ctx.cta) {
+      const sentAll = selectSessionMessages(recent, context.session.sessionStartedAt).filter((r) => r.role === "assistant");
+      const lastButton = [...sentAll].reverse().find((r) => MENU_BUTTON_BODIES.some((b) => r.content.includes(b)));
+      if (lastButton && Date.now() - new Date(lastButton.createdAt).getTime() < MENU_BUTTON_FRESH_MS) {
+        const reminders = sentAll.filter((r) => MENU_REMINDER_REPLIES.includes(r.content)).length;
+        if (reminders >= 3) {
+          await escalateForToday(phone, "Cliente insiste em pedir pelo chat mesmo com o link do cardápio enviado");
+          await cancelFollowups(phone, "CUSTOMER_ACTIVE").catch(() => undefined);
+          return true;
+        }
+        ctx.cta = null;
+        reply = pickMenuReminder(sentAll.slice(-4).map((r) => r.content));
+        deterministic = true;
+      }
     }
 
     if (!deterministic) {

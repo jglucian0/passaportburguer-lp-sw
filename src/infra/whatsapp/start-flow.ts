@@ -12,6 +12,31 @@ export const REPEAT_BUTTON_TITLE = "Repetir pedido";
 /** Corpo do botão do Cardápio Rápido enviado pela IA (também usado para contar quantas vezes já foi mandado). */
 export const MENU_BUTTON_BODY = "Aqui está o nosso cardápio digital 👇\nÉ rapidinho: escolhe, finaliza e pronto!";
 
+/** Todos os corpos de botão do cardápio que o bot já envia (para saber se o link foi mandado há pouco). */
+export const MENU_BUTTON_BODIES: readonly string[] = [
+  MENU_BUTTON_BODY,
+  "Escolha o destino de hoje 👇",
+  "Escolha seu pedido pelo cardápio 👇",
+];
+
+/** O link do Cardápio Rápido vale 30 min: dentro desta janela o bot lembra do link em vez de reenviar o botão. */
+export const MENU_BUTTON_FRESH_MS = 20 * 60 * 1000;
+
+/** Lembretes (texto, sem botão) quando o cliente insiste em pedir pelo chat e o link já foi enviado. */
+export const MENU_REMINDER_REPLIES: readonly string[] = [
+  "Por aqui não consigo anotar pedidos 😃 Você faz o pedido pelo link do cardápio que já te enviei: é só escolher os itens, adicionar à sacola e finalizar por lá.",
+  "O pedido é feito pelo cardápio digital que mandei acima. É só escolher os itens, adicionar à sacola e finalizar por lá 😃",
+  "Pra eu conseguir mandar pra chapa, o pedido precisa ser feito pelo link do cardápio que enviei. Escolhe os itens, coloca na sacola e finaliza por lá!",
+  "Aqui no chat eu não anoto pedido, mas é rapidinho: abre o link do cardápio que te mandei, monta a sacola e finaliza. Qualquer dúvida é só falar 😊",
+];
+
+/** Escolhe um lembrete que não tenha saído nas últimas mensagens do bot. */
+export function pickMenuReminder(sentRecently: string[]): string {
+  const fresh = MENU_REMINDER_REPLIES.filter((r) => !sentRecently.includes(r));
+  const pool = fresh.length > 0 ? fresh : MENU_REMINDER_REPLIES;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
 export type StartFlow = {
   /** Mensagens de texto que saem ANTES do botão. */
   preface: string[];

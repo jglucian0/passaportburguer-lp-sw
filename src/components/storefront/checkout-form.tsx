@@ -255,7 +255,7 @@ export function CheckoutForm({
       : isGuest && onlyDigits(phone).length < 10
         ? "Informe o WhatsApp com DDD."
         : null;
-  const step1Ready = !profileError && (receive !== "DELIVERY" || (!!address && !!quote?.deliverable && !!zone));
+  const step1Ready = receive !== "DELIVERY" || (!!address && !!quote?.deliverable && !!zone);
   const step2Ready = !docError && (payChoice !== "CASH" || noChange || changeForCents !== null);
 
   useEffect(() => {
@@ -281,11 +281,7 @@ export function CheckoutForm({
     if (step === 1) {
       if (!step1Ready) {
         setError(
-          profileError
-            ? profileError
-            : receive === "DELIVERY" && quote && !quote.deliverable
-              ? quote.message
-              : "Escolha um endereço de entrega.",
+          receive === "DELIVERY" && quote && !quote.deliverable ? quote.message : "Escolha um endereço de entrega.",
         );
         return;
       }
@@ -336,6 +332,11 @@ export function CheckoutForm({
       setDocumentTouched(true);
       setError(docError);
       setStep(2);
+      return;
+    }
+
+    if (profileError) {
+      setError(profileError);
       return;
     }
 
@@ -519,7 +520,7 @@ export function CheckoutForm({
       ? !step1Ready
       : step === 2
         ? !step2Ready
-        : isPending || !storeOpen || !calc.ok || belowMin || !!docError;
+        : isPending || !storeOpen || !calc.ok || belowMin || !!docError || !!profileError;
 
   return (
     <div className="min-h-[calc(100dvh-64px)] bg-[#F8FAFC] text-[#0A2540]">
@@ -609,38 +610,6 @@ export function CheckoutForm({
                   >
                     <ExternalLink className="h-4 w-4" strokeWidth={1.75} /> Ver no mapa
                   </a>
-                </section>
-              ) : null}
-
-              {askData ? (
-                <section className={cardClass}>
-                  <h2 className="font-bold">Seus dados</h2>
-                  <Field label="Nome">
-                    <Input
-                      className={inputClass}
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      autoComplete="name"
-                      maxLength={80}
-                      placeholder="Seu nome"
-                    />
-                  </Field>
-                  <Field label="WhatsApp">
-                    <Input
-                      className={inputClass}
-                      value={phone}
-                      onChange={(e) => setPhone(formatPhone(e.target.value))}
-                      readOnly={!isGuest}
-                      inputMode="tel"
-                      autoComplete="tel-national"
-                      placeholder="(XX) XXXXX-XXXX"
-                    />
-                  </Field>
-                  {isGuest ? (
-                    <p className="text-xs text-slate-500">
-                      No final você confirma o número por um código no WhatsApp. Sem senha, sem cadastro separado.
-                    </p>
-                  ) : null}
                 </section>
               ) : null}
             </>
@@ -800,11 +769,34 @@ export function CheckoutForm({
               <section className={cardClass}>
                 <h2 className="font-bold">Seus dados</h2>
                 <Field label="Nome">
-                  <Input className={inputClass} value={name} readOnly autoComplete="name" required />
+                  <Input
+                    className={inputClass}
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    readOnly={!askData}
+                    autoComplete="name"
+                    maxLength={80}
+                    placeholder="Seu nome"
+                    required
+                  />
                 </Field>
                 <Field label="WhatsApp">
-                  <Input className={inputClass} value={phone} readOnly inputMode="tel" autoComplete="tel" required />
+                  <Input
+                    className={inputClass}
+                    value={phone}
+                    onChange={(e) => setPhone(formatPhone(e.target.value))}
+                    readOnly={!isGuest}
+                    inputMode="tel"
+                    autoComplete="tel-national"
+                    placeholder="(XX) XXXXX-XXXX"
+                    required
+                  />
                 </Field>
+                {isGuest ? (
+                  <p className="text-xs text-slate-500">
+                    Ao enviar o pedido você confirma o número por um código no WhatsApp. Sem senha, sem cadastro separado.
+                  </p>
+                ) : null}
               </section>
 
               <section className={cardClass}>
