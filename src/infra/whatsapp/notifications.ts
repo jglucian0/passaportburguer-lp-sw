@@ -12,6 +12,8 @@ import {
 import { sendCtaUrlButton, sendTextMessage } from "./client";
 import { signWhatsAppToken } from "./session-token";
 import { getBrazilianPhoneVariants } from "./phone";
+import { formatCents } from "@/lib/utils";
+
 import { appUrl } from "./shared";
 import { errorSummary } from "./log";
 
@@ -100,6 +102,44 @@ export async function notifyPaymentConfirmed(orderId: string): Promise<void> {
   } catch (error) {
     // Notificação nunca derruba a liquidação do pagamento.
     console.error("[whatsapp-notify] falha (pagamento):", errorSummary(error));
+  }
+}
+
+/** Pedido com pagamento na entrega/retirada (Cardápio Rápido): confirma no WhatsApp que a cozinha já recebeu. */
+export async function notifyOfflineOrderPlaced(orderId: string): Promise<void> {
+  try {
+    const chat = await findChat(orderId);
+    if (!chat) return;
+    const { order, session } = chat;
+
+    const delivery = order.deliveryType === "DELIVERY";
+    const payLabel =
+      order.paymentMethod === "CASH"
+        ? order.changeForCents
+          ? `dinheiro (troco para ${formatCents(order.changeForCents)})`
+          : "dinheiro (sem troco)"
+        : "cartão na máquina";
+    const status =
+      order.status === "PREPARING"
+        ? "já está na chapa"
+        : "foi recebido e vai para a chapa assim que a cozinha confirmar";
+    const text = `Pedido ${orderLabel(order.orderNumber)} confirmado! ✅ Seu pedido ${status} no Passaporte Burguer. Pagamento na ${delivery ? "entrega" : "retirada"}: ${payLabel}. Total ${formatCents(order.totalCents)}. Avisaremos quando ${delivery ? "sair para entrega" : "estiver pronto para retirada"}!`;
+
+    const key = `notif:${orderId}:placed`;
+    if (!(await claimNotification(session.phone, key, text))) return;
+    try {
+      await sendTextMessage(session.phone, text);
+    } catch (error) {
+      await db.delete(whatsappMessages).where(eq(whatsappMessages.wamid, key)).catch(() => undefined);
+      throw error;
+    }
+    await db
+      .update(whatsappSessions)
+      .set({ state: "COMPLETED", updatedAt: new Date() })
+      .where(eq(whatsappSessions.phone, session.phone))
+      .catch(() => undefined);
+  } catch (error) {
+    console.error("[whatsapp-notify] falha (pedido offline):", errorSummary(error));
   }
 }
 

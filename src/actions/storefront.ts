@@ -286,6 +286,16 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
     return failure("Valide seu WhatsApp e conclua seu cadastro (nome e CPF) antes de pedir.");
   }
 
+  /* CPF/CNPJ informado no pedido vira dado do cadastro (uma vez só): não é pedido de novo depois. */
+  const orderDocument = data.documentNumber ? onlyDigits(data.documentNumber) : "";
+  if (!customer.documentNumber && (orderDocument.length === 11 || orderDocument.length === 14)) {
+    await db
+      .update(customers)
+      .set({ documentNumber: orderDocument })
+      .where(and(eq(customers.id, customer.id), eq(customers.tenantId, tenant.id)))
+      .catch(() => undefined);
+  }
+
   /* Endereço (snapshot imutável + reaproveitamento no cadastro do cliente). */
   let addressSnapshot: AddressSnapshot | null = null;
   if (data.deliveryType === "DELIVERY" && zone) {
@@ -601,7 +611,8 @@ export async function getCustomerOrders(): Promise<CustomerOrdersData | null> {
 
   return {
     customerName: customer.name,
-    needsRegistration: !isProfileComplete(customer),
+    /* "Meu Passaporte" só exige o nome: o CPF é pedido (uma vez) no pagamento online, não aqui. */
+    needsRegistration: customer.name.trim().length < 2,
     customerPhone: customer.phone,
     orders: await loadCustomerOrders(ref.id, customer.id),
   };

@@ -206,8 +206,9 @@ export function PhoneLookup({
           /* Número validado: grava nome + CPF já digitados (se o navegador perdeu os dados, pede de novo). */
           if (data.needsRegistration) {
             const cpfOk = !documentError(cpf) && onlyDigits(cpf).length === 11;
-            /* No checkout o CPF pode faltar (pagamento presencial): registra só com o nome. */
-            if (name.trim().length >= 2 && (cpfOk || (autoStart && onlyDigits(cpf).length === 0))) {
+            /* No checkout o CPF/CNPJ já foi tratado nas etapas anteriores (e é gravado no pedido): nunca volta a pedir.
+               Sem CPF de 11 dígitos válido (presencial ou CNPJ), registra só com o nome. */
+            if (name.trim().length >= 2 && (cpfOk || autoStart)) {
               const res = await postJson<Identity>("/api/auth/register", { name, ...(cpfOk ? { document: cpf } : {}) });
               if (res.ok) return enter(res.data);
             }

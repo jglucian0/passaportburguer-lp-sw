@@ -29,6 +29,7 @@ import { consumeOrderCoupon, findPersonalCoupons } from "@/infra/coupons";
 import { sendOrderToSaipos } from "@/lib/saipos";
 import { formatCents } from "@/lib/utils";
 
+import { notifyOfflineOrderPlaced } from "./notifications";
 import { getBrazilianPhoneVariants } from "./phone";
 import { checkoutUrl, getTenantId, toCustomerPhone, type ToolContext } from "./shared";
 
@@ -395,6 +396,7 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     await consumeOrderCoupon(created.orderId).catch(() => undefined);
     const orderIdToSync = created.orderId;
     after(() => sendOrderToSaipos(orderIdToSync));
+    after(() => notifyOfflineOrderPlaced(orderIdToSync));
     return { ...base, offline: true };
   }
 

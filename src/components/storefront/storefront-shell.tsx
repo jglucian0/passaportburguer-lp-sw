@@ -1,6 +1,6 @@
 "use client";
 
-import { ShoppingBag, Ticket, UserCheck, UtensilsCrossed, X } from "lucide-react";
+import { Plane, ShoppingBag, Ticket, UserCheck, UtensilsCrossed, X } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
@@ -147,7 +147,7 @@ function FloatingCartBar({ categories }: { categories: CatalogCategory[] }) {
 
 function BottomTabBar() {
   const pathname = usePathname();
-  const { isOpen, count, hydrated, openCart } = useCart();
+  const { isOpen } = useCart();
   const overlayOpen = useOverlayOpen();
   const [hasActiveOrder, setHasActiveOrder] = useState(false);
   const firstName = useCustomerFirstName();
@@ -174,6 +174,7 @@ function BottomTabBar() {
 
   const onMenu = pathname === "/";
   const onOrders = pathname.startsWith("/meus-pedidos");
+  const onMiles = pathname.startsWith("/milhas");
 
   function goToMenu(event: React.MouseEvent) {
     if (pathname !== "/") return;
@@ -226,22 +227,15 @@ function BottomTabBar() {
         <span className="max-w-full truncate px-1">{firstName ?? "Passaporte"}</span>
       </Link>
 
-      <button
-        type="button"
-        onClick={openCart}
-        aria-label={`Abrir sacola${hydrated && count > 0 ? ` com ${count} item(ns)` : ""}`}
-        className={itemClass(false)}
+      <Link
+        href="/milhas"
+        aria-current={onMiles ? "page" : undefined}
+        className={itemClass(onMiles)}
       >
-        <span className="relative">
-          <ShoppingBag size={20} strokeWidth={1.75} />
-          {hydrated && count > 0 ? (
-            <span className="absolute -right-2 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-bold text-slate-950">
-              {count}
-            </span>
-          ) : null}
-        </span>
-        <span>Sacola</span>
-      </button>
+        {indicator(onMiles)}
+        <Plane size={20} strokeWidth={1.75} />
+        <span className="max-w-full truncate px-1">Milhas</span>
+      </Link>
     </nav>
   );
 }

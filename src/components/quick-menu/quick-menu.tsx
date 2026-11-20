@@ -31,10 +31,12 @@ function QuickMenuInner({
   const overlayOpen = useOverlayOpen();
   const [bagOpen, setBagOpen] = useState(false);
   const [step, setStep] = useState<"menu" | "details">("menu");
+  /* Pedido enviado: a sacola é zerada, mas o formulário segue na tela mostrando a confirmação. */
+  const [submitted, setSubmitted] = useState(false);
 
   const empty = !hydrated || count === 0;
 
-  if (step === "details" && !empty) {
+  if (step === "details" && (!empty || submitted)) {
     return (
       <QuickCheckoutForm
         token={token}
@@ -59,7 +61,10 @@ function QuickMenuInner({
           notes: l.note || undefined,
         }))}
         onBack={() => setStep("menu")}
-        onSubmitted={clear}
+        onSubmitted={() => {
+          setSubmitted(true);
+          clear();
+        }}
       />
     );
   }
