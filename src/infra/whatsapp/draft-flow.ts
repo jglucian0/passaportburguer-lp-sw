@@ -155,8 +155,18 @@ const deliveryPaymentSchema = z.object({
 export async function buildSnapshot(
   tenantId: string,
   address: AddressInput,
+  /** Ponto já confirmado pelo cliente (busca/GPS/mapa): dispensa geocodificar de novo. A área e a taxa são recalculadas aqui. */
+  pin?: { lat: number; lon: number; city: string; neighborhood?: string | null; postalCode?: string | null } | null,
 ): Promise<{ ok: true; snapshot: AddressSnapshot; coords: Coords } | { ok: false; error: string }> {
-  const geo = await geocodeAddress(address.street, address.number);
+  const geo = pin
+    ? {
+        lat: pin.lat,
+        lon: pin.lon,
+        city: pin.city,
+        neighborhood: pin.neighborhood || null,
+        postalCode: pin.postalCode || null,
+      }
+    : await geocodeAddress(address.street, address.number);
   if (!geo) return { ok: false, error: "Não consegui localizar esse endereço. Confirme rua e número." };
   const quote = calculateDeliveryQuote(geo.lat, geo.lon, geo.city);
   if (!quote.deliverable) return { ok: false, error: quote.message };

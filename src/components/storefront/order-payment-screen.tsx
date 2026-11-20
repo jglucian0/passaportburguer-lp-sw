@@ -138,14 +138,19 @@ export async function OrderPaymentScreen({ orderId, token }: { orderId: string; 
             // Link do WhatsApp: depois de pago, o cliente volta para a conversa por este botão.
             whatsappUrl={anonymous && businessWhatsAppNumber() ? `https://wa.me/${businessWhatsAppNumber()}` : null}
             documentKnown={!!knownDocument}
+            // Cobrança "igual à entrega": só uma flag vai ao HTML; CEP/número são resolvidos no servidor.
+            billingFromOrder={
+              delivery &&
+              (order.addressSnapshot?.postalCode ?? "").replace(/\D/g, "").length === 8 &&
+              !!order.addressSnapshot?.number?.trim()
+            }
             // Anônimo: nada de dados pessoais no HTML (o titular digita os dados do cartão).
             customerEmail={anonymous ? "" : (customer?.email ?? "")}
             defaults={{
               holderName: anonymous ? "" : (customer?.name ?? ""),
               holderCpf: anonymous ? "" : knownDocument ? formatDocument(knownDocument) : "",
-              // Só entrega tem endereço; retirada deixa os campos de cobrança visíveis.
-              postalCode: !anonymous && delivery ? (order.addressSnapshot?.postalCode ?? "") : "",
-              addressNumber: !anonymous && delivery ? (order.addressSnapshot?.number ?? "") : "",
+              postalCode: "",
+              addressNumber: "",
             }}
             initialPix={
               pixValid

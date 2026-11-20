@@ -36,6 +36,12 @@ export const checkoutInputSchema = z.object({
       number: z.string().trim().min(1, "Informe o número.").max(20),
       complement: z.string().trim().max(80).nullish(),
       reference: z.string().trim().max(120).nullish(),
+      /** Ponto confirmado no seletor de endereço (busca/GPS/mapa). O servidor valida a área e recalcula a taxa. */
+      lat: z.number().min(-90).max(90).optional(),
+      lon: z.number().min(-180).max(180).optional(),
+      city: z.string().trim().max(80).optional(),
+      neighborhood: z.string().trim().max(80).nullish(),
+      postalCode: z.string().trim().max(10).nullish(),
     })
     .nullish(),
 });
@@ -51,6 +57,18 @@ export type QuickCheckoutPrefill = {
   addresses: { id: string; street: string; number: string; complement: string; reference: string }[];
   /** Taxa de entrega do 1º endereço salvo (null = não deu para calcular). O servidor recalcula ao fechar. */
   primaryFeeCents?: number | null;
+  /** 1º endereço salvo já localizado (com ponto): vira o endereço inicial do seletor. */
+  defaultAddress?: {
+    street: string;
+    number: string;
+    complement: string;
+    neighborhood: string;
+    city: string;
+    state: string;
+    postalCode: string;
+    lat: number;
+    lon: number;
+  } | null;
 };
 
 async function findCustomer(tenantId: string, phone: string) {
@@ -75,6 +93,7 @@ export async function loadQuickCheckoutPrefill(tenantId: string, phone: string):
     .limit(5);
   /* Taxa do endereço pré-selecionado, para o cliente ver o total antes do pagamento. */
   let primaryFeeCents: number | null = null;
+  let defaultAddress: QuickCheckoutPrefill["defaultAddress"] = null;
   const first = rows[0];
   if (first) {
     try {
@@ -86,7 +105,20 @@ export async function loadQuickCheckoutPrefill(tenantId: string, phone: string):
       });
       if (built.ok) {
         const quote = calculateDeliveryQuote(built.coords.lat, built.coords.lon, built.coords.city);
-        if (quote.deliverable) primaryFeeCents = quote.feeCents;
+        if (quote.deliverable) {
+          primaryFeeCents = quote.feeCents;
+          defaultAddress = {
+            street: first.street,
+            number: first.number,
+            complement: first.complement ?? "",
+            neighborhood: built.snapshot.district ?? "",
+            city: built.coords.city,
+            state: "PR",
+            postalCode: built.snapshot.postalCode ?? "",
+            lat: built.coords.lat,
+            lon: built.coords.lon,
+          };
+        }
       }
     } catch {
       /* geocodificação indisponível: a taxa aparece no pagamento */
@@ -97,6 +129,7 @@ export async function loadQuickCheckoutPrefill(tenantId: string, phone: string):
     name: customer.name,
     hasDocument: !!customer.documentNumber,
     primaryFeeCents,
+    defaultAddress,
     addresses: rows.map((a) => ({
       id: a.id,
       street: a.street,
@@ -157,7 +190,17 @@ export async function prepareCheckout(
       if (saved) address = { street: saved.street, number: saved.number, complement: saved.complement, reference: saved.reference };
     }
     if (!address) return { ok: false, status: 400, error: "Informe o endereço de entrega (rua e número)." };
-    const built = await buildSnapshot(tenantId, address);
+    const pin =
+      "lat" in address && typeof address.lat === "number" && typeof address.lon === "number" && address.city
+        ? {
+            lat: address.lat,
+            lon: address.lon,
+            city: address.city,
+            neighborhood: address.neighborhood,
+            postalCode: address.postalCode ? address.postalCode.replace(/\D/g, "").slice(0, 8) : null,
+          }
+        : null;
+    const built = await buildSnapshot(tenantId, address, pin);
     if (!built.ok) return { ok: false, status: 422, error: built.error };
     snapshot = built.snapshot;
     coords = built.coords;

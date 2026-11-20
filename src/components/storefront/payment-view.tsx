@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Copy, Loader2, Lock } from "lucide-react";
+import { ArrowLeft, Check, Copy, Loader2, Lock } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -32,7 +32,10 @@ type Props = {
   totalCents: number;
   /** Link do WhatsApp (acesso por token): após o pagamento, botão para voltar à conversa. */
   whatsappUrl?: string | null;
-  customerEmail: string;
+  /** O pedido é de entrega e tem CEP + número: a cobrança pode ser "igual à entrega" (resolvida no servidor). */
+  billingFromOrder?: boolean;
+  /** E-mail já cadastrado (vazio para link anônimo): pré-preenche o campo. */
+  customerEmail?: string;
   initialPix: PixData | null;
   /** O pedido/cadastro já tem CPF no servidor: não precisa pedir de novo (nunca é enviado ao navegador anônimo). */
   documentKnown?: boolean;
@@ -84,7 +87,8 @@ export function PaymentView({
   askMethod = false,
   totalCents,
   whatsappUrl = null,
-  customerEmail,
+  billingFromOrder = false,
+  customerEmail = "",
   initialPix,
   documentKnown = false,
 }: Props) {
@@ -101,14 +105,12 @@ export function PaymentView({
   const [confirmed, setConfirmed] = useState(false);
 
   /* Endereço de entrega utilizável como cobrança (CEP de 8 dígitos + número). */
-  const billingKnown = defaults.postalCode.replace(/D/g, "").length === 8 && !!defaults.addressNumber.trim();
+  const billingKnown = billingFromOrder;
   const [sameAddress, setSameAddress] = useState(billingKnown);
   const [card, setCard] = useState({
     ...EMPTY_CARD,
     holderName: defaults.holderName,
     holderCpfCnpj: defaults.holderCpf,
-    postalCode: billingKnown ? maskCep(defaults.postalCode) : "",
-    addressNumber: billingKnown ? defaults.addressNumber : "",
   });
   /* CPF do pagador: coletado ANTES de liberar Pix/cartão (o Asaas não gera o QR Code sem ele). */
   const [payerDocument, setPayerDocument] = useState(defaults.holderCpf);
@@ -285,14 +287,15 @@ export function PaymentView({
     const [expiryMonth = "", expiryYear = ""] = card.expiry.split("/");
 
     /* Cobrança = entrega (valores do pedido, enviados sem aparecer na tela) ou campos preenchidos. */
-    const postalCode = (sameAddress && billingKnown ? defaults.postalCode : card.postalCode).replace(/\D/g, "");
-    const addressNumber = (sameAddress && billingKnown ? defaults.addressNumber : card.addressNumber).trim();
-    if (postalCode.length !== 8) {
+    const sameAsDelivery = sameAddress && billingKnown;
+    const postalCode = card.postalCode.replace(/\D/g, "");
+    const addressNumber = card.addressNumber.trim();
+    if (!sameAsDelivery && postalCode.length !== 8) {
       setCardError("Informe o CEP de cobrança com 8 dígitos.");
       submittingRef.current = false;
       return;
     }
-    if (!addressNumber) {
+    if (!sameAsDelivery && !addressNumber) {
       setCardError("Informe o número do endereço de cobrança.");
       submittingRef.current = false;
       return;
@@ -311,9 +314,8 @@ export function PaymentView({
             expiryYear,
             ccv: card.ccv,
             holderCpfCnpj: card.holderCpfCnpj,
-            postalCode,
-            addressNumber,
             email,
+            ...(sameAsDelivery ? { sameAsDelivery: true } : { postalCode, addressNumber }),
           },
         }),
       });
@@ -481,7 +483,7 @@ export function PaymentView({
           </button>
           <button
             type="button"
-            onClick={() => setMethod("CREDIT_CARD")}
+            onClick={() => void switchMethod("CREDIT_CARD")}
             className="flex h-14 w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white font-semibold text-slate-900 transition-colors hover:bg-slate-50"
           >
             <Lock className="h-4 w-4" /> Cartão de crédito
@@ -489,7 +491,16 @@ export function PaymentView({
         </section>
       ) : method === "PIX" ? (
         <section className={cardClass}>
-          <h2 className="font-bold">Pague com Pix</h2>
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="font-bold">Pague com Pix</h2>
+            <button
+              type="button"
+              onClick={() => setMethod(null)}
+              className="inline-flex items-center gap-1 text-sm font-semibold text-slate-600 hover:text-[#0A2540]"
+            >
+              <ArrowLeft className="h-4 w-4" /> Voltar
+            </button>
+          </div>
           {pix && pixError ? (
             <p role="alert" className="text-sm font-medium text-red-700">
               {pixError}
@@ -543,9 +554,23 @@ export function PaymentView({
         </section>
       ) : (
         <section className={cardClass}>
-          <h2 className="flex items-center gap-2 font-bold">
-            <Lock className="h-4 w-4" /> Cartão de crédito
-          </h2>
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="flex items-center gap-2 font-bold">
+              <Lock className="h-4 w-4" /> Cartão de crédito
+            </h2>
+            {!waitingGateway ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setCardError(null);
+                  setMethod(null);
+                }}
+                className="inline-flex items-center gap-1 text-sm font-semibold text-slate-600 hover:text-[#0A2540]"
+              >
+                <ArrowLeft className="h-4 w-4" /> Voltar
+              </button>
+            ) : null}
+          </div>
 
           {waitingGateway ? (
             <p className="flex items-start gap-2 text-sm text-slate-700" aria-live="polite">
@@ -616,7 +641,7 @@ export function PaymentView({
                 <label className="flex items-center gap-2 text-sm text-slate-700">
                   <input
                     type="checkbox"
-                    defaultChecked
+                    checked={sameAddress}
                     onChange={(e) => setSameAddress(e.target.checked)}
                     className="h-4 w-4 accent-[#F59E0B]"
                   />
@@ -646,7 +671,7 @@ export function PaymentView({
                   />
                 </div>
               ) : null}
-              {customerEmail ? null : (
+              <div className="space-y-1.5">
                 <Input
                   className={inputClass}
                   type="email"
@@ -658,7 +683,10 @@ export function PaymentView({
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                 />
-              )}
+                <p className="text-xs text-slate-500">
+                  Obrigatório pela operadora do cartão para processar o pagamento.
+                </p>
+              </div>
 
               {cardError ? (
                 <div role="alert" className="space-y-2 rounded-lg bg-red-50 p-3">

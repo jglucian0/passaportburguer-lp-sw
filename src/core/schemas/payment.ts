@@ -25,7 +25,7 @@ function expiryOk(month: string, year: string, now = new Date()): boolean {
 }
 
 /** Dados de cartão: usados só em memória no servidor; mensagens de erro nunca ecoam o valor. */
-export const cardDataSchema = z
+const cardFields = z
   .object({
     holderName: z.string().trim().min(2, "Informe o nome impresso no cartão.").max(60),
     number: z
@@ -53,12 +53,28 @@ export const cardDataSchema = z
       .refine((d) => d.length === 8, "CEP inválido."),
     addressNumber: z.string().trim().min(1, "Informe o número do endereço.").max(10),
     email: z.string().trim().toLowerCase().email("E-mail inválido.").max(120),
+  });
+
+const expiryIssue = { path: ["expiryMonth"], message: "Cartão vencido ou validade inválida." };
+
+export const cardDataSchema = cardFields
+  .strict()
+  .refine((c) => expiryOk(c.expiryMonth, c.expiryYear), expiryIssue);
+
+/**
+ * O que o navegador envia: cobrança "igual à entrega" (o servidor preenche CEP/número a partir do pedido)
+ * e e-mail opcional (o servidor usa o do cadastro ou um endereço técnico). O servidor monta o objeto
+ * completo e o valida de novo com `cardDataSchema`.
+ */
+export const cardPayloadSchema = cardFields
+  .extend({
+    postalCode: z.string().optional(),
+    addressNumber: z.string().optional(),
+    email: z.string().optional(),
+    sameAsDelivery: z.boolean().optional(),
   })
   .strict()
-  .refine((c) => expiryOk(c.expiryMonth, c.expiryYear), {
-    path: ["expiryMonth"],
-    message: "Cartão vencido ou validade inválida.",
-  });
+  .refine((c) => expiryOk(c.expiryMonth, c.expiryYear), expiryIssue);
 
 /** CPF/CNPJ do pagador: obrigatório para gerar Pix/fatura quando o pedido ainda não tem um. */
 const documentField = z
@@ -72,7 +88,7 @@ export const payOrderSchema = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("hosted"), documentNumber: documentField }).strict(),
   /** Cliente desistiu do Pix (foi para o cartão): invalida o QR Code pendente. */
   z.object({ mode: z.literal("cancel-pix") }).strict(),
-  z.object({ mode: z.literal("card"), card: cardDataSchema }).strict(),
+  z.object({ mode: z.literal("card"), card: cardPayloadSchema }).strict(),
 ]);
 
 export type PayOrderInput = z.infer<typeof payOrderSchema>;

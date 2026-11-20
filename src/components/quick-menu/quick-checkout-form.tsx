@@ -1,8 +1,11 @@
 "use client";
 
 import { ArrowLeft, Bike, Check, CreditCard, Loader2, QrCode, Store, UtensilsCrossed } from "lucide-react";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 
+import { AddressPicker } from "@/components/storefront/address-picker";
+import type { ConfirmedAddress } from "@/components/storefront/address-book";
+import { calculateDeliveryQuote } from "@/core/delivery/quote";
 import { documentError, formatDocument, onlyDigits } from "@/core/validation/document";
 import { cn, formatCents } from "@/lib/utils";
 
@@ -15,6 +18,8 @@ export type CheckoutPrefill = {
   hasDocument: boolean;
   addresses: { id: string; street: string; number: string; complement: string; reference: string }[];
   primaryFeeCents?: number | null;
+  /** Último endereço salvo, já localizado: vem selecionado no seletor de endereço. */
+  defaultAddress?: Omit<ConfirmedAddress, "id" | "usedAt"> | null;
 };
 
 export type SummaryLine = { key: string; text: string; detail?: string; totalCents: number };
@@ -26,7 +31,6 @@ type Step = 1 | 2 | 3;
 const inputClass =
   "h-12 w-full rounded-xl border border-slate-300 bg-white px-3 text-base text-slate-900 placeholder:text-slate-400 outline-none focus:border-[#F59E0B] focus:ring-2 focus:ring-[#F59E0B]/30";
 const cardClass = "space-y-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm";
-const NEW_ADDRESS = "new";
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -72,22 +76,18 @@ export function QuickCheckoutForm({
   const [pay, setPay] = useState<Pay>("PIX");
   const [name, setName] = useState(prefill.name);
   const [cpf, setCpf] = useState("");
-  const [addressId, setAddressId] = useState<string>(prefill.addresses[0]?.id ?? NEW_ADDRESS);
-  const [street, setStreet] = useState("");
-  const [number, setNumber] = useState("");
-  const [complement, setComplement] = useState("");
-  const [reference, setReference] = useState("");
+  const [address, setAddress] = useState<ConfirmedAddress | null>(null);
   const [notes, setNotes] = useState("");
-  const [pickingAddress, setPickingAddress] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [phase, setPhase] = useState<"idle" | "sending" | "done">("idle");
 
   const delivery = receive === "DELIVERY";
-  const usingSaved = addressId !== NEW_ADDRESS;
-  const selectedSaved = prefill.addresses.find((a) => a.id === addressId) ?? null;
-  /* A taxa só é conhecida para o endereço pré-selecionado (o 1º salvo). */
-  const knownFee =
-    delivery && selectedSaved && selectedSaved.id === prefill.addresses[0]?.id ? (prefill.primaryFeeCents ?? null) : null;
+  const quote = useMemo(
+    () => (address ? calculateDeliveryQuote(address.lat, address.lon, address.city) : null),
+    [address],
+  );
+  const knownFee = delivery && quote?.deliverable ? quote.feeCents : null;
+  /* Dados pessoais só no fim: CPF na etapa de pagamento (é online), nome na revisão. */
   const askName = prefill.needsProfile && !prefill.name;
   const askDocument = prefill.needsProfile && !prefill.hasDocument;
   const firstName = prefill.name.trim().split(/\s+/)[0];
@@ -96,24 +96,24 @@ export function QuickCheckoutForm({
     window.scrollTo({ top: 0 });
   }, [step]);
 
-  /** Valida a etapa 1 (recebimento + cadastro); devolve a mensagem de erro ou null. */
-  function step1Error(): string | null {
-    if (askName && name.trim().length < 2) return "Informe seu nome.";
-    if (askDocument) {
-      const docErr = documentError(cpf);
-      if (docErr || onlyDigits(cpf).length !== 11) return docErr ?? "Informe um CPF válido.";
-    }
-    if (delivery && !usingSaved && (street.trim().length < 2 || !number.trim())) {
-      return "Informe rua e número para a entrega.";
-    }
+  function addressError(): string | null {
+    if (!delivery) return null;
+    if (!address) return "Escolha um endereço de entrega.";
+    if (quote && !quote.deliverable) return quote.message;
     return null;
+  }
+  function documentStepError(): string | null {
+    if (!askDocument) return null;
+    const docErr = documentError(cpf);
+    return docErr || onlyDigits(cpf).length !== 11 ? (docErr ?? "Informe um CPF válido.") : null;
+  }
+  function nameError(): string | null {
+    return askName && name.trim().length < 2 ? "Informe seu nome." : null;
   }
 
   function next() {
-    if (step === 1) {
-      const err = step1Error();
-      if (err) return setError(err);
-    }
+    const err = step === 1 ? addressError() : step === 2 ? documentStepError() : null;
+    if (err) return setError(err);
     setError(null);
     setStep((s) => (s < 3 ? ((s + 1) as Step) : s));
   }
@@ -126,10 +126,15 @@ export function QuickCheckoutForm({
 
   async function submit() {
     if (phase !== "idle") return;
-    const err = step1Error();
-    if (err) {
-      setStep(1);
-      return setError(err);
+    const checks: [Step, string | null][] = [
+      [1, addressError()],
+      [2, documentStepError()],
+      [3, nameError()],
+    ];
+    const failed = checks.find(([, message]) => message);
+    if (failed) {
+      setStep(failed[0]);
+      return setError(failed[1]);
     }
     setError(null);
     setPhase("sending");
@@ -151,17 +156,19 @@ export function QuickCheckoutForm({
                   ...(prefill.hasDocument ? {} : { document: cpf }),
                 }
               : {}),
-            ...(delivery
-              ? usingSaved
-                ? { savedAddressId: addressId }
-                : {
-                    address: {
-                      street,
-                      number,
-                      complement: complement || undefined,
-                      reference: reference || undefined,
-                    },
-                  }
+            ...(delivery && address
+              ? {
+                  address: {
+                    street: address.street,
+                    number: address.number,
+                    complement: address.complement || undefined,
+                    lat: address.lat,
+                    lon: address.lon,
+                    city: address.city,
+                    neighborhood: address.neighborhood || undefined,
+                    postalCode: address.postalCode || undefined,
+                  },
+                }
               : {}),
           },
         }),
@@ -233,7 +240,7 @@ export function QuickCheckoutForm({
     </button>
   );
 
-  const addressLine = selectedSaved && usingSaved ? `${selectedSaved.street}, ${selectedSaved.number}` : `${street}, ${number}`;
+  const addressLine = address ? `${address.street}, ${address.number}` : "";
   const receiveSummary =
     receive === "DELIVERY" ? `Entrega • ${addressLine}` : receive === "DINE_IN" ? "Consumir no local" : "Retirada na loja";
   const total = subtotalCents + (knownFee ?? 0);
@@ -293,76 +300,8 @@ export function QuickCheckoutForm({
               {delivery ? (
                 <section className={cardClass}>
                   <h2 className="font-bold">Endereço de entrega</h2>
-                  {selectedSaved && !pickingAddress ? (
-                    <div className="flex items-start gap-3 rounded-xl border-2 border-[#F59E0B] bg-amber-50 px-3 py-3">
-                      <div className="min-w-0 flex-1 text-sm">
-                        <span className="font-semibold">
-                          {selectedSaved.street}, {selectedSaved.number}
-                        </span>
-                        {selectedSaved.complement ? (
-                          <span className="block text-xs text-slate-500">{selectedSaved.complement}</span>
-                        ) : null}
-                        {knownFee !== null ? (
-                          <span className="mt-1 block text-xs text-slate-600">Taxa de entrega: {formatCents(knownFee)}</span>
-                        ) : null}
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setPickingAddress(true)}
-                        className="shrink-0 text-xs font-semibold underline underline-offset-2"
-                      >
-                        Alterar
-                      </button>
-                    </div>
-                  ) : prefill.addresses.length > 0 ? (
-                    <div className="space-y-2" role="radiogroup" aria-label="Endereço">
-                      {prefill.addresses.map((a) => (
-                        <button
-                          key={a.id}
-                          type="button"
-                          role="radio"
-                          aria-checked={addressId === a.id}
-                          onClick={() => setAddressId(a.id)}
-                          className={cn(selectable(addressId === a.id), "w-full px-3 py-3 text-sm")}
-                        >
-                          <span className="font-semibold">
-                            {a.street}, {a.number}
-                          </span>
-                          {a.complement ? <span className="block text-xs text-slate-500">{a.complement}</span> : null}
-                        </button>
-                      ))}
-                      <button
-                        type="button"
-                        role="radio"
-                        aria-checked={addressId === NEW_ADDRESS}
-                        onClick={() => setAddressId(NEW_ADDRESS)}
-                        className={cn(selectable(addressId === NEW_ADDRESS), "w-full px-3 py-3 text-sm font-semibold")}
-                      >
-                        + Entregar em outro endereço
-                      </button>
-                    </div>
-                  ) : null}
-                  {!usingSaved ? (
-                    <>
-                      <div className="grid grid-cols-[1fr_6rem] gap-3">
-                        <Field label="Rua">
-                          <input className={inputClass} value={street} onChange={(e) => setStreet(e.target.value)} autoComplete="street-address" maxLength={120} />
-                        </Field>
-                        <Field label="Número">
-                          <input className={inputClass} value={number} onChange={(e) => setNumber(e.target.value)} maxLength={20} />
-                        </Field>
-                      </div>
-                      <Field label="Complemento (opcional)">
-                        <input className={inputClass} value={complement} onChange={(e) => setComplement(e.target.value)} maxLength={80} />
-                      </Field>
-                      <Field label="Ponto de referência (opcional)">
-                        <input className={inputClass} value={reference} onChange={(e) => setReference(e.target.value)} maxLength={120} />
-                      </Field>
-                    </>
-                  ) : null}
-                  <p className="text-xs text-slate-500">
-                    Entregamos só em Maringá-PR.{knownFee === null ? " A taxa aparece no pagamento." : ""}
-                  </p>
+                  <AddressPicker value={address} onChange={setAddress} defaultAddress={prefill.defaultAddress ?? null} />
+                  <p className="text-xs text-slate-500">Entregamos só em Maringá-PR.</p>
                 </section>
               ) : null}
 
@@ -379,30 +318,6 @@ export function QuickCheckoutForm({
                 <section className={cardClass}>
                   <p className="font-bold">Retire no balcão</p>
                   <p className="text-sm text-slate-600">Você retira o pedido aqui na loja. Sem taxa de entrega.</p>
-                </section>
-              ) : null}
-
-              {prefill.needsProfile ? (
-                <section className={cardClass}>
-                  <h2 className="font-bold">Seu cadastro</h2>
-                  {askName ? (
-                    <Field label="Nome completo">
-                      <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" maxLength={80} />
-                    </Field>
-                  ) : null}
-                  {askDocument ? (
-                    <Field label="CPF">
-                      <input
-                        className={inputClass}
-                        value={cpf}
-                        onChange={(e) => setCpf(formatDocument(e.target.value).slice(0, 14))}
-                        inputMode="numeric"
-                        autoComplete="off"
-                        placeholder="000.000.000-00"
-                      />
-                    </Field>
-                  ) : null}
-                  <p className="text-xs text-slate-500">Só na primeira vez: da próxima, seu pedido já vai preenchido.</p>
                 </section>
               ) : null}
             </>
@@ -430,6 +345,23 @@ export function QuickCheckoutForm({
                   Seu pedido vai para a cozinha assim que o pagamento for confirmado. Você ainda pode trocar a forma na tela de pagamento.
                 </p>
               </section>
+              {askDocument ? (
+                <section className={cardClass}>
+                  <h2 className="font-bold">CPF</h2>
+                  <Field label="CPF do pagador">
+                    <input
+                      className={inputClass}
+                      value={cpf}
+                      onChange={(e) => setCpf(formatDocument(e.target.value).slice(0, 14))}
+                      inputMode="numeric"
+                      autoComplete="off"
+                      placeholder="000.000.000-00"
+                    />
+                  </Field>
+                  <p className="text-xs text-slate-500">Exigido para pagamentos online (Pix ou cartão).</p>
+                </section>
+              ) : null}
+
             </>
           ) : null}
 
@@ -437,6 +369,16 @@ export function QuickCheckoutForm({
           {step === 3 ? (
             <>
               <h1 className="text-2xl font-extrabold">Revise seu pedido</h1>
+              {askName ? (
+                <section className={cardClass}>
+                  <h2 className="font-bold">Seus dados</h2>
+                  <Field label="Nome completo">
+                    <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" maxLength={80} />
+                  </Field>
+                  <p className="text-xs text-slate-500">Só na primeira vez: da próxima, seu pedido já vai preenchido.</p>
+                </section>
+              ) : null}
+
 
               <section className={cardClass}>
                 <h2 className="font-bold">Entrega & pagamento</h2>

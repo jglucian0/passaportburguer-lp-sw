@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { NextResponse, type NextRequest } from "next/server";
 
-import { payOrderSchema } from "@/core/schemas/payment";
+import { cardDataSchema, payOrderSchema } from "@/core/schemas/payment";
 import { unauthorizedResponse } from "@/infra/auth/customer-session";
 import { db } from "@/infra/db";
 import { customers, orders, payments } from "@/infra/db/schema";
@@ -12,6 +12,7 @@ import {
   createCreditCardCharge,
   createPixCharge,
   type AsaasCustomerInput,
+  type CardData,
 } from "@/infra/payments/asaas";
 import { expireAbandonedOrders } from "@/infra/payments/expire-orders";
 import { accessDeniedResponse, resolveOrderAccess } from "@/infra/payments/order-access";
@@ -228,6 +229,26 @@ export async function POST(request: NextRequest, { params }: Ctx) {
     cpfCnpj: documentNumber,
   };
 
+  /* Cartão: cobrança "igual à entrega" vem do pedido; e-mail é opcional (cadastro ou endereço técnico). */
+  let cardData: CardData | null = null;
+  if (input.mode === "card") {
+    const { sameAsDelivery, ...rest } = input.card;
+    const snapshot = order.addressSnapshot;
+    const checked = cardDataSchema.safeParse({
+      ...rest,
+      postalCode: sameAsDelivery ? (snapshot?.postalCode ?? "") : (rest.postalCode ?? ""),
+      addressNumber: sameAsDelivery ? (snapshot?.number ?? "") : (rest.addressNumber ?? ""),
+      email: rest.email?.trim() || customer.email || "",
+    });
+    if (!checked.success) {
+      return NextResponse.json(
+        { error: checked.error.issues[0]?.message ?? "Dados do cartão inválidos." },
+        { status: 400, headers: NO_STORE },
+      );
+    }
+    cardData = checked.data;
+  }
+
   try {
     if (input.mode === "pix") {
       const pix = await createPixCharge({ order, customer: asaasCustomer });
@@ -251,7 +272,7 @@ export async function POST(request: NextRequest, { params }: Ctx) {
     const charge = await createCreditCardCharge({
       order,
       customer: asaasCustomer,
-      cardData: input.card,
+      cardData,
       remoteIp: ip,
     });
     // Aprovado: o pedido já foi liberado (idempotente com o webhook). PENDING/RISK_ANALYSIS: aguarda o webhook.
