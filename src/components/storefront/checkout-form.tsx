@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 
 import { createOrder, validateCoupon } from "@/actions/storefront";
 import { Input, Textarea } from "@/components/ui/input";
+import { Sheet } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { calculateCart, type CartCoupon } from "@/core/cart/calculate-cart";
 import {
@@ -36,6 +37,7 @@ import { cn, formatCents, formatPhone } from "@/lib/utils";
 import { useCart } from "./cart-provider";
 import type { ConfirmedAddress } from "./address-book";
 import { AddressPicker } from "./address-picker";
+import { PhoneLookup } from "./phone-lookup";
 import { CUSTOMER_PREFILL_KEY, lineTotal, ORDER_PLACED_FLAG } from "./cart-storage";
 
 /** UUID v4 da tentativa de checkout (idempotência no servidor). */
@@ -109,8 +111,11 @@ export function CheckoutForm({
   zones: CatalogDeliveryZone[];
   minOrderCents: number;
   storeOpen: boolean;
-  /** Dados da conta logada: o servidor usa a sessão; aqui só exibimos. */
-  customer: { name: string; phone: string };
+  /**
+   * Conta logada: o servidor usa a sessão; aqui só exibimos. `null` = visitante: preenche os dados no passo 1 e
+   * confirma o WhatsApp por código (modal) só depois da revisão. `needsRegistration`: logado, falta nome/CPF.
+   */
+  customer: { name: string; phone: string; needsRegistration?: boolean } | null;
   /** Dados de pedidos anteriores: último endereço (com pino) e CPF/CNPJ já salvo. */
   prefill?: { documentNumber: string | null; lastAddress: Omit<ConfirmedAddress, "id" | "usedAt"> | null };
 }) {
@@ -118,8 +123,12 @@ export function CheckoutForm({
   const [isPending, startTransition] = useTransition();
 
   const [step, setStep] = useState<Step>(1);
-  const [name] = useState(customer.name);
-  const [phone] = useState(formatPhone(customer.phone));
+  const isGuest = !customer;
+  const needsProfile = !!customer?.needsRegistration;
+  const askData = isGuest || needsProfile;
+  const [name, setName] = useState(customer?.name ?? "");
+  const [phone, setPhone] = useState(formatPhone(customer?.phone ?? ""));
+  const [authOpen, setAuthOpen] = useState(false);
   const [receive, setReceive] = useState<Receive>("DELIVERY");
   const [address, setAddress] = useState<ConfirmedAddress | null>(null);
   const [payChoice, setPayChoice] = useState<PayChoice>("PIX");
@@ -232,13 +241,21 @@ export function CheckoutForm({
   const belowMin = missingMinCents > 0;
 
   /* CPF/CNPJ: obrigatório no pagamento online; opcional (nota) no dinheiro. */
-  const docRequired = onlinePayment || (payChoice === "CASH" && includeDocument);
+  const docRequired = onlinePayment || (payChoice === "CASH" && includeDocument) || askData;
   const docDigits = onlyDigits(documentValue);
   const docError = docRequired ? documentError(documentValue) : null;
   const showDocError = !!docError && (documentTouched || docDigits.length >= 11);
 
   /* Validação por etapa (o botão do rodapé só habilita com dados válidos). */
-  const step1Ready = receive !== "DELIVERY" || (!!address && !!quote?.deliverable && !!zone);
+  /* Visitante / cadastro incompleto: nome, WhatsApp (só visitante) e CPF entram no passo 1. */
+  const profileError = !askData
+    ? null
+    : name.trim().length < 2
+      ? "Informe seu nome."
+      : isGuest && onlyDigits(phone).length < 10
+        ? "Informe o WhatsApp com DDD."
+        : documentError(documentValue);
+  const step1Ready = !profileError && (receive !== "DELIVERY" || (!!address && !!quote?.deliverable && !!zone));
   const step2Ready = !docError && (payChoice !== "CASH" || noChange || changeForCents !== null);
 
   useEffect(() => {
@@ -264,10 +281,13 @@ export function CheckoutForm({
     if (step === 1) {
       if (!step1Ready) {
         setError(
-          receive === "DELIVERY" && quote && !quote.deliverable
-            ? quote.message
-            : "Escolha um endereço de entrega.",
+          profileError
+            ? profileError
+            : receive === "DELIVERY" && quote && !quote.deliverable
+              ? quote.message
+              : "Escolha um endereço de entrega.",
         );
+        if (profileError) setDocumentTouched(true);
         return;
       }
       setStep(2);
@@ -325,6 +345,32 @@ export function CheckoutForm({
       return;
     }
 
+    if (isGuest) {
+      /* Revisão pronta: agora confirma o WhatsApp (modal). O pedido só é criado depois da validação. */
+      setAuthOpen(true);
+      return;
+    }
+    if (needsProfile) {
+      startTransition(async () => {
+        const res = await fetch("/api/auth/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, document: documentValue }),
+        }).catch(() => null);
+        if (!res || !res.ok) {
+          const data = (await res?.json().catch(() => ({}))) as { error?: string } | undefined;
+          setError(data?.error ?? "Não foi possível concluir seu cadastro. Tente novamente.");
+          return;
+        }
+        placeOrder();
+      });
+      return;
+    }
+    placeOrder();
+  }
+
+  /** Cria o pedido (a sessão já existe). Em sucesso o servidor redireciona para o pagamento. */
+  function placeOrder() {
     try {
       window.localStorage.setItem(CUSTOMER_PREFILL_KEY, JSON.stringify({ name, phone }));
       window.sessionStorage.setItem(ORDER_PLACED_FLAG, tenantId);
@@ -566,6 +612,50 @@ export function CheckoutForm({
                   </a>
                 </section>
               ) : null}
+
+              {askData ? (
+                <section className={cardClass}>
+                  <h2 className="font-bold">Seus dados</h2>
+                  <Field label="Nome">
+                    <Input
+                      className={inputClass}
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      autoComplete="name"
+                      maxLength={80}
+                      placeholder="Seu nome"
+                    />
+                  </Field>
+                  <Field label="WhatsApp">
+                    <Input
+                      className={inputClass}
+                      value={phone}
+                      onChange={(e) => setPhone(formatPhone(e.target.value))}
+                      readOnly={!isGuest}
+                      inputMode="tel"
+                      autoComplete="tel-national"
+                      placeholder="(XX) XXXXX-XXXX"
+                    />
+                  </Field>
+                  <Field label="CPF">
+                    <Input
+                      className={inputClass}
+                      value={documentValue}
+                      onChange={(e) => setDocumentValue(formatDocument(e.target.value))}
+                      onBlur={() => setDocumentTouched(true)}
+                      inputMode="numeric"
+                      autoComplete="off"
+                      placeholder="000.000.000-00"
+                      maxLength={18}
+                    />
+                  </Field>
+                  {isGuest ? (
+                    <p className="text-xs text-slate-500">
+                      No final você confirma o número por um código no WhatsApp. Sem senha, sem cadastro separado.
+                    </p>
+                  ) : null}
+                </section>
+              ) : null}
             </>
           ) : null}
 
@@ -750,6 +840,7 @@ export function CheckoutForm({
                 </ul>
               </section>
 
+              {isGuest ? null : (
               <section className="space-y-2 rounded-xl border border-slate-200 bg-white p-4 text-sm shadow-sm">
                 <label htmlFor="coupon" className="font-semibold">
                   Cupom de desconto
@@ -794,6 +885,7 @@ export function CheckoutForm({
                 )}
                 {couponError ? <p className="text-red-700">{couponError}</p> : null}
               </section>
+              )}
 
               <section className={cardClass}>
                 <Field label="Observações (opcional)">
@@ -885,6 +977,7 @@ export function CheckoutForm({
 
             {step === 3 ? (
               <button
+                key="confirm"
                 type="submit"
                 disabled={primaryDisabled}
                 className="flex h-14 w-full items-center justify-center gap-2 rounded-xl bg-[#F59E0B] text-base font-bold text-[#0A2540] transition hover:brightness-105 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
@@ -894,6 +987,7 @@ export function CheckoutForm({
               </button>
             ) : (
               <button
+                key="next"
                 type="button"
                 onClick={handleNext}
                 disabled={primaryDisabled}
@@ -905,6 +999,23 @@ export function CheckoutForm({
           </div>
         </div>
       </form>
+
+      {isGuest ? (
+        <Sheet open={authOpen} onOpenChange={setAuthOpen} title="Confirme seu WhatsApp">
+          <div className="overflow-y-auto">
+            {authOpen ? (
+              <PhoneLookup
+                embedded
+                autoStart={{ phone, name, cpf: documentValue }}
+                onAuthenticated={() => {
+                  setAuthOpen(false);
+                  placeOrder();
+                }}
+              />
+            ) : null}
+          </div>
+        </Sheet>
+      ) : null}
     </div>
   );
 }

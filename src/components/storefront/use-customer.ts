@@ -75,9 +75,28 @@ export function useCustomerFirstName(): string | null {
       setFirstName(name ? name.split(/\s+/)[0] : null);
     }
     sync();
+    /* O nome guardado no navegador pode ter sobrado de uma sessão que expirou/foi encerrada: o servidor é quem manda. */
+    let alive = true;
+    fetch("/api/auth/me", { cache: "no-store" })
+      .then((res) => (res.ok ? (res.json() as Promise<{ name: string | null }>) : null))
+      .then((data) => {
+        if (!alive || !data) return;
+        if (data.name) {
+          if (!read().name) saveCustomer({ name: data.name });
+        } else if (read().name || read().phone) {
+          try {
+            window.localStorage.removeItem(CUSTOMER_PREFILL_KEY);
+          } catch {
+            /* ignorar */
+          }
+          sync();
+        }
+      })
+      .catch(() => undefined);
     window.addEventListener(CUSTOMER_CHANGE_EVENT, sync);
     window.addEventListener("storage", sync);
     return () => {
+      alive = false;
       window.removeEventListener(CUSTOMER_CHANGE_EVENT, sync);
       window.removeEventListener("storage", sync);
     };

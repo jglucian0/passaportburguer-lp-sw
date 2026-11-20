@@ -429,9 +429,12 @@ function ProfileCard({
   address,
   zones,
   onSaveAddress,
+  onSaveName,
   onLogout,
   loggingOut,
 }: {
+  /** Salva o nome; devolve a mensagem de erro (ou null se deu certo). */
+  onSaveName: (name: string) => Promise<string | null>;
   name: string;
   phone: string;
   address: SavedAddress | null;
@@ -441,6 +444,10 @@ function ProfileCard({
   loggingOut: boolean;
 }) {
   const [editing, setEditing] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(name);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [savingName, setSavingName] = useState(false);
   const neighborhood = zones.find((z) => z.id === address?.zoneId)?.neighborhood;
 
   return (
@@ -460,10 +467,70 @@ function ProfileCard({
       <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
         <div className="flex items-center gap-2">
           <User className="h-4 w-4 shrink-0 text-slate-400" strokeWidth={1.75} />
-          <div>
-            <dt className="sr-only">Nome</dt>
-            <dd className="font-semibold text-[#0A2540]">{name}</dd>
-          </div>
+          {editingName ? (
+            <form
+              className="min-w-0 flex-1 space-y-1.5"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setSavingName(true);
+                setNameError(null);
+                const error = await onSaveName(nameDraft);
+                setSavingName(false);
+                if (error) setNameError(error);
+                else setEditingName(false);
+              }}
+            >
+              <div className="flex gap-2">
+                <input
+                  aria-label="Seu nome"
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  maxLength={80}
+                  autoFocus
+                  autoComplete="given-name"
+                  className="h-10 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 focus:border-[#F59E0B] focus:outline-none focus:ring-2 focus:ring-[#F59E0B]/30"
+                />
+                <button
+                  type="submit"
+                  disabled={savingName || nameDraft.trim().length < 2}
+                  className="h-10 rounded-lg bg-[#F59E0B] px-3 text-sm font-bold text-[#0A2540] disabled:opacity-60"
+                >
+                  Salvar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingName(false);
+                    setNameDraft(name);
+                    setNameError(null);
+                  }}
+                  className="h-10 rounded-lg border border-slate-300 px-3 text-sm font-semibold text-slate-700"
+                >
+                  Cancelar
+                </button>
+              </div>
+              {nameError ? <p className="text-xs font-medium text-red-700">{nameError}</p> : null}
+              <p className="text-xs text-slate-500">O número de WhatsApp não pode ser alterado.</p>
+            </form>
+          ) : (
+            <>
+              <div>
+                <dt className="sr-only">Nome</dt>
+                <dd className="font-semibold text-[#0A2540]">{name}</dd>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setNameDraft(name);
+                  setEditingName(true);
+                }}
+                aria-label="Alterar nome"
+                className="inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-100 hover:text-[#0A2540]"
+              >
+                <Pencil className="h-3 w-3" /> Alterar
+              </button>
+            </>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <Phone className="h-4 w-4 shrink-0 text-slate-400" strokeWidth={1.75} />
@@ -715,24 +782,14 @@ export function OrdersView({
   }
 
   const [displayName, setDisplayName] = useState(customerName);
-  const [editingName, setEditingName] = useState(false);
-  const [nameDraft, setNameDraft] = useState(customerName);
-  const [nameError, setNameError] = useState<string | null>(null);
-  const [savingName, startSavingName] = useTransition();
 
-  function saveName() {
-    setNameError(null);
-    startSavingName(async () => {
-      const res = await updateCustomerName(nameDraft);
-      if (!res.ok) {
-        setNameError(res.error);
-        return;
-      }
-      setDisplayName(res.data.name);
-      saveCustomer({ name: res.data.name });
-      setEditingName(false);
-      router.refresh();
-    });
+  async function handleSaveName(draft: string): Promise<string | null> {
+    const res = await updateCustomerName(draft);
+    if (!res.ok) return res.error;
+    setDisplayName(res.data.name);
+    saveCustomer({ name: res.data.name });
+    router.refresh();
+    return null;
   }
 
   function handleLogout() {
@@ -753,67 +810,9 @@ export function OrdersView({
 
   return (
     <div className="space-y-6">
-      {editingName ? (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            saveName();
-          }}
-          className="space-y-2"
-        >
-          <label htmlFor="profile-name" className="text-sm font-medium text-slate-700">
-            Seu nome
-          </label>
-          <div className="flex gap-2">
-            <input
-              id="profile-name"
-              value={nameDraft}
-              onChange={(e) => setNameDraft(e.target.value)}
-              maxLength={80}
-              autoFocus
-              autoComplete="given-name"
-              className="h-11 min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 text-base text-slate-900 focus:border-[#F59E0B] focus:outline-none focus:ring-2 focus:ring-[#F59E0B]/30"
-            />
-            <button
-              type="submit"
-              disabled={savingName || nameDraft.trim().length < 2}
-              className="h-11 rounded-xl bg-[#F59E0B] px-4 text-sm font-bold text-[#0A2540] disabled:opacity-60"
-            >
-              Salvar
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setEditingName(false);
-                setNameDraft(displayName);
-                setNameError(null);
-              }}
-              className="h-11 rounded-xl border border-slate-300 px-3 text-sm font-semibold text-slate-700"
-            >
-              Cancelar
-            </button>
-          </div>
-          {nameError ? <p className="text-xs font-medium text-red-700">{nameError}</p> : null}
-          <p className="text-xs text-slate-500">O número de WhatsApp não pode ser alterado.</p>
-        </form>
-      ) : (
-        <p className="flex items-center gap-2 text-sm text-slate-600">
-          <span>
-            Olá, <span className="font-semibold text-[#0A2540]">{displayName}</span>!
-          </span>
-          <button
-            type="button"
-            onClick={() => {
-              setNameDraft(displayName);
-              setEditingName(true);
-            }}
-            aria-label="Alterar nome"
-            className="inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs font-semibold text-slate-500 hover:bg-slate-100 hover:text-[#0A2540]"
-          >
-            <Pencil className="h-3 w-3" /> Alterar nome
-          </button>
-        </p>
-      )}
+      <p className="text-sm text-slate-600">
+        Olá, <span className="font-semibold text-[#0A2540]">{displayName}</span>!
+      </p>
 
       {notice ? (
         <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
@@ -874,7 +873,8 @@ export function OrdersView({
       </section>
 
       <ProfileCard
-        name={customerName}
+        name={displayName}
+        onSaveName={handleSaveName}
         phone={customerPhone}
         address={savedAddress}
         zones={zones}

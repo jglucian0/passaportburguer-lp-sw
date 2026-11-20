@@ -11,7 +11,7 @@ import { formatPhone } from "@/lib/utils";
 import { TURNSTILE_ENABLED, TurnstileWidget } from "./turnstile-widget";
 import { saveCustomer } from "./use-customer";
 
-type Step = "phone" | "profile" | "send" | "register";
+type Step = "starting" | "phone" | "profile" | "send" | "register";
 
 const POLL_MS = 3000;
 const PENDING_OTP_KEY = "pb_pending_otp";
@@ -108,20 +108,30 @@ async function postJson<T>(url: string, body: unknown): Promise<{ ok: boolean; s
 export function PhoneLookup({
   startAtRegister = false,
   initialPhone = "",
+  autoStart,
+  onAuthenticated,
+  embedded = false,
 }: {
   startAtRegister?: boolean;
   initialPhone?: string;
+  /** Checkout: nome, WhatsApp e CPF já digitados; vai direto ao código (sem repetir perguntas). */
+  autoStart?: { phone: string; name: string; cpf: string };
+  /** Chamado quando o número foi validado e a sessão existe (no lugar de recarregar a página). */
+  onAuthenticated?: () => void;
+  /** Sem o cartão/borda próprios (já está dentro de um modal). */
+  embedded?: boolean;
 }) {
   const router = useRouter();
-  const [step, setStep] = useState<Step>(startAtRegister ? "register" : "phone");
-  const [phone, setPhone] = useState(initialPhone ? formatPhone(initialPhone) : "");
+  const [step, setStep] = useState<Step>(autoStart ? "starting" : startAtRegister ? "register" : "phone");
+  const [phone, setPhone] = useState(autoStart ? formatPhone(autoStart.phone) : initialPhone ? formatPhone(initialPhone) : "");
   const [code, setCode] = useState("");
   const [waUrl, setWaUrl] = useState("");
   const [delivery, setDelivery] = useState<Delivery>("inbound");
   const [typedCode, setTypedCode] = useState("");
   const [sandbox, setSandbox] = useState(false);
-  const [name, setName] = useState("");
-  const [cpf, setCpf] = useState("");
+  const [name, setName] = useState(autoStart?.name ?? "");
+  const [cpf, setCpf] = useState(autoStart?.cpf ?? "");
+  const autoStarted = useRef(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -141,7 +151,7 @@ export function PhoneLookup({
 
   /* Restaura o fluxo OTP se o navegador descartou/recarregou a aba ao ir para o WhatsApp. */
   useEffect(() => {
-    if (startAtRegister) return;
+    if (startAtRegister || autoStart) return;
     const pending = readPendingOtp();
     if (!pending) return;
     setPhone(formatPhone(pending.phone));
@@ -151,7 +161,7 @@ export function PhoneLookup({
     setResendAt(pending.resendAt ?? 0);
     setSandbox(pending.sandbox);
     setStep("send");
-  }, [startAtRegister]);
+  }, [startAtRegister, autoStart]);
 
   const goTo = (next: Step) => {
     if (next === "phone") clearPendingOtp();
@@ -164,9 +174,10 @@ export function PhoneLookup({
     (data: Identity) => {
       clearPendingOtp();
       saveCustomer({ phone: data.phone, name: data.name });
-      router.refresh();
+      if (onAuthenticated) onAuthenticated();
+      else router.refresh();
     },
-    [router],
+    [router, onAuthenticated],
   );
 
   /** Consulta o servidor; `confirm` só é aceito em modo sandbox. */
@@ -298,6 +309,33 @@ export function PhoneLookup({
     setStep("send");
   }
 
+  /* Checkout: dados já digitados; assim que o desafio anti-bot (se houver) libera, pede o código sem perguntar nada de novo. */
+  useEffect(() => {
+    if (!autoStart || step !== "starting" || autoStarted.current) return;
+    if (TURNSTILE_ENABLED && !turnstileToken) return;
+    autoStarted.current = true;
+    setBusy(true);
+    void (async () => {
+      try {
+        const account = await postJson<{ error?: string }>("/api/auth/check-account", { phone });
+        if (!account.ok) {
+          setError(account.data.error ?? "Não foi possível continuar.");
+          setStep("phone");
+          return;
+        }
+        await startOtp();
+        /* startOtp já foi para "send" em caso de sucesso; se falhou, deixa o cliente corrigir o número. */
+        setStep((s) => (s === "starting" ? "phone" : s));
+      } catch {
+        setError("Sem conexão. Verifique sua internet e tente novamente.");
+        setStep("phone");
+      } finally {
+        setBusy(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoStart, step, turnstileToken]);
+
   /** Sem senha: número novo/cadastro incompleto informa nome + CPF antes do código; os demais vão direto ao código. */
   const handlePhoneSubmit = (event: React.FormEvent) =>
     run(event, async () => {
@@ -360,12 +398,14 @@ export function PhoneLookup({
   );
 
   const titles: Record<Step, string> = {
+    starting: "Confirme seu WhatsApp",
     phone: "Meu Passaporte",
     profile: "Primeira vez por aqui?",
     send: "Confirme seu WhatsApp",
     register: "Quase lá!",
   };
   const subtitles: Record<Step, string> = {
+    starting: `Vamos confirmar o número ${phone} para finalizar seu pedido.`,
     phone: "Informe seu WhatsApp para abrir seu passaporte. Sem senha: você só confirma o número.",
     profile: "Só nome e CPF. Depois confirmamos seu número por código no WhatsApp.",
     send: `Vamos confirmar o número ${phone}.`,
@@ -373,12 +413,20 @@ export function PhoneLookup({
   };
 
   return (
-    <div className="relative space-y-4 overflow-hidden rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-      <Stamp
-        aria-hidden="true"
-        className="pointer-events-none absolute -right-2 -top-2 h-20 w-20 rotate-12 text-slate-200"
-        strokeWidth={1.25}
-      />
+    <div
+      className={
+        embedded
+          ? "relative space-y-4 p-6 pt-8"
+          : "relative space-y-4 overflow-hidden rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+      }
+    >
+      {embedded ? null : (
+        <Stamp
+          aria-hidden="true"
+          className="pointer-events-none absolute -right-2 -top-2 h-20 w-20 rotate-12 text-slate-200"
+          strokeWidth={1.25}
+        />
+      )}
 
       <div className="relative">
         <h2 className="text-lg font-extrabold text-[#0A2540]">{titles[step]}</h2>
@@ -386,6 +434,12 @@ export function PhoneLookup({
       </div>
 
       <div key={step} className="animate-in fade-in slide-in-from-right-2 duration-300">
+        {step === "starting" ? (
+          <p className="flex items-center justify-center gap-2 py-6 text-sm text-slate-500" aria-live="polite">
+            <Loader2 className="h-4 w-4 animate-spin" /> Enviando o código…
+          </p>
+        ) : null}
+
         {step === "phone" ? (
           <form onSubmit={handlePhoneSubmit} className="relative space-y-4">
             {field(
@@ -598,7 +652,7 @@ export function PhoneLookup({
         ) : null}
       </div>
 
-      {TURNSTILE_ENABLED && (step === "phone" || step === "profile" || (step === "send" && delivery !== "inbound")) ? (
+      {TURNSTILE_ENABLED && (step === "starting" || step === "phone" || step === "profile" || (step === "send" && delivery !== "inbound")) ? (
         <TurnstileWidget onToken={setTurnstileToken} resetKey={turnstileKey} />
       ) : null}
 
