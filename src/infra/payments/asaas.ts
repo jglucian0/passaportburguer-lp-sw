@@ -358,7 +358,8 @@ async function findReusablePix(orderId: string): Promise<Payment | null> {
 type PixQr = { encodedImage: string; payload: string; expirationDate?: string };
 
 /** Pausas (ms) entre as tentativas de buscar o QR Code: logo após criar a cobrança o Asaas às vezes ainda não o entrega. */
-const QR_RETRY_DELAYS_MS = [0, 700, 1500] as const;
+/* O Asaas às vezes responde 400 invalid_action ao pedir o QR de uma cobrança recém-criada: espera ela ficar pronta (~9 s). */
+const QR_RETRY_DELAYS_MS = [0, 700, 1500, 2500, 4000] as const;
 
 async function fetchPixQr(providerPaymentId: string): Promise<PixQr> {
   let lastError: unknown;

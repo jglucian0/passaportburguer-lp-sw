@@ -20,6 +20,7 @@ import { checkRateLimit, getClientIp, tooManyRequests } from "@/infra/security/r
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 30;
 
 /** Tentativas de cartão recusadas (FAILED) por pedido antes de bloquear novas. */
 const MAX_CARD_FAILURES = 5;

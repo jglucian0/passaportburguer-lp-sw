@@ -540,13 +540,6 @@ export function PaymentView({
               <Loader2 className="h-4 w-4 animate-spin" /> Gerando seu QR Code…
             </p>
           )}
-          <button
-            type="button"
-            onClick={() => void switchMethod("CREDIT_CARD")}
-            className="w-full text-center text-sm font-medium text-slate-600 underline"
-          >
-            Prefiro pagar com cartão de crédito
-          </button>
         </section>
       ) : (
         <section className={cardClass}>
@@ -698,14 +691,6 @@ export function PaymentView({
                 className="w-full text-center text-sm font-medium text-slate-600 underline"
               >
                 Prefiro pagar na página segura do Asaas
-              </button>
-              <button
-                type="button"
-                onClick={() => void switchMethod("PIX")}
-                disabled={switching}
-                className="w-full text-center text-sm font-medium text-slate-600 underline disabled:opacity-60"
-              >
-                {switching ? "Gerando Pix…" : "Prefiro pagar com Pix"}
               </button>
             </form>
           )}

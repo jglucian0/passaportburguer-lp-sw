@@ -132,8 +132,8 @@ export async function OrderPaymentScreen({ orderId, token }: { orderId: string; 
             orderId={order.id}
             token={anonymous ? (token ?? null) : null}
             method={order.paymentMethod as "PIX" | "CREDIT_CARD"}
-            // Link do WhatsApp: escolhe Pix/cartão na própria página (sem cobrança até escolher).
-            askMethod={anonymous && !pixValid}
+            // A forma de pagamento já foi escolhida no checkout (Cardápio Rápido ou site): aqui só se paga.
+            askMethod={false}
             totalCents={order.totalCents}
             // Link do WhatsApp: depois de pago, o cliente volta para a conversa por este botão.
             whatsappUrl={anonymous && businessWhatsAppNumber() ? `https://wa.me/${businessWhatsAppNumber()}` : null}
