@@ -26,6 +26,7 @@ import {
 import { loadStoreSettings } from "@/infra/db/store-settings";
 import { recordTimelineEvent } from "@/infra/db/timeline";
 import { consumeOrderCoupon, findPersonalCoupons } from "@/infra/coupons";
+import { resolveOrderAttribution } from "@/infra/marketing/attribution";
 import { sendOrderToSaipos } from "@/lib/saipos";
 import { formatCents } from "@/lib/utils";
 
@@ -108,9 +109,18 @@ export async function priceCart(
   // Um só cupom por fechamento: o de MAIOR desconto entre os que o pedido alcança (nunca soma).
   let appliedCoupon: { id: string; code: string } | null = null;
   const subtotal = calc.subtotalCents;
+  const baseLines = calc.lines;
   const best = personalCoupons
     .filter((c) => subtotal >= c.coupon.minOrderCents)
-    .map((c) => ({ c, discount: couponDiscountCents(subtotal, c.coupon) }))
+    .map((c) => ({
+      c,
+      // Frete grátis vale o valor da taxa (só entrega); os demais, o desconto nos itens.
+      discount: c.coupon.freeShipping
+        ? deliveryType === "DELIVERY"
+          ? (zone?.feeCents ?? 0)
+          : 0
+        : couponDiscountCents(subtotal, c.coupon, baseLines),
+    }))
     .filter((x) => x.discount > 0)
     .sort((a, b) => b.discount - a.discount)[0];
   if (best) {
@@ -318,6 +328,7 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
         .where(eq(orders.tenantId, tenantId));
       const orderNumber = (row?.last ?? 100) + 1;
       const orderId = crypto.randomUUID();
+      const attribution = await resolveOrderAttribution({ channel: "whatsapp", phone: ctx.phone });
       try {
         await db.batch([
           db.insert(orders).values({
@@ -338,6 +349,7 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
             totalCents: calc.totalCents,
             notes,
             documentNumber,
+            attribution,
           }),
           db.insert(orderItems).values(
             calc.lines.map((line) => ({

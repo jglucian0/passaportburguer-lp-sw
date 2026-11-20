@@ -2,6 +2,7 @@ import { and, eq, ne, sql } from "drizzle-orm";
 import { after } from "next/server";
 
 import { consumeOrderCoupon } from "@/infra/coupons";
+import { sendPurchaseEvent } from "@/infra/marketing/attribution";
 import { creditOrderMiles } from "@/infra/miles/miles";
 import { db } from "@/infra/db";
 import { orders, payments } from "@/infra/db/schema";
@@ -72,7 +73,11 @@ export async function settlePayment(opts: {
     );
     // Um único after(): Saipos e aviso no WhatsApp (só quem liberou o pedido avisa; o aviso também é idempotente).
     after(async () => {
-      await Promise.allSettled([sendOrderToSaipos(opts.orderId), notifyPaymentConfirmed(opts.orderId)]);
+      await Promise.allSettled([
+        sendOrderToSaipos(opts.orderId),
+        notifyPaymentConfirmed(opts.orderId),
+        sendPurchaseEvent(opts.orderId),
+      ]);
     });
   }
   return { released };

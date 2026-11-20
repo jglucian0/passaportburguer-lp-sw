@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 
 import { NextResponse, type NextRequest } from "next/server";
 
+import { runPaymentRecovery } from "@/infra/marketing/payment-recovery";
 import { runWinbackCampaign } from "@/infra/marketing/campaigns";
 import { dispatchDueFollowups } from "@/infra/whatsapp/followups";
 import { retryStalledInbox } from "@/infra/whatsapp/inbox";
@@ -34,5 +35,6 @@ export async function GET(request: NextRequest) {
     console.error("[marketing] campanha falhou:", error instanceof Error ? error.message : "erro");
     return { ran: false, reason: "ERROR" };
   });
-  return NextResponse.json({ ok: true, retried, ...summary, campaign }, { headers: { "Cache-Control": "no-store" } });
+  const paymentRecovery = await runPaymentRecovery().catch(() => ({ sent: 0, skipped: 0 }));
+  return NextResponse.json({ ok: true, retried, ...summary, campaign, paymentRecovery }, { headers: { "Cache-Control": "no-store" } });
 }

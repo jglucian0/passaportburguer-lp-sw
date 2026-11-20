@@ -25,6 +25,8 @@ async function main() {
       target_lost boolean NOT NULL DEFAULT true,
       updated_at timestamptz NOT NULL DEFAULT now()
     )`;
+  await sql`ALTER TABLE orders ADD COLUMN IF NOT EXISTS attribution jsonb`;
+  await sql`ALTER TABLE whatsapp_sessions ADD COLUMN IF NOT EXISTS ad_referral jsonb`;
   await sql`
     CREATE TABLE IF NOT EXISTS marketing_sends (
       id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -1,8 +1,16 @@
-import { and, desc, eq, gt, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 
 import type { CartCoupon } from "@/core/cart/calculate-cart";
 import { db } from "@/infra/db";
-import { coupons, orders } from "@/infra/db/schema";
+import { coupons, orders, products } from "@/infra/db/schema";
+
+/** Nomes dos produtos de cupons de item grátis (para mensagens). */
+async function freeProductNames(ids: (string | null)[]): Promise<Map<string, string>> {
+  const unique = [...new Set(ids.filter((id): id is string => !!id))];
+  if (unique.length === 0) return new Map();
+  const rows = await db.select({ id: products.id, name: products.name }).from(products).where(inArray(products.id, unique));
+  return new Map(rows.map((r) => [r.id, r.name]));
+}
 
 export type CouponLookup =
   | { ok: true; couponId: string; coupon: CartCoupon }
@@ -30,10 +38,20 @@ export async function lookupCoupon(tenantId: string, rawCode: string, customerId
   if (row.expiresAt && row.expiresAt.getTime() <= Date.now()) return { ok: false, error: "Este cupom expirou." };
   if (row.maxUses != null && row.usedCount >= row.maxUses) return { ok: false, error: "Este cupom já foi utilizado." };
 
+  const names = await freeProductNames([row.freeProductId]);
   return {
     ok: true,
     couponId: row.id,
-    coupon: { code: row.code, type: row.type, value: row.value, minOrderCents: row.minOrderCents },
+    coupon: {
+      code: row.code,
+      type: row.type,
+      value: row.value,
+      minOrderCents: row.minOrderCents,
+      maxDiscountPercent: row.maxDiscountPercent,
+      freeProductId: row.freeProductId,
+      freeProductName: row.freeProductId ? (names.get(row.freeProductId) ?? null) : null,
+      freeShipping: row.freeShipping,
+    },
   };
 }
 
@@ -78,9 +96,19 @@ export async function findPersonalCoupons(tenantId: string, customerId: string):
       ),
     )
     .orderBy(desc(coupons.createdAt));
+  const names = await freeProductNames(rows.map((r) => r.freeProductId));
   return rows.map((row) => ({
     ok: true as const,
     couponId: row.id,
-    coupon: { code: row.code, type: row.type, value: row.value, minOrderCents: row.minOrderCents },
+    coupon: {
+      code: row.code,
+      type: row.type,
+      value: row.value,
+      minOrderCents: row.minOrderCents,
+      maxDiscountPercent: row.maxDiscountPercent,
+      freeProductId: row.freeProductId,
+      freeProductName: row.freeProductId ? (names.get(row.freeProductId) ?? null) : null,
+      freeShipping: row.freeShipping,
+    },
   }));
 }

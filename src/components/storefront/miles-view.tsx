@@ -4,7 +4,8 @@ import { Check, Gift, Loader2, Plane, Target, Ticket } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
-import { redeemMilesReward } from "@/actions/miles";
+import { redeemMilesCashback, redeemMilesReward } from "@/actions/miles";
+import { CASHBACK_STEP_MILES, cashbackDiscountCents, TIER_LABEL } from "@/core/miles/ledger";
 import { cn, formatCents } from "@/lib/utils";
 
 export type MilesViewData = {
@@ -14,9 +15,34 @@ export type MilesViewData = {
   expiringSoon: number;
   nextExpiry: string | null;
   milesPerReal: number;
-  rewards: { id: string; name: string; milesCost: number; discountCents: number; minOrderCents: number }[];
+  /** null = níveis desligados. */
+  tier: {
+    name: "TURISTA" | "EXECUTIVA" | "PRIMEIRA_CLASSE";
+    multiplierPct: number;
+    orders: number;
+    windowDays: number;
+    next: { name: "TURISTA" | "EXECUTIVA" | "PRIMEIRA_CLASSE"; ordersNeeded: number; multiplierPct: number } | null;
+  } | null;
+  cashback: { milesPerReal: number; minMiles: number; capPercent: number; minOrderCents: number };
+  welcomeBonusMiles: number;
+  rewards: {
+    id: string;
+    name: string;
+    milesCost: number;
+    discountCents: number;
+    minOrderCents: number;
+    freeProductName: string | null;
+  }[];
   history: { id: string; type: string; miles: number; description: string; createdAt: string }[];
-  coupons: { code: string; discountCents: number; validUntil: string | null; minOrderCents: number }[];
+  coupons: {
+    code: string;
+    discountCents: number;
+    validUntil: string | null;
+    minOrderCents: number;
+    maxDiscountPercent: number | null;
+    freeProductName: string | null;
+    freeShipping: boolean;
+  }[];
   missions: {
     id: string;
     name: string;
@@ -39,6 +65,7 @@ export function MilesView({ data }: { data: MilesViewData }) {
   const [pending, startTransition] = useTransition();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [cashMiles, setCashMiles] = useState<number | null>(null);
 
   if (!data.enabled) {
     return (
@@ -52,16 +79,49 @@ export function MilesView({ data }: { data: MilesViewData }) {
 
   const nextReward = data.rewards.find((r) => r.milesCost > data.available);
 
+  /* Cashback livre: escolhe quantas milhas converter (mínimo e múltiplos definidos pela loja). */
+  const cb = data.cashback;
+  const maxCash = Math.floor(data.available / CASHBACK_STEP_MILES) * CASHBACK_STEP_MILES;
+  const canCash = maxCash >= cb.minMiles;
+  const chosenCash = Math.min(Math.max(cashMiles ?? cb.minMiles, cb.minMiles), Math.max(maxCash, cb.minMiles));
+
+  function redeemCash() {
+    setMessage(null);
+    setBusyId("cashback");
+    startTransition(async () => {
+      try {
+        const result = await redeemMilesCashback(chosenCash);
+        if (result.ok) {
+          setMessage({
+            kind: "ok",
+            text: `Resgatado! Seu cupom ${result.data.couponCode} (${formatCents(result.data.discountCents)} de desconto) já está na sua conta e entra sozinho no próximo pedido.`,
+          });
+          setCashMiles(null);
+          router.refresh();
+        } else {
+          setMessage({ kind: "error", text: result.error });
+        }
+      } catch {
+        setMessage({ kind: "error", text: "Não foi possível resgatar agora. Tente novamente." });
+      } finally {
+        setBusyId(null);
+      }
+    });
+  }
+
   function redeem(rewardId: string) {
     setMessage(null);
     setBusyId(rewardId);
     startTransition(async () => {
       try {
+        const freeName = data.rewards.find((r) => r.id === rewardId)?.freeProductName ?? null;
         const result = await redeemMilesReward(rewardId);
         if (result.ok) {
           setMessage({
             kind: "ok",
-            text: `Resgatado! Seu cupom ${result.data.couponCode} (${formatCents(result.data.discountCents)} de desconto) já está na sua conta e entra sozinho no próximo pedido.`,
+            text: freeName
+              ? `Resgatado! Seu cupom ${result.data.couponCode} vale 1 ${freeName} grátis: é só incluir no pedido que ele entra sozinho.`
+              : `Resgatado! Seu cupom ${result.data.couponCode} (${formatCents(result.data.discountCents)} de desconto) já está na sua conta e entra sozinho no próximo pedido.`,
           });
           router.refresh();
         } else {
@@ -83,6 +143,15 @@ export function MilesView({ data }: { data: MilesViewData }) {
         </p>
         <p className="mt-2 text-4xl font-extrabold text-[#F59E0B]">{fmtMiles(data.available)}</p>
         <p className="text-sm text-[#CBD5E1]">milhas disponíveis</p>
+        {data.tier && (data.tier.next || data.tier.multiplierPct > 100) ? (
+          <p className="mt-3 rounded-lg bg-white/10 px-3 py-2 text-xs">
+            Nível <strong>{TIER_LABEL[data.tier.name]}</strong>
+            {data.tier.multiplierPct > 100 ? ` · ${(data.tier.multiplierPct / 100).toLocaleString("pt-BR")}x milhas em cada pedido` : ""}.{" "}
+            {data.tier.next
+              ? `Faça mais ${data.tier.next.ordersNeeded} ${data.tier.next.ordersNeeded === 1 ? "pedido" : "pedidos"} em ${data.tier.windowDays} dias para virar ${TIER_LABEL[data.tier.next.name]} (${(data.tier.next.multiplierPct / 100).toLocaleString("pt-BR")}x).`
+              : "Você está no nível mais alto!"}
+          </p>
+        ) : null}
         {data.expiringSoon > 0 && data.nextExpiry ? (
           <p className="mt-3 rounded-lg bg-white/10 px-3 py-2 text-xs">
             {fmtMiles(data.expiringSoon)} milhas vencem em {fmtDate(data.nextExpiry)}. Use antes!
@@ -103,6 +172,7 @@ export function MilesView({ data }: { data: MilesViewData }) {
         ) : null}
         <p className="mt-3 text-xs text-[#CBD5E1]">
           Você ganha {data.milesPerReal} milhas a cada R$ 1,00 em lanches e bebidas (sem a taxa de entrega).
+          {data.welcomeBonusMiles > 0 ? ` No primeiro pedido pago, +${fmtMiles(data.welcomeBonusMiles)} milhas de boas-vindas.` : ""}
         </p>
       </section>
 
@@ -128,8 +198,9 @@ export function MilesView({ data }: { data: MilesViewData }) {
               <div>
                 <p className="font-mono font-bold text-emerald-900">{c.code}</p>
                 <p className="text-xs text-emerald-800">
-                  {formatCents(c.discountCents)} de desconto nos itens
+                  {c.freeShipping ? "Frete grátis na entrega" : c.freeProductName ? `1 ${c.freeProductName} grátis` : `${formatCents(c.discountCents)} de desconto nos itens`}
                   {c.minOrderCents > 0 ? ` (pedido a partir de ${formatCents(c.minOrderCents)})` : ""}
+                  {c.maxDiscountPercent ? ` · cobre até ${c.maxDiscountPercent}% dos itens` : ""}
                   {c.validUntil ? ` · até ${fmtDate(c.validUntil)}` : ""}
                 </p>
               </div>
@@ -184,7 +255,61 @@ export function MilesView({ data }: { data: MilesViewData }) {
 
       <section className={cn(card, "space-y-3")}>
         <h2 className="flex items-center gap-2 font-bold">
-          <Gift className="h-4 w-4" /> Trocar milhas
+          <Ticket className="h-4 w-4" /> Desconto em dinheiro
+        </h2>
+        <p className="text-xs text-slate-500">
+          {fmtMiles(cb.milesPerReal)} milhas = {formatCents(100)} de desconto. A partir de {fmtMiles(cb.minMiles)} milhas
+          ({formatCents(cashbackDiscountCents(cb.minMiles, cb.milesPerReal))}). Vale em pedidos a partir de{" "}
+          {formatCents(cb.minOrderCents)} em itens
+          {cb.capPercent > 0 ? ` e cobre até ${cb.capPercent}% do valor dos itens` : ""}. Não vale na taxa de entrega.
+        </p>
+        {canCash ? (
+          <div className="space-y-3 rounded-lg border border-slate-200 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <button
+                type="button"
+                aria-label="Menos milhas"
+                disabled={chosenCash <= cb.minMiles}
+                onClick={() => setCashMiles(chosenCash - CASHBACK_STEP_MILES)}
+                className="h-10 w-10 rounded-lg border border-slate-300 text-lg font-bold disabled:opacity-40"
+              >
+                −
+              </button>
+              <div className="text-center">
+                <p className="text-lg font-extrabold text-[#B45309]">{fmtMiles(chosenCash)} milhas</p>
+                <p className="text-sm font-semibold text-slate-700">
+                  = {formatCents(cashbackDiscountCents(chosenCash, cb.milesPerReal))} de desconto
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Mais milhas"
+                disabled={chosenCash + CASHBACK_STEP_MILES > maxCash}
+                onClick={() => setCashMiles(chosenCash + CASHBACK_STEP_MILES)}
+                className="h-10 w-10 rounded-lg border border-slate-300 text-lg font-bold disabled:opacity-40"
+              >
+                +
+              </button>
+            </div>
+            <button
+              type="button"
+              disabled={pending}
+              onClick={redeemCash}
+              className="flex h-11 w-full items-center justify-center rounded-lg bg-[#F59E0B] text-sm font-semibold text-[#071329] disabled:opacity-40"
+            >
+              {busyId === "cashback" ? <Loader2 className="h-4 w-4 animate-spin" /> : "Trocar por desconto"}
+            </button>
+          </div>
+        ) : (
+          <p className="text-sm text-slate-600">
+            Junte mais {fmtMiles(cb.minMiles - data.available)} milhas para trocar por desconto em dinheiro.
+          </p>
+        )}
+      </section>
+
+      <section className={cn(card, "space-y-3")}>
+        <h2 className="flex items-center gap-2 font-bold">
+          <Gift className="h-4 w-4" /> Trocar milhas por prêmios
         </h2>
         {data.rewards.length === 0 ? (
           <p className="text-sm text-slate-600">As recompensas estão sendo preparadas. Continue acumulando!</p>
@@ -196,7 +321,7 @@ export function MilesView({ data }: { data: MilesViewData }) {
                 <div className="min-w-0">
                   <p className="font-semibold">{r.name}</p>
                   <p className="text-xs text-slate-500">
-                    {formatCents(r.discountCents)} de desconto
+                    {r.freeProductName ? `1 ${r.freeProductName} grátis` : `${formatCents(r.discountCents)} de desconto`}
                     {r.minOrderCents > 0 ? ` · pedido a partir de ${formatCents(r.minOrderCents)}` : ""}
                   </p>
                   <p className="text-sm font-bold text-[#B45309]">{fmtMiles(r.milesCost)} milhas</p>

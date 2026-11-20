@@ -30,7 +30,7 @@ import { executeTool, generateQuickMenuLink, getAvailableMenu, getCustomerContex
 import type { ToolContext } from "./shared";
 import { STICKER_TEXT, type InboundMessage } from "./webhook";
 import { errorSummary } from "./log";
-import { cancelFollowups, enqueueReopenFollowup, setMarketingOptOut } from "./followups";
+import { cancelFollowups, enqueueAbandonedChatFollowup, enqueueReopenFollowup, setMarketingOptOut } from "./followups";
 import {
   OFF_TOPIC_REPLY,
   collectKnownCents,
@@ -711,7 +711,11 @@ export async function runBotTurn(
         await cancelFollowups(phone, "CUSTOMER_ACTIVE");
         const thanksOnly = textOnly && messages.every((m) => isClosingMessage(m.content));
         const closedNotice = canned !== null && canned === closedReply(context, greetingMode);
-        if (!thanksOnly && (!canned || closedNotice) && !start) await enqueueReopenFollowup(phone);
+        if (!thanksOnly) {
+          // Loja fechada: retorno na abertura. Loja aberta: convite se o cliente (inclusive quem recebeu o link do cardápio) não fechar pedido.
+          const reopenQueued = !canned || closedNotice ? !start && (await enqueueReopenFollowup(phone)) === "queued" : false;
+          if (!reopenQueued) await enqueueAbandonedChatFollowup(phone);
+        }
       }
     } catch (error) {
       console.error("[whatsapp-bot] falha ao agendar retorno:", errorSummary(error));

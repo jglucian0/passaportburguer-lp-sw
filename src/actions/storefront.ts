@@ -6,7 +6,7 @@ import { headers } from "next/headers";
 import { after } from "next/server";
 import { redirect } from "next/navigation";
 
-import { calculateCart } from "@/core/cart/calculate-cart";
+import { calculateCart, type CartCoupon } from "@/core/cart/calculate-cart";
 import { calculateDeliveryQuote, resolveDeliveryZone, withQuotedFee } from "@/core/delivery/quote";
 import { effectiveMinOrderCents } from "@/core/store/min-order";
 import { onlyDigits } from "@/core/validation/document";
@@ -16,6 +16,8 @@ import { checkoutSchema } from "@/core/schemas/checkout";
 import { isOnlinePaymentMethod } from "@/core/schemas/common";
 import { cancelPendingCharges, createPixCharge } from "@/infra/payments/asaas";
 import { expireAbandonedOrders } from "@/infra/payments/expire-orders";
+import { getMilesAccount } from "@/infra/miles/miles";
+import { resolveOrderAttribution } from "@/infra/marketing/attribution";
 import { consumeOrderCoupon, lookupCoupon } from "@/infra/coupons";
 import type { CatalogDeliveryZone } from "@/core/schemas/product";
 import { getStoreStatus, type OpeningHours, type StoreStatus } from "@/core/store/opening-hours";
@@ -101,6 +103,14 @@ export type CustomerOrdersData = {
   /** Apenas dígitos; exibido no card de dados do Meu Passaporte. */
   customerPhone: string;
   orders: CustomerOrderView[];
+  /** Resumo das milhas (saldo real do extrato). null = programa indisponível/erro. */
+  miles: {
+    enabled: boolean;
+    available: number;
+    milesPerReal: number;
+    /** Menor meta de troca ainda não alcançada (recompensa ou cashback); null = já pode trocar tudo. */
+    nextTarget: number | null;
+  } | null;
 };
 
 /* ------------------------------------------------------------------ */
@@ -355,6 +365,7 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
 
     const orderNumber = (row?.last ?? 100) + 1;
     const orderId = crypto.randomUUID();
+    const attribution = await resolveOrderAttribution({ channel: "site" });
 
     try {
       await db.batch([
@@ -377,6 +388,7 @@ export async function createOrder(input: unknown): Promise<ActionFailure> {
           totalCents: calc.totalCents,
           notes: data.notes ?? null,
           documentNumber: data.documentNumber ? onlyDigits(data.documentNumber) : null,
+          attribution,
         }),
         db.insert(orderItems).values(
           calc.lines.map((line) => ({
@@ -609,12 +621,30 @@ export async function getCustomerOrders(): Promise<CustomerOrdersData | null> {
   // O cron é diário: pedidos online sem pagamento há 30+ min são expirados aqui, na hora de listar.
   await expireAbandonedOrders({ tenantId: ref.id, customerId: customer.id }).catch(() => undefined);
 
+  /* Nunca derruba a página se as tabelas de milhas ainda não existem. */
+  let miles: CustomerOrdersData["miles"] = null;
+  try {
+    const account = await getMilesAccount(ref.id, customer.id);
+    const targets = [...account.rewards.map((r) => r.milesCost), account.config.cashbackMinMiles].filter(
+      (cost) => cost > account.balance.available,
+    );
+    miles = {
+      enabled: account.config.enabled,
+      available: account.balance.available,
+      milesPerReal: account.config.milesPerReal,
+      nextTarget: targets.length > 0 ? Math.min(...targets) : null,
+    };
+  } catch {
+    miles = null;
+  }
+
   return {
     customerName: customer.name,
     /* "Meu Passaporte" só exige o nome: o CPF é pedido (uma vez) no pagamento online, não aqui. */
     needsRegistration: customer.name.trim().length < 2,
     customerPhone: customer.phone,
     orders: await loadCustomerOrders(ref.id, customer.id),
+    miles,
   };
 }
 
@@ -692,7 +722,7 @@ export async function updateCustomerName(input: unknown): Promise<ActionResult<{
 export async function validateCoupon(
   code: unknown,
 ): Promise<
-  | { ok: true; coupon: { code: string; type: "PERCENT" | "FIXED"; value: number; minOrderCents: number } }
+  | { ok: true; coupon: CartCoupon }
   | { ok: false; error: string }
 > {
   const session = await getAuthSession();

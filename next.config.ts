@@ -22,14 +22,24 @@ const imageOrigins = [
  * 'unsafe-inline' (e 'unsafe-eval' só em dev). O ganho está nas demais diretivas:
  * sem plugins, sem framing, sem base/form hijack e conexões restritas à própria origem.
  */
+// Meta Pixel / GA4 só entram na política quando os ids estão configurados.
+const pixelOn = !!process.env.NEXT_PUBLIC_META_PIXEL_ID?.trim();
+const gaOn = !!process.env.NEXT_PUBLIC_GA_ID?.trim();
+const adScripts = [pixelOn ? "https://connect.facebook.net" : "", gaOn ? "https://www.googletagmanager.com" : ""].filter(Boolean);
+const adConnect = [
+  pixelOn ? "https://www.facebook.com https://connect.facebook.net" : "",
+  gaOn ? "https://www.google-analytics.com https://*.google-analytics.com https://*.analytics.google.com https://www.googletagmanager.com" : "",
+].filter(Boolean);
+const adImages = [pixelOn ? "https://www.facebook.com" : "", gaOn ? "https://www.google-analytics.com https://www.googletagmanager.com" : ""].filter(Boolean);
+
 const csp = [
   "default-src 'self'",
-  `script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com${isDev ? " 'unsafe-eval'" : ""}`,
+  `script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com ${adScripts.join(" ")}${isDev ? " 'unsafe-eval'" : ""}`,
   "frame-src https://challenges.cloudflare.com",
   "style-src 'self' 'unsafe-inline'",
-  `img-src 'self' data: blob: ${imageOrigins.join(" ")}`.trim(),
+  `img-src 'self' data: blob: ${imageOrigins.join(" ")} ${adImages.join(" ")}`.trim(),
   "font-src 'self' data:",
-  `connect-src 'self' https://challenges.cloudflare.com${isDev ? " ws: wss:" : ""}`,
+  `connect-src 'self' https://challenges.cloudflare.com ${adConnect.join(" ")}${isDev ? " ws: wss:" : ""}`,
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",

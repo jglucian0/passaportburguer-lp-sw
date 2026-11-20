@@ -4,6 +4,9 @@ import type { ReactNode } from "react";
 
 import { OG_IMAGE, SITE_DESCRIPTION, SITE_KEYWORDS, SITE_NAME, SITE_TITLE, SITE_URL } from "@/lib/site";
 
+import { AdPixels } from "@/components/analytics/ad-pixels";
+import { AttributionCapture } from "@/components/analytics/attribution-capture";
+
 import "./globals.css";
 
 const jakarta = Plus_Jakarta_Sans({
@@ -62,7 +65,11 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="pt-BR" data-scroll-behavior="smooth" className={`dark ${jakarta.variable} ${oswald.variable} ${poppins.variable}`}>
-      <body className="min-h-dvh bg-background">{children}</body>
+      <body className="min-h-dvh bg-background">
+        {children}
+        <AttributionCapture />
+        <AdPixels />
+      </body>
     </html>
   );
 }

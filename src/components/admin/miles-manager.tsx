@@ -36,9 +36,17 @@ function Stat({ label, value, hint }: { label: string; value: number; hint?: str
   );
 }
 
-type RewardDraft = { id: string | null; name: string; milesCost: string; discount: string; minOrder: string; isActive: boolean };
+type RewardDraft = {
+  id: string | null;
+  name: string;
+  milesCost: string;
+  discount: string;
+  minOrder: string;
+  freeProductId: string;
+  isActive: boolean;
+};
 
-const emptyDraft = (): RewardDraft => ({ id: null, name: "", milesCost: "", discount: "", minOrder: "0,00", isActive: true });
+const emptyDraft = (): RewardDraft => ({ id: null, name: "", milesCost: "", discount: "", minOrder: "0,00", freeProductId: "", isActive: true });
 
 type MissionDraft = {
   id: string | null;
@@ -93,18 +101,82 @@ export function MilesManager({ data }: { data: AdminMiles }) {
   const [perReal, setPerReal] = useState(String(config.milesPerReal));
   const [validity, setValidity] = useState(String(config.validityMonths));
   const [couponDays, setCouponDays] = useState(String(config.rewardCouponValidDays));
+  const [welcome, setWelcome] = useState(String(config.welcomeBonusMiles));
+  const [cashPerReal, setCashPerReal] = useState(String(config.cashbackMilesPerReal));
+  const [cashMin, setCashMin] = useState(String(config.cashbackMinMiles));
+  const [cashCap, setCashCap] = useState(String(config.cashbackCapPercent));
+  const [redeemMin, setRedeemMin] = useState(centsToReais(config.redeemMinOrderCents));
+  const [rolling, setRolling] = useState(String(config.rollingValidityDays));
+  const [tierWindow, setTierWindow] = useState(String(config.tierWindowDays));
+  const [execOrders, setExecOrders] = useState(String(config.executiveMinOrders));
+  const [execPct, setExecPct] = useState(String(config.executiveMultiplierPct));
+  const [firstOrders, setFirstOrders] = useState(String(config.firstClassMinOrders));
+  const [firstPct, setFirstPct] = useState(String(config.firstClassMultiplierPct));
+  const [benefit, setBenefit] = useState(centsToReais(config.tierBenefitCents));
+  const [benefitMin, setBenefitMin] = useState(centsToReais(config.tierBenefitMinOrderCents));
+  const [freeShip, setFreeShip] = useState(config.firstClassFreeShipping);
   const [draft, setDraft] = useState<RewardDraft | null>(null);
 
   function saveSettings() {
     const milesPerReal = toInt(perReal);
     const validityMonths = toInt(validity);
     const rewardCouponValidDays = toInt(couponDays);
-    if (milesPerReal === null || validityMonths === null || rewardCouponValidDays === null) {
-      settingsAction.setError("Confira os campos: use apenas números inteiros.");
+    const welcomeBonusMiles = toInt(welcome);
+    const cashbackMilesPerReal = toInt(cashPerReal);
+    const cashbackMinMiles = toInt(cashMin);
+    const cashbackCapPercent = toInt(cashCap);
+    const redeemMinOrderCents = reaisToCents(redeemMin);
+    const rollingValidityDays = toInt(rolling);
+    const tierWindowDays = toInt(tierWindow);
+    const executiveMinOrders = toInt(execOrders);
+    const executiveMultiplierPct = toInt(execPct);
+    const firstClassMinOrders = toInt(firstOrders);
+    const firstClassMultiplierPct = toInt(firstPct);
+    const tierBenefitCents = reaisToCents(benefit);
+    const tierBenefitMinOrderCents = reaisToCents(benefitMin);
+    if (
+      milesPerReal === null ||
+      validityMonths === null ||
+      rewardCouponValidDays === null ||
+      welcomeBonusMiles === null ||
+      cashbackMilesPerReal === null ||
+      cashbackMinMiles === null ||
+      cashbackCapPercent === null ||
+      redeemMinOrderCents === null ||
+      rollingValidityDays === null ||
+      tierWindowDays === null ||
+      executiveMinOrders === null ||
+      executiveMultiplierPct === null ||
+      firstClassMinOrders === null ||
+      firstClassMultiplierPct === null ||
+      tierBenefitCents === null ||
+      tierBenefitMinOrderCents === null
+    ) {
+      settingsAction.setError("Confira os campos: use apenas números inteiros (valores em R$ com vírgula).");
       return;
     }
     settingsAction.run(
-      () => saveMilesSettings({ enabled, milesPerReal, validityMonths, rewardCouponValidDays }),
+      () =>
+        saveMilesSettings({
+          enabled,
+          milesPerReal,
+          validityMonths,
+          rewardCouponValidDays,
+          welcomeBonusMiles,
+          cashbackMilesPerReal,
+          cashbackMinMiles,
+          cashbackCapPercent,
+          redeemMinOrderCents,
+          rollingValidityDays,
+          tierWindowDays,
+          executiveMinOrders,
+          executiveMultiplierPct,
+          firstClassMinOrders,
+          firstClassMultiplierPct,
+          tierBenefitCents,
+          tierBenefitMinOrderCents,
+          firstClassFreeShipping: freeShip,
+        }),
       () => setToast({ kind: "success", message: "Programa de milhas salvo." }),
     );
   }
@@ -112,7 +184,7 @@ export function MilesManager({ data }: { data: AdminMiles }) {
   function saveReward() {
     if (!draft) return;
     const milesCost = toInt(draft.milesCost);
-    const discountCents = reaisToCents(draft.discount);
+    const discountCents = draft.freeProductId ? 0 : reaisToCents(draft.discount);
     const minOrderCents = reaisToCents(draft.minOrder);
     if (milesCost === null || discountCents === null || minOrderCents === null) {
       rewardAction.setError("Confira o custo em milhas e os valores em R$.");
@@ -126,6 +198,7 @@ export function MilesManager({ data }: { data: AdminMiles }) {
           milesCost,
           discountCents,
           minOrderCents,
+          freeProductId: draft.freeProductId || null,
           isActive: draft.isActive,
         }),
       () => {
@@ -222,6 +295,68 @@ export function MilesManager({ data }: { data: AdminMiles }) {
             <Input className={inputCls} value={couponDays} onChange={(e) => setCouponDays(e.target.value)} inputMode="numeric" />
           </Field>
         </div>
+        <div className="space-y-3 rounded-xl border border-slate-100 p-4">
+          <p className="text-sm font-semibold text-slate-900">Bônus e resgate em dinheiro (cashback)</p>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Bônus de boas-vindas (milhas, 0 = sem)">
+              <Input className={inputCls} value={welcome} onChange={(e) => setWelcome(e.target.value)} inputMode="numeric" />
+            </Field>
+            <Field label="Milhas que valem R$ 1,00 de desconto">
+              <Input className={inputCls} value={cashPerReal} onChange={(e) => setCashPerReal(e.target.value)} inputMode="numeric" />
+            </Field>
+            <Field label="Mínimo de milhas para trocar por desconto">
+              <Input className={inputCls} value={cashMin} onChange={(e) => setCashMin(e.target.value)} inputMode="numeric" />
+            </Field>
+            <Field label="Teto do desconto (% dos itens, 0 = sem teto)">
+              <Input className={inputCls} value={cashCap} onChange={(e) => setCashCap(e.target.value)} inputMode="numeric" />
+            </Field>
+            <Field label="Validade renovável (dias após o último pedido, 0 = desligada)">
+              <Input className={inputCls} value={rolling} onChange={(e) => setRolling(e.target.value)} inputMode="numeric" />
+            </Field>
+            <Field label="Pedido mínimo (itens) para usar milhas (R$)">
+              <Input className={inputCls} value={redeemMin} onChange={(e) => setRedeemMin(e.target.value)} inputMode="decimal" />
+            </Field>
+          </div>
+          <p className="text-xs text-slate-500">
+            Cada pedido pago renova a validade; sem pedido dentro do prazo as milhas vencem (o teto é a validade em meses acima). O cliente é avisado 7 dias antes. O bônus vale no primeiro pedido pago de cada cliente. O pedido mínimo vale para todos os cupons de milhas (incluindo as
+            recompensas abaixo). O cupom de cashback nunca desconta a taxa de entrega.
+          </p>
+        </div>
+        <div className="space-y-3 rounded-xl border border-slate-100 p-4">
+          <p className="text-sm font-semibold text-slate-900">Níveis (Turista · Executiva · Primeira Classe)</p>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Janela (dias) para contar pedidos">
+              <Input className={inputCls} value={tierWindow} onChange={(e) => setTierWindow(e.target.value)} inputMode="numeric" />
+            </Field>
+            <Field label="Executiva: pedidos na janela (0 = níveis desligados)">
+              <Input className={inputCls} value={execOrders} onChange={(e) => setExecOrders(e.target.value)} inputMode="numeric" />
+            </Field>
+            <Field label="Executiva: multiplicador (%, 120 = 1,2x)">
+              <Input className={inputCls} value={execPct} onChange={(e) => setExecPct(e.target.value)} inputMode="numeric" />
+            </Field>
+            <Field label="Primeira Classe: pedidos na janela">
+              <Input className={inputCls} value={firstOrders} onChange={(e) => setFirstOrders(e.target.value)} inputMode="numeric" />
+            </Field>
+            <Field label="Primeira Classe: multiplicador (%)">
+              <Input className={inputCls} value={firstPct} onChange={(e) => setFirstPct(e.target.value)} inputMode="numeric" />
+            </Field>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Benefício mensal (Executiva e Primeira Classe): desconto (R$, 0 = sem)">
+              <Input className={inputCls} value={benefit} onChange={(e) => setBenefit(e.target.value)} inputMode="decimal" />
+            </Field>
+            <Field label="Pedido mínimo (itens) para o benefício (R$)">
+              <Input className={inputCls} value={benefitMin} onChange={(e) => setBenefitMin(e.target.value)} inputMode="decimal" />
+            </Field>
+            <label className="flex items-center gap-2 self-end pb-2 text-sm text-slate-700">
+              <Switch aria-label="Frete grátis mensal na Primeira Classe" checked={freeShip} onCheckedChange={setFreeShip} />
+              Frete grátis mensal (Primeira Classe)
+            </label>
+          </div>
+          <p className="text-xs text-slate-500">
+            Todo mês os clientes dos níveis ganham esses cupons automaticamente, de uso único e válidos por 31 dias. O nível sai dos pedidos pagos na janela e multiplica as milhas ganhas em cada pedido. A Primeira Classe precisa de mais pedidos que a Executiva.
+          </p>
+        </div>
         {previewReal && previewReal > 0 ? (
           <p className="text-xs text-slate-500">
             Exemplo: um pedido de R$ 50,00 em itens rende {(50 * previewReal).toLocaleString("pt-BR")} milhas. O custo para a loja é
@@ -243,7 +378,7 @@ export function MilesManager({ data }: { data: AdminMiles }) {
             <Gift className="h-5 w-5 text-slate-400" /> Recompensas
           </h2>
           <p className="text-xs text-slate-500">
-            Cada recompensa troca X milhas por um cupom de desconto pessoal, de uso único, só sobre os itens.
+            Cada recompensa troca X milhas por um cupom pessoal de uso único: desconto em R$ nos itens ou 1 item grátis (escolha um produto).
           </p>
         </div>
 
@@ -258,7 +393,8 @@ export function MilesManager({ data }: { data: AdminMiles }) {
                     {r.name} {r.isActive ? null : <span className="text-xs font-normal text-slate-400">(inativa)</span>}
                   </p>
                   <p className="text-xs text-slate-500">
-                    {r.milesCost.toLocaleString("pt-BR")} milhas → {formatCents(r.discountCents)} de desconto
+                    {r.milesCost.toLocaleString("pt-BR")} milhas →{" "}
+                    {r.freeProductName ? `1 ${r.freeProductName} grátis` : `${formatCents(r.discountCents)} de desconto`}
                     {r.minOrderCents > 0 ? ` · pedido a partir de ${formatCents(r.minOrderCents)}` : ""}
                   </p>
                 </div>
@@ -274,6 +410,7 @@ export function MilesManager({ data }: { data: AdminMiles }) {
                         milesCost: String(r.milesCost),
                         discount: centsToReais(r.discountCents),
                         minOrder: centsToReais(r.minOrderCents),
+                        freeProductId: r.freeProductId ?? "",
                         isActive: r.isActive,
                       })
                     }
@@ -313,14 +450,30 @@ export function MilesManager({ data }: { data: AdminMiles }) {
                   inputMode="numeric"
                 />
               </Field>
-              <Field label="Desconto (R$)">
-                <Input
-                  className={inputCls}
-                  value={draft.discount}
-                  onChange={(e) => setDraft({ ...draft, discount: e.target.value })}
-                  inputMode="decimal"
-                />
+              <Field label="Item grátis (opcional)">
+                <select
+                  className={`${inputCls} w-full rounded-md border px-3`}
+                  value={draft.freeProductId}
+                  onChange={(e) => setDraft({ ...draft, freeProductId: e.target.value })}
+                >
+                  <option value="">Nenhum (usar desconto em R$)</option>
+                  {data.products.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name} ({formatCents(p.priceCents)})
+                    </option>
+                  ))}
+                </select>
               </Field>
+              {draft.freeProductId ? null : (
+                <Field label="Desconto (R$)">
+                  <Input
+                    className={inputCls}
+                    value={draft.discount}
+                    onChange={(e) => setDraft({ ...draft, discount: e.target.value })}
+                    inputMode="decimal"
+                  />
+                </Field>
+              )}
               <Field label="Pedido mínimo em itens (R$)">
                 <Input
                   className={inputCls}

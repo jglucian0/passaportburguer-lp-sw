@@ -16,6 +16,7 @@ export type CartErrorCode =
   | "ZONE_INACTIVE"
   | "MIN_ORDER_NOT_REACHED"
   | "COUPON_MIN_NOT_REACHED"
+  | "COUPON_PRODUCT_MISSING"
   | "CHANGE_INSUFFICIENT";
 
 export type CartError = {
@@ -48,12 +49,28 @@ export type CartCoupon = {
   /** PERCENT: 1–100. FIXED: centavos. */
   value: number;
   minOrderCents: number;
+  /** Teto do desconto em % dos itens (cupons de cashback de milhas). Ausente/null = sem teto. */
+  maxDiscountPercent?: number | null;
+  /** Item grátis: desconta 1 unidade deste produto (preço base, sem adicionais); precisa estar no pedido. */
+  freeProductId?: string | null;
+  freeProductName?: string | null;
+  /** Frete grátis: zera a taxa de entrega (benefício de nível). */
+  freeShipping?: boolean;
 };
 
-/** Desconto só sobre os itens (nunca sobre a taxa de entrega) e nunca maior que o subtotal. */
-export function couponDiscountCents(subtotalCents: number, coupon: Pick<CartCoupon, "type" | "value">): number {
+/** Desconto só sobre os itens (nunca sobre a taxa de entrega), nunca maior que o subtotal nem que o teto em %. */
+export function couponDiscountCents(
+  subtotalCents: number,
+  coupon: Pick<CartCoupon, "type" | "value" | "maxDiscountPercent" | "freeProductId">,
+  lines?: Pick<CalculatedLine, "productId" | "unitPriceCents">[],
+): number {
+  if (coupon.freeProductId) {
+    const line = lines?.find((l) => l.productId === coupon.freeProductId);
+    return line ? Math.max(0, Math.min(line.unitPriceCents, subtotalCents)) : 0;
+  }
   const raw = coupon.type === "PERCENT" ? Math.floor((subtotalCents * coupon.value) / 100) : coupon.value;
-  return Math.max(0, Math.min(raw, subtotalCents));
+  const cap = coupon.maxDiscountPercent ? Math.floor((subtotalCents * coupon.maxDiscountPercent) / 100) : subtotalCents;
+  return Math.max(0, Math.min(raw, subtotalCents, cap));
 }
 
 export type CalculateCartParams = {
@@ -220,8 +237,16 @@ export function calculateCart(params: CalculateCartParams): CalculateCartResult 
   }
 
   const subtotalCents = lines.reduce((sum, l) => sum + l.totalItemCents, 0);
-  const discountCents = coupon && subtotalCents >= coupon.minOrderCents ? couponDiscountCents(subtotalCents, coupon) : 0;
+  if (coupon?.freeShipping && subtotalCents >= coupon.minOrderCents) deliveryFeeCents = 0;
+  const discountCents = coupon && subtotalCents >= coupon.minOrderCents ? couponDiscountCents(subtotalCents, coupon, lines) : 0;
   const totalCents = subtotalCents - discountCents + deliveryFeeCents;
+
+  if (errors.length === 0 && coupon?.freeProductId && subtotalCents >= coupon.minOrderCents && discountCents === 0) {
+    errors.push({
+      code: "COUPON_PRODUCT_MISSING",
+      message: `O cupom ${coupon.code} vale para 1 ${coupon.freeProductName ?? "item específico"} grátis: adicione-o ao pedido.`,
+    });
+  }
 
   if (errors.length === 0 && coupon && subtotalCents < coupon.minOrderCents) {
     errors.push({

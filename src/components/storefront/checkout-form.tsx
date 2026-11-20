@@ -827,7 +827,8 @@ export function CheckoutForm({
                 {coupon ? (
                   <div className="flex items-center justify-between rounded-lg bg-emerald-50 px-3 py-2 text-emerald-800">
                     <span>
-                      {coupon.code} aplicado {calc.ok ? `(-${formatCents(calc.discountCents)})` : ""}
+                      {coupon.code} aplicado{" "}
+                      {coupon.freeShipping ? "(frete grátis)" : calc.ok ? `(-${formatCents(calc.discountCents)})` : ""}
                     </span>
                     <button type="button" onClick={removeCoupon} className="font-semibold underline">
                       Remover

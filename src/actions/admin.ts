@@ -1187,14 +1187,30 @@ const milesSettingsInputSchema = z.object({
   milesPerReal: z.number().int().min(1, "Milhas por R$ 1: de 1 a 100.").max(100),
   validityMonths: z.number().int().min(0, "Validade: de 0 (sem validade) a 60 meses.").max(60),
   rewardCouponValidDays: z.number().int().min(1, "Validade do cupom: de 1 a 180 dias.").max(180),
+  welcomeBonusMiles: z.number().int().min(0, "Bônus de boas-vindas: de 0 a 10.000.").max(10_000),
+  cashbackMilesPerReal: z.number().int().min(1, "Milhas por R$ 1 de desconto: de 1 a 10.000.").max(10_000),
+  cashbackMinMiles: z.number().int().min(100, "Mínimo do cashback: no mínimo 100 milhas.").max(1_000_000),
+  cashbackCapPercent: z.number().int().min(0, "Teto do cashback: de 0 (sem teto) a 100%.").max(100),
+  redeemMinOrderCents: z.number().int().min(0).max(1_000_000),
+  rollingValidityDays: z.number().int().min(0, "Validade renovável: de 0 (desligada) a 365 dias.").max(365),
+  tierWindowDays: z.number().int().min(7, "Janela dos níveis: de 7 a 365 dias.").max(365),
+  executiveMinOrders: z.number().int().min(0).max(1000),
+  executiveMultiplierPct: z.number().int().min(100, "Multiplicador: no mínimo 100% (1x).").max(500),
+  firstClassMinOrders: z.number().int().min(0).max(1000),
+  firstClassMultiplierPct: z.number().int().min(100, "Multiplicador: no mínimo 100% (1x).").max(500),
+  tierBenefitCents: z.number().int().min(0).max(100_000),
+  tierBenefitMinOrderCents: z.number().int().min(0).max(1_000_000),
+  firstClassFreeShipping: z.boolean(),
 });
 
 const milesRewardInputSchema = z.object({
   id: z.string().uuid().nullish(),
   name: z.string().trim().min(2, "Informe o nome da recompensa.").max(80),
   milesCost: z.number().int().min(1, "Custo em milhas: no mínimo 1.").max(1_000_000),
-  discountCents: z.number().int().min(1, "Informe o desconto.").max(1_000_000),
+  discountCents: z.number().int().min(0).max(1_000_000),
   minOrderCents: z.number().int().min(0).max(1_000_000),
+  /** Item grátis: 1 unidade deste produto (substitui o desconto em R$). */
+  freeProductId: z.string().uuid().nullish(),
   isActive: z.boolean(),
 });
 
@@ -1235,8 +1251,11 @@ export type AdminMiles = {
     milesCost: number;
     discountCents: number;
     minOrderCents: number;
+    freeProductId: string | null;
+    freeProductName: string | null;
     isActive: boolean;
   }[];
+  products: { id: string; name: string; priceCents: number }[];
   stats: { issued30d: number; redeemed30d: number; customersWithMiles: number; couponsRedeemed30d: number };
 };
 
@@ -1254,9 +1273,12 @@ export async function getAdminMiles(): Promise<AdminMiles | null> {
         milesCost: milesRewards.milesCost,
         discountCents: milesRewards.discountCents,
         minOrderCents: milesRewards.minOrderCents,
+        freeProductId: milesRewards.freeProductId,
+        freeProductName: products.name,
         isActive: milesRewards.isActive,
       })
       .from(milesRewards)
+      .leftJoin(products, eq(products.id, milesRewards.freeProductId))
       .where(eq(milesRewards.tenantId, session.tenantId))
       .orderBy(asc(milesRewards.milesCost)),
     db
@@ -1320,11 +1342,17 @@ export async function getAdminMiles(): Promise<AdminMiles | null> {
   };
 
   const recent = ledger.filter((l) => l.createdAt >= since);
+  const productList = await db
+    .select({ id: products.id, name: products.name, priceCents: products.priceCents })
+    .from(products)
+    .where(eq(products.tenantId, session.tenantId))
+    .orderBy(asc(products.name));
   return {
     missions,
     dashboard,
     config,
     rewards,
+    products: productList,
     stats: {
       issued30d: recent.filter((l) => l.miles > 0).reduce((s, l) => s + l.miles, 0),
       redeemed30d: recent.filter((l) => l.type === "REDEEM").reduce((s, l) => s - l.miles, 0),
@@ -1350,7 +1378,19 @@ export async function saveMilesReward(input: unknown): Promise<ActionResult<{ id
   return guardOwner(async (session) => {
     const parsed = milesRewardInputSchema.safeParse(input);
     if (!parsed.success) return fromZod(parsed.error);
-    const { id, ...values } = parsed.data;
+    const { id, freeProductId, ...rest } = parsed.data;
+    const values = { ...rest, freeProductId: freeProductId ?? null };
+    if (freeProductId) {
+      const [product] = await db
+        .select({ priceCents: products.priceCents })
+        .from(products)
+        .where(and(eq(products.id, freeProductId), eq(products.tenantId, session.tenantId)))
+        .limit(1);
+      if (!product) return failure("Produto não encontrado.");
+      values.discountCents = product.priceCents;
+    } else if (values.discountCents < 1) {
+      return failure("Informe o desconto.");
+    }
     if (id) {
       const updated = await db
         .update(milesRewards)

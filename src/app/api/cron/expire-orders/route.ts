@@ -2,6 +2,8 @@ import { createHash, timingSafeEqual } from "node:crypto";
 
 import { NextResponse, type NextRequest } from "next/server";
 
+import { issueMonthlyTierBenefits } from "@/infra/miles/benefits";
+import { runMilesExpiryReminders } from "@/infra/miles/reminders";
 import { expireAbandonedOrders } from "@/infra/payments/expire-orders";
 
 export const dynamic = "force-dynamic";
@@ -21,5 +23,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const expired = await expireAbandonedOrders();
-  return NextResponse.json({ ok: true, expired }, { headers: { "Cache-Control": "no-store" } });
+  const milesReminders = await runMilesExpiryReminders().catch(() => ({ sent: 0, skipped: 0 }));
+  const benefits = await issueMonthlyTierBenefits().catch(() => ({ issued: 0 }));
+  return NextResponse.json({ ok: true, expired, milesReminders, benefits }, { headers: { "Cache-Control": "no-store" } });
 }

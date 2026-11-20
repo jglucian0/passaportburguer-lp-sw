@@ -69,6 +69,27 @@ async function main() {
       created_at timestamptz NOT NULL DEFAULT now()
     )`;
   await sql`CREATE UNIQUE INDEX IF NOT EXISTS miles_mission_awards_uq ON miles_mission_awards (mission_id, customer_id, period_key)`;
+  // Regras de resgate/cashback e bônus de boas-vindas.
+  await sql`ALTER TABLE miles_settings ADD COLUMN IF NOT EXISTS welcome_bonus_miles integer NOT NULL DEFAULT 150`;
+  await sql`ALTER TABLE miles_settings ADD COLUMN IF NOT EXISTS cashback_miles_per_real integer NOT NULL DEFAULT 200`;
+  await sql`ALTER TABLE miles_settings ADD COLUMN IF NOT EXISTS cashback_min_miles integer NOT NULL DEFAULT 500`;
+  await sql`ALTER TABLE miles_settings ADD COLUMN IF NOT EXISTS cashback_cap_percent integer NOT NULL DEFAULT 30`;
+  await sql`ALTER TABLE miles_settings ADD COLUMN IF NOT EXISTS redeem_min_order_cents integer NOT NULL DEFAULT 3500`;
+  await sql`ALTER TABLE miles_settings ADD COLUMN IF NOT EXISTS rolling_validity_days integer NOT NULL DEFAULT 45`;
+  await sql`ALTER TABLE miles_settings ADD COLUMN IF NOT EXISTS tier_window_days integer NOT NULL DEFAULT 90`;
+  await sql`ALTER TABLE miles_settings ADD COLUMN IF NOT EXISTS executive_min_orders integer NOT NULL DEFAULT 4`;
+  await sql`ALTER TABLE miles_settings ADD COLUMN IF NOT EXISTS executive_multiplier_pct integer NOT NULL DEFAULT 120`;
+  await sql`ALTER TABLE miles_settings ADD COLUMN IF NOT EXISTS first_class_min_orders integer NOT NULL DEFAULT 10`;
+  await sql`ALTER TABLE miles_settings ADD COLUMN IF NOT EXISTS first_class_multiplier_pct integer NOT NULL DEFAULT 150`;
+  await sql`ALTER TABLE miles_settings ADD COLUMN IF NOT EXISTS tier_benefit_cents integer NOT NULL DEFAULT 400`;
+  await sql`ALTER TABLE miles_settings ADD COLUMN IF NOT EXISTS tier_benefit_min_order_cents integer NOT NULL DEFAULT 5000`;
+  await sql`ALTER TABLE miles_settings ADD COLUMN IF NOT EXISTS first_class_free_shipping boolean NOT NULL DEFAULT true`;
+  await sql`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS free_shipping boolean NOT NULL DEFAULT false`;
+  await sql`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS max_discount_percent integer`;
+  await sql`ALTER TABLE coupons ADD COLUMN IF NOT EXISTS free_product_id uuid REFERENCES products(id) ON DELETE SET NULL`;
+  await sql`ALTER TABLE miles_rewards ADD COLUMN IF NOT EXISTS free_product_id uuid REFERENCES products(id) ON DELETE SET NULL`;
+  // O bônus de boas-vindas é pago no máximo uma vez por cliente.
+  await sql`CREATE UNIQUE INDEX IF NOT EXISTS miles_ledger_welcome_uq ON miles_ledger (customer_id) WHERE type = 'BONUS' AND description = 'Bônus de boas-vindas'`;
   console.log("miles ok.");
 }
 

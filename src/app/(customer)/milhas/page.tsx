@@ -46,7 +46,7 @@ export default async function MilesPage() {
         <h1 className="font-display text-3xl font-bold uppercase tracking-wide text-white">
           Minhas <span className="text-[#F59E0B]">Milhas</span>
         </h1>
-        <p className="mx-auto mt-2 max-w-sm text-sm text-[#CBD5E1]">Cada pedido te leva mais longe. Acumule e troque por descontos.</p>
+        <p className="mx-auto mt-2 max-w-sm text-sm text-[#CBD5E1]">Cada pedido te leva mais longe. Acumule e troque por descontos e prêmios.</p>
       </div>
 
       <div className="min-h-[calc(100dvh-64px)] bg-[#F4F6F9] px-4 pb-24 pt-6 text-[#0A2540]">
@@ -59,6 +59,22 @@ export default async function MilesPage() {
               expiringSoon: account?.balance.expiringSoon ?? 0,
               nextExpiry: account?.balance.nextExpiry?.toISOString() ?? null,
               milesPerReal: account?.config.milesPerReal ?? 0,
+              tier: account
+                ? {
+                    name: account.tier.name,
+                    multiplierPct: account.tier.multiplierPct,
+                    orders: account.tierOrders,
+                    windowDays: account.config.tierWindowDays,
+                    next: account.tier.next,
+                  }
+                : null,
+              cashback: {
+                milesPerReal: account?.config.cashbackMilesPerReal ?? 200,
+                minMiles: account?.config.cashbackMinMiles ?? 500,
+                capPercent: account?.config.cashbackCapPercent ?? 30,
+                minOrderCents: account?.config.redeemMinOrderCents ?? 3500,
+              },
+              welcomeBonusMiles: account?.config.welcomeBonusMiles ?? 0,
               rewards: account?.rewards ?? [],
               history: (account?.history ?? []).map((h) => ({ ...h, createdAt: h.createdAt.toISOString() })),
               coupons: (account?.activeCoupons ?? []).map((c) => ({ ...c, validUntil: c.validUntil?.toISOString() ?? null })),

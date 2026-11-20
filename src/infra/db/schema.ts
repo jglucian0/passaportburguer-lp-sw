@@ -11,6 +11,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import type { AdReferral, Attribution } from "@/lib/attribution";
 
 /* ------------------------------------------------------------------ */
 /* Tipos auxiliares (JSONB)                                            */
@@ -472,6 +473,8 @@ export const orders = pgTable(
     notes: text("notes"),
     /** CPF (11) ou CNPJ (14) na nota fiscal, só dígitos. Opcional. */
     documentNumber: text("document_number"),
+    /** Origem do pedido (UTM, anúncio, canal). Ver src/lib/attribution.ts. */
+    attribution: jsonb("attribution").$type<Attribution>(),
     cancelReason: text("cancel_reason"),
     /** Chave gerada no checkout: impede pedido duplicado por duplo clique/reenvio (única por tenant). */
     idempotencyKey: text("idempotency_key"),
@@ -658,6 +661,12 @@ export const coupons = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     /** Cupom pessoal (campanhas): só este cliente pode usar. null = qualquer cliente. */
     customerId: uuid("customer_id").references(() => customers.id, { onDelete: "cascade" }),
+    /** Teto do desconto em % do valor dos itens (cupons de cashback de milhas). null = sem teto. */
+    maxDiscountPercent: integer("max_discount_percent"),
+    /** Cupom de item grátis (milhas): desconta 1 unidade deste produto, que precisa estar no pedido. */
+    freeProductId: uuid("free_product_id").references(() => products.id, { onDelete: "set null" }),
+    /** Cupom de frete grátis (benefício de nível): zera a taxa de entrega. */
+    freeShipping: boolean("free_shipping").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex("coupons_tenant_code_uq").on(t.tenantId, t.code)],
@@ -832,6 +841,8 @@ export const whatsappSessions = pgTable(
     paymentMethod: text("payment_method").$type<PaymentMethod>(),
     /** O cliente pediu para não receber mensagens de marketing/retorno (PARAR). */
     marketingOptOutAt: timestamp("marketing_opt_out_at", { withTimezone: true }),
+    /** Anúncio "Clique para o WhatsApp" que originou a conversa (vale 7 dias). */
+    adReferral: jsonb("ad_referral").$type<AdReferral>(),
     /** Início do pedido atual: o histórico enviado à IA só considera mensagens a partir daqui. */
     sessionStartedAt: timestamp("session_started_at", { withTimezone: true }).notNull().defaultNow(),
     lastInteractionAt: timestamp("last_interaction_at", { withTimezone: true })
@@ -880,7 +891,7 @@ export const whatsappInboxBuffer = pgTable(
 /* whatsapp_followups (retorno automático ao cliente)                  */
 /* ------------------------------------------------------------------ */
 
-export type WhatsAppFollowupKind = "REOPEN";
+export type WhatsAppFollowupKind = "REOPEN" | "ABANDONED_CHAT";
 export type WhatsAppFollowupStatus = "PENDING" | "SENT" | "CANCELLED" | "SKIPPED";
 
 /** Fila de mensagens ativas. Uma pendente por telefone; o cron envia quando a loja abre. */
@@ -965,11 +976,33 @@ export const milesSettings = pgTable("miles_settings", {
     .references(() => tenants.id, { onDelete: "cascade" }),
   enabled: boolean("enabled").notNull().default(false),
   /** Milhas ganhas por R$ 1,00 em itens (já com desconto de cupom, sem a taxa de entrega). */
-  milesPerReal: integer("miles_per_real").notNull().default(5),
+  milesPerReal: integer("miles_per_real").notNull().default(10),
   /** Validade das milhas ganhas, em meses (0 = não expiram). */
   validityMonths: integer("validity_months").notNull().default(12),
+  /** Validade renovável: dias após o último pedido pago (0 = desligado). */
+  rollingValidityDays: integer("rolling_validity_days").notNull().default(45),
+  tierWindowDays: integer("tier_window_days").notNull().default(90),
+  executiveMinOrders: integer("executive_min_orders").notNull().default(4),
+  executiveMultiplierPct: integer("executive_multiplier_pct").notNull().default(120),
+  firstClassMinOrders: integer("first_class_min_orders").notNull().default(10),
+  firstClassMultiplierPct: integer("first_class_multiplier_pct").notNull().default(150),
+  /** Benefício mensal da Executiva e Primeira Classe: desconto (centavos) em pedidos acima do mínimo. 0 = desligado. */
+  tierBenefitCents: integer("tier_benefit_cents").notNull().default(400),
+  tierBenefitMinOrderCents: integer("tier_benefit_min_order_cents").notNull().default(5000),
+  /** Benefício mensal da Primeira Classe: cupom de frete grátis. */
+  firstClassFreeShipping: boolean("first_class_free_shipping").notNull().default(true),
   /** Validade do cupom gerado no resgate, em dias. */
   rewardCouponValidDays: integer("reward_coupon_valid_days").notNull().default(15),
+  /** Milhas de boas-vindas, pagas uma vez por cliente no primeiro pedido pago (0 = sem bônus). */
+  welcomeBonusMiles: integer("welcome_bonus_miles").notNull().default(150),
+  /** Cashback livre: quantas milhas valem R$ 1,00 de desconto. */
+  cashbackMilesPerReal: integer("cashback_miles_per_real").notNull().default(200),
+  /** Cashback livre: mínimo de milhas por resgate. */
+  cashbackMinMiles: integer("cashback_min_miles").notNull().default(500),
+  /** Teto do desconto de cashback, em % do valor dos itens do pedido (0 = sem teto). */
+  cashbackCapPercent: integer("cashback_cap_percent").notNull().default(30),
+  /** Pedido mínimo (itens) para usar qualquer cupom gerado por milhas. */
+  redeemMinOrderCents: integer("redeem_min_order_cents").notNull().default(3500),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -986,6 +1019,8 @@ export const milesRewards = pgTable(
     /** Desconto em centavos, só sobre os itens. */
     discountCents: integer("discount_cents").notNull(),
     minOrderCents: integer("min_order_cents").notNull().default(0),
+    /** Item grátis: se preenchido, a recompensa é 1 unidade deste produto (o desconto em R$ vira o preço dele). */
+    freeProductId: uuid("free_product_id").references(() => products.id, { onDelete: "set null" }),
     isActive: boolean("is_active").notNull().default(true),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

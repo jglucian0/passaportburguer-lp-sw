@@ -36,6 +36,17 @@ export function reopenMessage(firstName: string | null, variant: number): string
   return variants[((variant % variants.length) + variants.length) % variants.length];
 }
 
+/** Cliente puxou conversa com a loja ABERTA e não fechou pedido: variações do convite (só dentro das 24 h, texto livre). */
+export function abandonedChatMessage(firstName: string | null, variant: number): string {
+  const name = firstName ? ` ${firstName}` : "";
+  const variants = [
+    `Oi${name}! Ficou alguma dúvida? Se quiser, monta o pedido rapidinho pelo cardápio aqui embaixo 🍔`,
+    `E aí${name}, ainda bateu fome? A chapa está quente e o cardápio está aqui pra você escolher 😋`,
+    `Oi${name}! Passando pra ver se deu tudo certo. Quando quiser pedir, é só tocar no botão abaixo 😉`,
+  ];
+  return variants[((variant % variants.length) + variants.length) % variants.length];
+}
+
 /** Template aprovado na Meta (plug-and-play): só é usado fora da janela de 24 h e se o nome estiver configurado. */
 export function reopenTemplate(): { name: string; language: string } | null {
   const name = process.env.WHATSAPP_TEMPLATE_REOPEN?.trim();
@@ -101,6 +112,56 @@ export async function enqueueReopenFollowup(phone: string, now: Date = new Date(
   } catch (error) {
     const code = (error as { code?: string; cause?: { code?: string } })?.code ?? (error as { cause?: { code?: string } })?.cause?.code;
     if (code === "23505") return "skipped"; // já existe um retorno pendente para este telefone
+    throw error;
+  }
+}
+
+/** Depois deste tempo sem enviar (ex.: loja fechou), o convite perde o sentido e é descartado. */
+const ABANDONED_STALE_MS = 3 * 60 * 60_000;
+const ABANDONED_DELAY_MIN_MS = 40 * 60_000;
+const ABANDONED_DELAY_MAX_MS = 60 * 60_000;
+
+/**
+ * Cliente falou com a loja ABERTA e não pediu: agenda UM convite para ~40–60 min depois (texto livre, dentro das 24 h,
+ * sem custo de template). No máximo um por telefone a cada 24 h; cancelado se o cliente voltar a falar ou pedir.
+ */
+export async function enqueueAbandonedChatFollowup(phone: string, now: Date = new Date()): Promise<"queued" | "skipped"> {
+  const tenantId = await getTenantId();
+  if (!tenantId) return "skipped";
+  const settings = await loadStoreSettings(tenantId);
+  if (!settings) return "skipped";
+  const status = getStoreStatus({ openingHours: settings.openingHours, isOpenOverride: settings.isOpenOverride, now });
+  if (!status.isOpen) return "skipped";
+
+  const [session] = await db.select().from(whatsappSessions).where(eq(whatsappSessions.phone, phone)).limit(1);
+  if (session?.marketingOptOutAt) return "skipped";
+  if (session?.botPausedUntil && session.botPausedUntil.getTime() > now.getTime()) return "skipped";
+
+  const [recent] = await db
+    .select({ id: whatsappFollowups.id })
+    .from(whatsappFollowups)
+    .where(
+      and(
+        eq(whatsappFollowups.phone, phone),
+        eq(whatsappFollowups.kind, "ABANDONED_CHAT"),
+        eq(whatsappFollowups.status, "SENT"),
+        gt(whatsappFollowups.sentAt, new Date(now.getTime() - SERVICE_WINDOW_MS)),
+      ),
+    )
+    .limit(1);
+  if (recent) return "skipped";
+
+  try {
+    await db.insert(whatsappFollowups).values({
+      phone,
+      kind: "ABANDONED_CHAT",
+      scheduledFor: new Date(now.getTime() + randomBetween(ABANDONED_DELAY_MIN_MS, ABANDONED_DELAY_MAX_MS)),
+      lastCustomerMessageAt: now,
+    });
+    return "queued";
+  } catch (error) {
+    const code = (error as { code?: string; cause?: { code?: string } })?.code ?? (error as { cause?: { code?: string } })?.cause?.code;
+    if (code === "23505") return "skipped";
     throw error;
   }
 }
@@ -201,8 +262,14 @@ export async function dispatchDueFollowups(now: Date = new Date(), send: SendDep
         continue;
       }
 
+      const isAbandoned = item.kind === "ABANDONED_CHAT";
+      if (isAbandoned && now.getTime() - item.scheduledFor.getTime() > ABANDONED_STALE_MS) {
+        await finish(item.id, "SKIPPED", "STALE");
+        summary.skipped++;
+        continue;
+      }
       const insideWindow = now.getTime() - item.lastCustomerMessageAt.getTime() < SERVICE_WINDOW_MS;
-      const template = reopenTemplate();
+      const template = isAbandoned ? null : reopenTemplate();
       if (!insideWindow && !template) {
         // Sem template aprovado não dá para falar fora das 24 h: descarta sem enviar.
         await finish(item.id, "SKIPPED", "WINDOW_EXPIRED_NO_TEMPLATE");
@@ -223,9 +290,10 @@ export async function dispatchDueFollowups(now: Date = new Date(), send: SendDep
 
       try {
         if (insideWindow) {
-          const body = reopenMessage(firstName, Math.floor(Math.random() * 3));
+          const variant = Math.floor(Math.random() * 3);
+          const body = isAbandoned ? abandonedChatMessage(firstName, variant) : reopenMessage(firstName, variant);
           const { url } = generateQuickMenuLink(item.phone, MENU_LINK_MINUTES);
-          await send.cta(item.phone, body, "Cardápio Rápido", url);
+          await send.cta(item.phone, body, isAbandoned ? "Ver cardápio" : "Cardápio Rápido", url);
           await db
             .insert(whatsappMessages)
             .values({ phone: item.phone, role: "assistant", content: body, mediaType: "text" })

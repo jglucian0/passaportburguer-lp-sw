@@ -43,6 +43,7 @@ export default async function MyOrdersPage() {
               customerName={customerData.customerName}
               customerPhone={customerData.customerPhone}
               orders={customerData.orders}
+              miles={customerData.miles}
               categories={categories}
               zones={zones}
               fallbackMinutes={tenant.estimatedDeliveryMinutes}

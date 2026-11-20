@@ -18,7 +18,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, useTransition } from "react";
 
-import { cancelCustomerOrder, updateCustomerName, type CustomerOrderView } from "@/actions/storefront";
+import { cancelCustomerOrder, updateCustomerName, type CustomerOrdersData, type CustomerOrderView } from "@/actions/storefront";
 import { isTerminalStatus } from "@/core/orders/state-machine";
 import type { OrderStatus } from "@/core/schemas/common";
 import type { CatalogCategory, CatalogDeliveryZone } from "@/core/schemas/product";
@@ -39,8 +39,6 @@ import { loadSavedAddress, saveAddress, saveCustomer, type SavedAddress } from "
 const POLL_INTERVAL_MS = 15_000;
 /** Pedidos entregues visíveis no histórico antes de "Ver mais". */
 const HISTORY_PREVIEW = 3;
-/** Marco de milhas usado na barra de progresso (resgates ainda não existem). */
-const MILES_MILESTONE = 500;
 /** Previsão de fallback (min) quando a zona de entrega não informa estimativa. */
 const FALLBACK_DELIVERY_MINUTES = 50;
 const PICKUP_MINUTES = 30;
@@ -293,19 +291,26 @@ function StampsCard({
   );
 }
 
-function MilesCard({ miles }: { miles: number }) {
-  const progress = Math.round(((miles % MILES_MILESTONE) / MILES_MILESTONE) * 100);
-  const remaining = MILES_MILESTONE - (miles % MILES_MILESTONE);
+function MilesCard({ miles }: { miles: CustomerOrdersData["miles"] }) {
+  const enabled = !!miles?.enabled;
+  const balance = miles?.available ?? 0;
+  const target = miles?.nextTarget ?? null;
+  const progress = target ? Math.min(100, Math.round((balance / target) * 100)) : 100;
+  const remaining = target ? Math.max(0, target - balance) : 0;
 
   return (
     <section className="flex flex-col rounded-2xl bg-[#071329] p-5 text-white shadow-sm">
       <h2 className="text-lg font-extrabold">Passaporte Milhas</h2>
 
       <p className="mt-4 text-4xl font-extrabold leading-none text-[#F59E0B]">
-        {miles.toLocaleString("pt-BR")}
+        {balance.toLocaleString("pt-BR")}
         <span className="ml-2 text-sm font-semibold text-slate-300">milhas</span>
       </p>
-      <p className="mt-2 text-xs text-slate-400">1 milha a cada R$ 1 em pedidos entregues.</p>
+      <p className="mt-2 text-xs text-slate-400">
+        {enabled
+          ? `${miles?.milesPerReal} milhas a cada R$ 1 em produtos (sem a taxa de entrega).`
+          : "O programa de milhas está chegando."}
+      </p>
 
       <div className="mt-6">
         <div
@@ -319,14 +324,27 @@ function MilesCard({ miles }: { miles: number }) {
           <div className="h-full rounded-full bg-[#F59E0B] transition-all" style={{ width: `${progress}%` }} />
         </div>
         <p className="mt-2 text-xs text-slate-300">
-          Faltam {remaining.toLocaleString("pt-BR")} milhas para o próximo marco
+          {!enabled
+            ? "Em breve você acumula milhas a cada pedido."
+            : target
+              ? `Faltam ${remaining.toLocaleString("pt-BR")} milhas para a próxima troca`
+              : "Você já pode trocar suas milhas!"}
         </p>
       </div>
 
       <span className="mt-auto inline-flex w-fit pt-6">
-        <span className="rounded-full border border-amber-400/40 bg-amber-400/10 px-3 py-1 text-[11px] font-semibold text-amber-300">
-          Resgate de descontos • Em breve
-        </span>
+        {enabled ? (
+          <Link
+            href="/milhas"
+            className="rounded-full border border-amber-400/40 bg-amber-400/10 px-3 py-1 text-[11px] font-semibold text-amber-300 transition hover:bg-amber-400/20"
+          >
+            Trocar milhas →
+          </Link>
+        ) : (
+          <span className="rounded-full border border-amber-400/40 bg-amber-400/10 px-3 py-1 text-[11px] font-semibold text-amber-300">
+            Resgate de descontos • Em breve
+          </span>
+        )}
       </span>
     </section>
   );
@@ -640,7 +658,9 @@ export function OrdersView({
   zones,
   whatsapp,
   fallbackMinutes = FALLBACK_DELIVERY_MINUTES,
+  miles: milesInfo = null,
 }: {
+  miles?: CustomerOrdersData["miles"];
   fallbackMinutes?: number;
   tenantId: string;
   customerName: string;
@@ -702,7 +722,6 @@ export function OrdersView({
     return ids;
   }, [orders, destinationByProduct]);
 
-  const miles = Math.floor(delivered.reduce((sum, o) => sum + o.totalCents, 0) / 100);
 
   /* Endereço: o salvo no perfil; senão, o do último pedido de entrega. */
   useEffect(() => {
@@ -889,7 +908,7 @@ export function OrdersView({
 
       <div className="grid gap-6 md:grid-cols-2">
         <StampsCard visited={visited} destinations={destinations} />
-        <MilesCard miles={miles} />
+        <MilesCard miles={milesInfo} />
       </div>
 
       <section className="space-y-3">
