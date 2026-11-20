@@ -17,6 +17,7 @@ describe("cadastro sem senha (nome + CPF)", () => {
     expect(registerBody.safeParse({ name: "Maria Silva", document: "529.982.247-25" }).success).toBe(true);
     expect(registerBody.safeParse({ name: "Maria Silva", document: "529.982.247-25", password: "x" }).success).toBe(false);
     expect(registerBody.safeParse({ name: "M", document: "529.982.247-25" }).success).toBe(false);
+    expect(registerBody.safeParse({ name: "Maria Silva" }).success).toBe(true); // CPF só é exigido no pagamento online
   });
 
   it("código de validação: 6 dígitos (digitado) ou PASS-XXXX (legado)", () => {

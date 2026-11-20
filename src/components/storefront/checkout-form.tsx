@@ -241,20 +241,20 @@ export function CheckoutForm({
   const belowMin = missingMinCents > 0;
 
   /* CPF/CNPJ: obrigatório no pagamento online; opcional (nota) no dinheiro. */
-  const docRequired = onlinePayment || (payChoice === "CASH" && includeDocument) || askData;
+  const docRequired = onlinePayment || (payChoice === "CASH" && includeDocument);
   const docDigits = onlyDigits(documentValue);
   const docError = docRequired ? documentError(documentValue) : null;
   const showDocError = !!docError && (documentTouched || docDigits.length >= 11);
 
   /* Validação por etapa (o botão do rodapé só habilita com dados válidos). */
-  /* Visitante / cadastro incompleto: nome, WhatsApp (só visitante) e CPF entram no passo 1. */
+  /* Visitante / cadastro incompleto: nome e WhatsApp (só visitante) entram no passo 1; o CPF só é pedido no pagamento online. */
   const profileError = !askData
     ? null
     : name.trim().length < 2
       ? "Informe seu nome."
       : isGuest && onlyDigits(phone).length < 10
         ? "Informe o WhatsApp com DDD."
-        : documentError(documentValue);
+        : null;
   const step1Ready = !profileError && (receive !== "DELIVERY" || (!!address && !!quote?.deliverable && !!zone));
   const step2Ready = !docError && (payChoice !== "CASH" || noChange || changeForCents !== null);
 
@@ -287,7 +287,6 @@ export function CheckoutForm({
               ? quote.message
               : "Escolha um endereço de entrega.",
         );
-        if (profileError) setDocumentTouched(true);
         return;
       }
       setStep(2);
@@ -355,7 +354,7 @@ export function CheckoutForm({
         const res = await fetch("/api/auth/register", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, document: documentValue }),
+          body: JSON.stringify({ name, ...(docDigits.length === 11 && !documentError(documentValue) ? { document: documentValue } : {}) }),
         }).catch(() => null);
         if (!res || !res.ok) {
           const data = (await res?.json().catch(() => ({}))) as { error?: string } | undefined;
@@ -635,18 +634,6 @@ export function CheckoutForm({
                       inputMode="tel"
                       autoComplete="tel-national"
                       placeholder="(XX) XXXXX-XXXX"
-                    />
-                  </Field>
-                  <Field label="CPF">
-                    <Input
-                      className={inputClass}
-                      value={documentValue}
-                      onChange={(e) => setDocumentValue(formatDocument(e.target.value))}
-                      onBlur={() => setDocumentTouched(true)}
-                      inputMode="numeric"
-                      autoComplete="off"
-                      placeholder="000.000.000-00"
-                      maxLength={18}
                     />
                   </Field>
                   {isGuest ? (

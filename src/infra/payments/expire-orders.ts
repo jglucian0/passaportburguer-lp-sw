@@ -2,6 +2,7 @@ import { and, eq, inArray, lt, notExists, sql } from "drizzle-orm";
 
 import { db } from "@/infra/db";
 import { orders, payments } from "@/infra/db/schema";
+import { recordTimelineEvent } from "@/infra/db/timeline";
 
 import { cancelPendingCharges } from "./asaas";
 
@@ -15,7 +16,7 @@ export const ABANDONED_ORDER_MINUTES = 30;
  * o pedido NÃO é cancelado: o webhook decide.
  */
 export async function expireAbandonedOrders(
-  opts: { tenantId?: string; orderId?: string; olderThanMinutes?: number } = {},
+  opts: { tenantId?: string; orderId?: string; customerId?: string; olderThanMinutes?: number } = {},
 ): Promise<number> {
   const cutoff = new Date(Date.now() - (opts.olderThanMinutes ?? ABANDONED_ORDER_MINUTES) * 60_000);
 
@@ -25,6 +26,7 @@ export async function expireAbandonedOrders(
     lt(orders.createdAt, cutoff),
     ...(opts.tenantId ? [eq(orders.tenantId, opts.tenantId)] : []),
     ...(opts.orderId ? [eq(orders.id, opts.orderId)] : []),
+    ...(opts.customerId ? [eq(orders.customerId, opts.customerId)] : []),
   ];
 
   const candidates = await db
@@ -67,6 +69,17 @@ export async function expireAbandonedOrders(
       ),
     )
     .returning({ id: orders.id });
+
+  // Aparece na linha do tempo do pedido (e no histórico do cliente).
+  for (const { id } of canceled) {
+    await recordTimelineEvent({
+      orderId: id,
+      type: "ORDER_CANCELED",
+      title: "Pedido cancelado",
+      description: "Cancelado automaticamente: pagamento não confirmado em 30 minutos.",
+      dedupeKey: `${id}:canceled`,
+    }).catch(() => undefined);
+  }
 
   return canceled.length;
 }

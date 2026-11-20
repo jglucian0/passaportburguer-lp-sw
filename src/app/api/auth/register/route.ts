@@ -27,7 +27,7 @@ export async function POST(request: Request) {
 
   const updated = await db
     .update(customers)
-    .set({ name, documentNumber: document, phoneVerifiedAt: sql`COALESCE(${customers.phoneVerifiedAt}, now())` })
+    .set({ name, ...(document ? { documentNumber: document } : {}), phoneVerifiedAt: sql`COALESCE(${customers.phoneVerifiedAt}, now())` })
     .where(
       and(
         eq(customers.id, session.customerId),

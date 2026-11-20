@@ -205,8 +205,10 @@ export function PhoneLookup({
           setError(null);
           /* Número validado: grava nome + CPF já digitados (se o navegador perdeu os dados, pede de novo). */
           if (data.needsRegistration) {
-            if (name.trim().length >= 2 && !documentError(cpf) && onlyDigits(cpf).length === 11) {
-              const res = await postJson<Identity>("/api/auth/register", { name, document: cpf });
+            const cpfOk = !documentError(cpf) && onlyDigits(cpf).length === 11;
+            /* No checkout o CPF pode faltar (pagamento presencial): registra só com o nome. */
+            if (name.trim().length >= 2 && (cpfOk || (autoStart && onlyDigits(cpf).length === 0))) {
+              const res = await postJson<Identity>("/api/auth/register", { name, ...(cpfOk ? { document: cpf } : {}) });
               if (res.ok) return enter(res.data);
             }
             if (data.name) setName(data.name);
@@ -224,7 +226,7 @@ export function PhoneLookup({
         checking.current = false;
       }
     },
-    [phone, code, delivery, typedCode, name, cpf, enter],
+    [phone, code, delivery, typedCode, name, cpf, enter, autoStart],
   );
 
   /* Polling leve enquanto o cliente está no WhatsApp. */

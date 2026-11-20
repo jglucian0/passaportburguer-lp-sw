@@ -14,7 +14,8 @@ import { OTHER_ZONE_NAME } from "@/core/store/maringa-zones";
 import type { DeliveryType, OrderStatus, PaymentMethod } from "@/core/schemas/common";
 import { checkoutSchema } from "@/core/schemas/checkout";
 import { isOnlinePaymentMethod } from "@/core/schemas/common";
-import { createPixCharge } from "@/infra/payments/asaas";
+import { cancelPendingCharges, createPixCharge } from "@/infra/payments/asaas";
+import { expireAbandonedOrders } from "@/infra/payments/expire-orders";
 import { consumeOrderCoupon, lookupCoupon } from "@/infra/coupons";
 import type { CatalogDeliveryZone } from "@/core/schemas/product";
 import { getStoreStatus, type OpeningHours, type StoreStatus } from "@/core/store/opening-hours";
@@ -595,12 +596,62 @@ export async function getCustomerOrders(): Promise<CustomerOrdersData | null> {
 
   if (!customer) return null;
 
+  // O cron é diário: pedidos online sem pagamento há 30+ min são expirados aqui, na hora de listar.
+  await expireAbandonedOrders({ tenantId: ref.id, customerId: customer.id }).catch(() => undefined);
+
   return {
     customerName: customer.name,
     needsRegistration: !isProfileComplete(customer),
     customerPhone: customer.phone,
     orders: await loadCustomerOrders(ref.id, customer.id),
   };
+}
+
+/**
+ * Cliente cancela um pedido online que ainda não foi pago (AWAITING_PAYMENT). Depois que o pedido vai
+ * para a chapa (ou se for pagamento na entrega/retirada) não há cancelamento por aqui.
+ */
+export async function cancelCustomerOrder(orderId: unknown): Promise<ActionResult<{ orderNumber: number }>> {
+  if (typeof orderId !== "string" || !/^[0-9a-f-]{36}$/i.test(orderId)) return failure("Pedido inválido.");
+  const session = await getAuthSession();
+  if (!session) return failure("Sessão expirada. Entre novamente.");
+
+  const [order] = await db
+    .select({ id: orders.id, orderNumber: orders.orderNumber, status: orders.status, paymentMethod: orders.paymentMethod })
+    .from(orders)
+    .where(and(eq(orders.id, orderId), eq(orders.customerId, session.customerId), eq(orders.tenantId, session.tenantId)))
+    .limit(1);
+  if (!order) return failure("Pedido não encontrado.");
+  if (order.status === "CANCELED") return success({ orderNumber: order.orderNumber });
+  if (order.status !== "AWAITING_PAYMENT" || !isOnlinePaymentMethod(order.paymentMethod)) {
+    return failure("Este pedido não pode mais ser cancelado por aqui. Fale com a gente no WhatsApp.");
+  }
+
+  // A cobrança é invalidada no Asaas ANTES: se acabou de ser paga, o pedido segue (webhook/settle).
+  try {
+    const { blocked } = await cancelPendingCharges(order.id);
+    if (blocked === "PAID") return failure("O pagamento acabou de ser confirmado, então o pedido não pode ser cancelado.");
+    if (blocked) return failure("Não consegui confirmar a cobrança agora. Tente novamente em instantes.");
+  } catch {
+    return failure("Não foi possível cancelar agora. Tente novamente em instantes.");
+  }
+
+  const canceled = await db
+    .update(orders)
+    .set({ status: "CANCELED", cancelReason: "Cancelado pelo cliente antes do pagamento.", updatedAt: new Date() })
+    .where(and(eq(orders.id, order.id), eq(orders.status, "AWAITING_PAYMENT")))
+    .returning({ id: orders.id });
+  if (canceled.length === 0) return failure("O pedido mudou de status. Atualize a página.");
+
+  await recordTimelineEvent({
+    orderId: order.id,
+    type: "ORDER_CANCELED",
+    title: "Pedido cancelado",
+    description: "Cancelado pelo cliente antes do pagamento.",
+    dedupeKey: `${order.id}:canceled`,
+  }).catch(() => undefined);
+
+  return success({ orderNumber: order.orderNumber });
 }
 
 

@@ -18,7 +18,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState, useTransition } from "react";
 
-import { updateCustomerName, type CustomerOrderView } from "@/actions/storefront";
+import { cancelCustomerOrder, updateCustomerName, type CustomerOrderView } from "@/actions/storefront";
 import { isTerminalStatus } from "@/core/orders/state-machine";
 import type { OrderStatus } from "@/core/schemas/common";
 import type { CatalogCategory, CatalogDeliveryZone } from "@/core/schemas/product";
@@ -78,7 +78,7 @@ function getSteps(deliveryType: CustomerOrderView["deliveryType"]): Step[] {
 }
 
 function estimateLabel(order: CustomerOrderView, zones: CatalogDeliveryZone[], fallbackMinutes: number): string {
-  if (order.status === "AWAITING_PAYMENT") return "Após a confirmação do PIX";
+  if (order.status === "AWAITING_PAYMENT") return "Após a confirmação do pagamento";
   const zone = zones.find((z) => z.id === order.address?.deliveryZoneId);
   const minutes =
     order.deliveryType === "PICKUP" ? PICKUP_MINUTES : (zone?.estimatedMinutes ?? fallbackMinutes);
@@ -90,16 +90,28 @@ function estimateLabel(order: CustomerOrderView, zones: CatalogDeliveryZone[], f
   })}`;
 }
 
+/** Espelha ABANDONED_ORDER_MINUTES do servidor (expire-orders.ts). */
+const PAYMENT_WINDOW_MINUTES = 30;
+
+function expiresAtLabel(createdAt: string): string {
+  const at = new Date(new Date(createdAt).getTime() + PAYMENT_WINDOW_MINUTES * 60_000);
+  return at.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" });
+}
+
 function ActiveOrderBanner({
   order,
   zones,
   fallbackMinutes,
   whatsapp,
+  onCancel,
+  canceling,
 }: {
   order: CustomerOrderView;
   zones: CatalogDeliveryZone[];
   fallbackMinutes: number;
   whatsapp: string | null;
+  onCancel: (order: CustomerOrderView) => void;
+  canceling: boolean;
 }) {
   const steps = getSteps(order.deliveryType);
   let current = 0;
@@ -167,11 +179,30 @@ function ActiveOrderBanner({
       </ol>
 
       {order.status === "AWAITING_PAYMENT" ? (
-        <p className="border-t border-white/10 bg-amber-400/10 px-5 py-3 text-xs text-amber-100">
-          {order.paymentMethod === "CREDIT_CARD"
-            ? "Processando pagamento com a operadora do cartão... Não feche esta página. Seu pedido só vai para a chapa depois da confirmação."
-            : "Aguardando a confirmação do pagamento PIX. Assim que confirmado, seu pedido vai para a chapa."}
-        </p>
+        <div className="space-y-3 border-t border-white/10 bg-amber-400/10 px-5 py-3 text-xs text-amber-100">
+          <p>
+            {order.paymentMethod === "CREDIT_CARD"
+              ? "Pagamento com cartão pendente. Seu pedido só vai para a chapa depois da confirmação."
+              : "Aguardando o pagamento via PIX. Assim que confirmado, seu pedido vai para a chapa."}{" "}
+            Sem pagamento até {expiresAtLabel(order.createdAt)}, o pedido é cancelado automaticamente.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Link
+              href={`/pagamento/${order.id}`}
+              className="inline-flex h-10 items-center rounded-xl bg-[#F59E0B] px-4 text-sm font-bold text-[#0A2540] hover:brightness-105"
+            >
+              {order.paymentMethod === "CREDIT_CARD" ? "Pagar com cartão" : "Ver QR Code PIX"}
+            </Link>
+            <button
+              type="button"
+              onClick={() => onCancel(order)}
+              disabled={canceling}
+              className="inline-flex h-10 items-center rounded-xl border border-white/25 px-4 text-sm font-semibold text-white hover:bg-white/10 disabled:opacity-50"
+            >
+              {canceling ? "Cancelando..." : "Cancelar pedido"}
+            </button>
+          </div>
+        </div>
       ) : null}
 
       {whatsapp ? (
@@ -323,8 +354,16 @@ function HistoryCard({
       <div className="min-w-0 flex-1">
         <p className="text-xs text-slate-500">
           {formatDateTime(order.createdAt)} • Pedido #{order.orderNumber}
+          {order.status === "CANCELED" ? (
+            <span className="ml-2 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700">
+              Cancelado
+            </span>
+          ) : null}
         </p>
         <p className="mt-1 line-clamp-2 text-sm font-medium text-[#0A2540]">{itemsSummary(order)}</p>
+        {order.status === "CANCELED" && order.cancelReason ? (
+          <p className="mt-1 text-xs text-red-700">{order.cancelReason}</p>
+        ) : null}
       </div>
       <div className="flex items-center justify-between gap-4 sm:justify-end">
         <span className="text-base font-extrabold text-[#0A2540]">{formatCents(order.totalCents)}</span>
@@ -621,9 +660,12 @@ export function OrdersView({
   const catalog = useMemo(() => categories.flatMap((c) => c.products), [categories]);
   const active = orders.filter((o) => !isTerminalStatus(o.status));
   const delivered = orders.filter((o) => o.status === "DELIVERED");
+  /* Histórico: entregues e cancelados (inclui os cancelados por falta de pagamento). */
+  const finished = orders.filter((o) => o.status === "DELIVERED" || o.status === "CANCELED");
   const [showAllHistory, setShowAllHistory] = useState(false);
-  const history = showAllHistory ? delivered : delivered.slice(0, HISTORY_PREVIEW);
-  const hiddenHistoryCount = delivered.length - HISTORY_PREVIEW;
+  const [cancelingId, setCancelingId] = useState<string | null>(null);
+  const history = showAllHistory ? finished : finished.slice(0, HISTORY_PREVIEW);
+  const hiddenHistoryCount = finished.length - HISTORY_PREVIEW;
   const hasActive = active.length > 0;
 
   /* Destino de cada produto (categoria + nome); itens de produtos removidos caem no nome do snapshot. */
@@ -776,6 +818,19 @@ export function OrdersView({
     openCart();
   }
 
+  async function handleCancel(order: CustomerOrderView) {
+    if (!window.confirm(`Cancelar o pedido #${order.orderNumber}?`)) return;
+    setCancelingId(order.id);
+    const res = await cancelCustomerOrder(order.id).catch(() => null);
+    setCancelingId(null);
+    setNotice(
+      res?.ok
+        ? `Pedido #${order.orderNumber} cancelado.`
+        : (res?.error ?? "Não foi possível cancelar agora. Tente novamente."),
+    );
+    router.refresh();
+  }
+
   function handleSaveAddress(address: SavedAddress) {
     saveAddress(address);
     setSavedAddress(address);
@@ -821,7 +876,15 @@ export function OrdersView({
       ) : null}
 
       {active.map((order) => (
-        <ActiveOrderBanner key={order.id} order={order} zones={zones} fallbackMinutes={fallbackMinutes} whatsapp={whatsapp} />
+        <ActiveOrderBanner
+          key={order.id}
+          order={order}
+          zones={zones}
+          fallbackMinutes={fallbackMinutes}
+          whatsapp={whatsapp}
+          onCancel={handleCancel}
+          canceling={cancelingId === order.id}
+        />
       ))}
 
       <div className="grid gap-6 md:grid-cols-2">

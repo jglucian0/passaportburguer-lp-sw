@@ -51,8 +51,8 @@ export const nameInput = z
   .pipe(z.string().min(2, "Informe como podemos te chamar.").max(80, "Nome muito longo."));
 
 export const checkAccountBody = z.object({ phone: phoneInput }).strict();
-/** Cadastro do cliente: só nome e CPF (o WhatsApp já foi validado pelo código). */
-export const registerBody = z.object({ name: nameInput, document: cpfInput }).strict();
+/** Cadastro do cliente: nome e, quando informado, CPF (o WhatsApp já foi validado pelo código). O CPF só é exigido no pagamento online. */
+export const registerBody = z.object({ name: nameInput, document: cpfInput.optional() }).strict();
 export const whatsappInitBody = z
   .object({
     phone: phoneInput,
