@@ -1,4 +1,5 @@
 import { and, eq, inArray, max, sql } from "drizzle-orm";
+import { after } from "next/server";
 import { z } from "zod";
 
 import { calculateCart, couponDiscountCents, type CalculateCartResult, type CartCoupon } from "@/core/cart/calculate-cart";
@@ -24,7 +25,8 @@ import {
 } from "@/infra/db/schema";
 import { loadStoreSettings } from "@/infra/db/store-settings";
 import { recordTimelineEvent } from "@/infra/db/timeline";
-import { findPersonalCoupons } from "@/infra/coupons";
+import { consumeOrderCoupon, findPersonalCoupons } from "@/infra/coupons";
+import { sendOrderToSaipos } from "@/lib/saipos";
 import { formatCents } from "@/lib/utils";
 
 import { getBrazilianPhoneVariants } from "./phone";
@@ -52,6 +54,7 @@ export async function priceCart(
   neighborhood: string | null,
   paymentMethod?: PaymentMethod,
   personalCoupons: { couponId: string; coupon: CartCoupon }[] = [],
+  changeForCents?: number | null,
 ): Promise<Priced> {
   const [tenant] = await db.select().from(tenants).where(eq(tenants.id, tenantId)).limit(1);
   if (!tenant) return { ok: false, error: "Loja não encontrada." };
@@ -94,6 +97,7 @@ export async function priceCart(
       deliveryZone: zone,
       minOrderCents: effectiveMinOrderCents(tenant.minOrderCents),
       paymentMethod,
+      changeForCents,
       coupon,
     });
   // Sem cupom primeiro: dá o subtotal real e valida o carrinho.
@@ -153,6 +157,8 @@ const finalizeInputSchema = z.object({
   changeForCents: z.number().int().positive().nullish(),
   /** Observações do cliente (Cardápio Rápido), somadas às de cada item. */
   extraNotes: z.string().trim().max(400).nullish(),
+  /** Só o Cardápio Rápido: permite pagar na entrega/retirada (cartão na máquina ou dinheiro). O bot segue só online. */
+  allowOffline: z.boolean().optional(),
 });
 
 export type FinalizeResult =
@@ -172,6 +178,8 @@ export type FinalizeResult =
       checkoutUrl?: string;
       /** Pix: cobrança não criada (Asaas fora); o pedido existe aguardando pagamento. */
       chargeError?: boolean;
+      /** Pagamento na entrega/retirada: o pedido já foi aceito (sem página de pagamento). */
+      offline?: boolean;
     }
   | { ok: false; error: string; needsDocument?: boolean };
 
@@ -201,7 +209,14 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     .limit(1);
   // Pagamento sempre online, escolhido na página (Pix é só o padrão inicial; lá o cliente troca para cartão).
   const requested = parsed.data.paymentMethod ?? session?.paymentMethod ?? null;
-  const paymentMethod: PaymentMethod = requested === "CREDIT_CARD" ? "CREDIT_CARD" : "PIX";
+  const paymentMethod: PaymentMethod =
+    parsed.data.allowOffline && (requested === "CASH" || requested === "CARD_ON_DELIVERY")
+      ? requested
+      : requested === "CREDIT_CARD"
+        ? "CREDIT_CARD"
+        : "PIX";
+  const online = paymentMethod === "PIX" || paymentMethod === "CREDIT_CARD";
+  const changeForCents = paymentMethod === "CASH" ? (parsed.data.changeForCents ?? null) : null;
   const draft = session?.draftCart;
   if (!session || !draft || draft.length === 0 || !session.customerId) {
     return { ok: false, error: "Não há pedido em rascunho. Monte o pedido antes de finalizar." };
@@ -226,9 +241,9 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
       ? { lat: address.latitude, lon: address.longitude, city: address.city ?? "" }
       : null;
   const personalCoupons = await findPersonalCoupons(tenantId, customer.id).catch(() => []);
-  const priced = await priceCart(tenantId, draft, deliveryType, coords, address?.district ?? null, paymentMethod, personalCoupons);
+  const priced = await priceCart(tenantId, draft, deliveryType, coords, address?.district ?? null, paymentMethod, personalCoupons, changeForCents);
   if (!priced.ok) return priced;
-  const { calc, zone, coupon: appliedCoupon } = priced;
+  const { calc, zone, coupon: appliedCoupon, autoAccept } = priced;
 
   /*
    * Reivindica o rascunho de forma atômica (duas finalizações simultâneas não criam dois pedidos) e já
@@ -286,7 +301,7 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     }
   }
 
-  const initialStatus: OrderStatus = "AWAITING_PAYMENT";
+  const initialStatus: OrderStatus = online ? "AWAITING_PAYMENT" : autoAccept ? "PREPARING" : "RECEIVED";
   const noteLines = draft
     .map((d, i) => (d.notes ? `${calc.lines[i]?.productName ?? "Item"}: ${d.notes}` : null))
     .filter((n): n is string => n !== null);
@@ -313,7 +328,7 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
             deliveryType,
             addressSnapshot,
             paymentMethod,
-            changeForCents: null,
+            changeForCents,
             subtotalCents: calc.subtotalCents,
             deliveryFeeCents: calc.deliveryFeeCents,
             discountCents: calc.discountCents,
@@ -374,6 +389,14 @@ export async function finalizeOrderAndCheckout(ctx: ToolContext, input: unknown)
     paymentMethod,
     deliveryType,
   };
+
+  /* Pagamento na entrega/retirada: pedido já aceito (cupom consumido e Saipos), sem página de pagamento. */
+  if (!online) {
+    await consumeOrderCoupon(created.orderId).catch(() => undefined);
+    const orderIdToSync = created.orderId;
+    after(() => sendOrderToSaipos(orderIdToSync));
+    return { ...base, offline: true };
+  }
 
   // Uma única mensagem: botão nativo cta_url para a página de pagamento (token ORDER_PAYMENT, 2 h, sem login).
   const payUrl = checkoutUrl(created.orderId, ctx.phone);

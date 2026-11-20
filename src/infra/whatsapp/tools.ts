@@ -1,4 +1,4 @@
-import { and, eq, gte, like } from "drizzle-orm";
+import { and, eq, gte, like, or } from "drizzle-orm";
 
 import { db } from "@/infra/db";
 import { loadCatalog } from "@/infra/db/queries";
@@ -6,7 +6,7 @@ import { whatsappMessages, whatsappSessions } from "@/infra/db/schema";
 import { formatCents } from "@/lib/utils";
 
 import type { GeminiFunctionDeclaration } from "./gemini";
-import { sendTextMessage } from "./client";
+import { sendCtaUrlButton } from "./client";
 import { cancelUnpaidOrderTool } from "./cancel-order";
 import { setDeliveryAndPaymentTool, updateCartTool } from "./draft-flow";
 import { escalateForToday, requestHumanHandoff } from "./handoff";
@@ -210,7 +210,8 @@ export function sendQuickMenuTool(
   return { sent: true, note: "O botão com o seu messageText já será enviado. Não escreva outra mensagem." };
 }
 
-const REVIEW_MESSAGE = `Se puder, deixa sua avaliação pra gente? Leva só um minutinho e ajuda muito o Passaporte Burguer ✈️\n\n${GOOGLE_REVIEW_URL}`;
+/** Corpo limpo (sem URL): o link vai no botão nativo "Avaliar no Google". */
+const REVIEW_MESSAGE = "Se puder, deixa sua avaliação pra gente? Leva só um minutinho e ajuda muito o Passaporte Burguer ✈️";
 
 /**
  * Elogio do cliente: depois da resposta da IA, sai UMA segunda mensagem (texto do sistema) com o link de avaliação.
@@ -226,20 +227,21 @@ export async function sendReviewRequestTool(ctx: ToolContext): Promise<{ queued:
         eq(whatsappMessages.phone, ctx.phone),
         eq(whatsappMessages.role, "assistant"),
         gte(whatsappMessages.createdAt, since),
-        like(whatsappMessages.content, `%${GOOGLE_REVIEW_URL}%`),
+        // Convites antigos traziam a URL no texto; os novos têm só o corpo limpo.
+        or(like(whatsappMessages.content, `%${GOOGLE_REVIEW_URL}%`), eq(whatsappMessages.content, REVIEW_MESSAGE)),
       ),
     )
     .limit(1);
   if (already) return { queued: false, note: "O pedido de avaliação já foi enviado a este cliente. Apenas agradeça." };
 
   ctx.afterReply.push(async () => {
-    await sendTextMessage(ctx.phone, REVIEW_MESSAGE);
+    await sendCtaUrlButton(ctx.phone, REVIEW_MESSAGE, "Avaliar no Google", GOOGLE_REVIEW_URL);
     await db
       .insert(whatsappMessages)
       .values({ phone: ctx.phone, role: "assistant", content: REVIEW_MESSAGE, mediaType: "text" })
       .catch(() => undefined);
   });
-  return { queued: true, note: "O link de avaliação sai sozinho em outra mensagem. Responda só com o agradecimento, sem link." };
+  return { queued: true, note: "O botão de avaliação sai sozinho em outra mensagem. Responda só com o agradecimento, sem link." };
 }
 
 /** Executa uma tool no servidor. O fechamento do pedido NÃO é tool: o backend o dispara no fim do turno. */

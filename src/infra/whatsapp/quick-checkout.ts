@@ -21,8 +21,12 @@ export const checkoutInputSchema = z.object({
   deliveryType: z.enum(["DELIVERY", "PICKUP"]),
   /** "Consumir no local": retirada no salão (vai para a cozinha com essa observação). */
   dineIn: z.boolean().optional(),
-  /** Opção já marcada na tela de pagamento (sempre online; lá o cliente ainda pode trocar). */
-  paymentMethod: z.enum(["PIX", "CREDIT_CARD"]).optional(),
+  /** Forma de pagamento escolhida (online abre a página de pagamento; na entrega/retirada o pedido já é aceito). */
+  paymentMethod: z.enum(["PIX", "CREDIT_CARD", "CARD_ON_DELIVERY", "CASH"]).optional(),
+  /** Cartão na máquina: crédito ou débito (vai nas observações para o entregador/balcão). */
+  onsiteCard: z.enum(["CREDIT", "DEBIT"]).optional(),
+  /** Dinheiro: troco para quanto (centavos); ausente = sem troco. */
+  changeForCents: z.number().int().positive().max(10_000_000).optional(),
   /** Observações do pedido (cozinha/entregador). */
   notes: z.string().trim().max(300).optional(),
   name: z.string().max(120).optional(),
@@ -141,7 +145,7 @@ export async function loadQuickCheckoutPrefill(tenantId: string, phone: string):
 }
 
 export type PreparedCheckout =
-  | { ok: true; customerId: string | null; snapshot: AddressSnapshot | null; profile: { name: string; documentNumber: string } | null }
+  | { ok: true; customerId: string | null; snapshot: AddressSnapshot | null; profile: { name: string; documentNumber: string | null } | null }
   | { ok: false; status: number; error: string };
 
 /**
@@ -157,13 +161,16 @@ export async function prepareCheckout(
   const customer = await findCustomer(tenantId, phone);
 
   /* Cadastro: só nome + CPF, e só o que ainda falta. Quem já tem os dois segue direto (nada é pedido de novo). */
-  let profile: { name: string; documentNumber: string } | null = null;
+  let profile: { name: string; documentNumber: string | null } | null = null;
   const knownName = (customer?.name ?? "").trim();
-  if (knownName.length < 2 || !customer?.documentNumber) {
+  /* CPF só é obrigatório no pagamento online (Asaas); no dinheiro/máquina é opcional. */
+  const online = (input.paymentMethod ?? "PIX") === "PIX" || input.paymentMethod === "CREDIT_CARD";
+  const wantsDocument = online || !!input.document?.trim();
+  if (knownName.length < 2 || (!customer?.documentNumber && wantsDocument)) {
     const name = knownName.length >= 2 ? knownName : cleanText(input.name ?? "").slice(0, 80);
     if (name.length < 2) return { ok: false, status: 400, error: "Informe seu nome." };
     let documentNumber = customer?.documentNumber ?? null;
-    if (!documentNumber) {
+    if (!documentNumber && wantsDocument) {
       const doc = cpfInput.safeParse(input.document ?? "");
       if (!doc.success) return { ok: false, status: 400, error: doc.error.issues[0]?.message ?? "Informe um CPF válido." };
       documentNumber = doc.data;

@@ -133,8 +133,26 @@ Subtotal: ${formatCents(itemsPriced.calc.subtotalCents)}`,
     const ctx: ToolContext = { phone, afterReply: [], cta: null };
     const order = await finalizeOrderAndCheckout(ctx, {
       ...(checkout.paymentMethod ? { paymentMethod: checkout.paymentMethod } : {}),
-      extraNotes: [checkout.dineIn ? "CONSUMIR NO LOCAL (salão)." : "", checkout.notes ?? ""].filter(Boolean).join("\n") || undefined,
+      allowOffline: true,
+      ...(checkout.changeForCents ? { changeForCents: checkout.changeForCents } : {}),
+      extraNotes:
+        [
+          checkout.dineIn ? "CONSUMIR NO LOCAL (salão)." : "",
+          checkout.paymentMethod === "CARD_ON_DELIVERY"
+            ? `Pagamento: cartão de ${checkout.onsiteCard === "DEBIT" ? "DÉBITO" : "CRÉDITO"} na máquina.`
+            : "",
+          checkout.notes ?? "",
+        ]
+          .filter(Boolean)
+          .join("\n") || undefined,
     });
+    if (order.ok && order.offline) {
+      const number = businessWhatsAppNumber();
+      return {
+        status: 200,
+        body: { ok: true, offline: true, orderNumber: order.orderNumber, whatsappUrl: number ? `https://wa.me/${number}` : null },
+      };
+    }
     if (!order.ok || !order.checkoutUrl) {
       await release();
       return { status: 422, body: { ok: false, error: order.ok ? "Não foi possível abrir o pagamento." : order.error } };

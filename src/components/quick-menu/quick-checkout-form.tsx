@@ -1,8 +1,9 @@
 "use client";
 
-import { ArrowLeft, Bike, Check, CreditCard, Loader2, QrCode, Store, UtensilsCrossed } from "lucide-react";
+import { ArrowLeft, Banknote, Bike, Check, CreditCard, Loader2, QrCode, Store, UtensilsCrossed } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
+import { Switch } from "@/components/ui/switch";
 import { AddressPicker } from "@/components/storefront/address-picker";
 import type { ConfirmedAddress } from "@/components/storefront/address-book";
 import { calculateDeliveryQuote } from "@/core/delivery/quote";
@@ -25,7 +26,31 @@ export type CheckoutPrefill = {
 export type SummaryLine = { key: string; text: string; detail?: string; totalCents: number };
 
 type Receive = "DELIVERY" | "DINE_IN" | "PICKUP";
-type Pay = "PIX" | "CREDIT_CARD";
+/** Mesmas opções do checkout do site. */
+type PayChoice = "PIX" | "ONLINE_CARD" | "ONSITE_CREDIT" | "ONSITE_DEBIT" | "CASH";
+
+const PAY_LABEL: Record<PayChoice, string> = {
+  PIX: "PIX",
+  ONLINE_CARD: "Cartão de crédito (online)",
+  ONSITE_CREDIT: "Cartão de crédito",
+  ONSITE_DEBIT: "Cartão de débito",
+  CASH: "Dinheiro",
+};
+
+const PAY_METHOD: Record<PayChoice, "PIX" | "CREDIT_CARD" | "CARD_ON_DELIVERY" | "CASH"> = {
+  PIX: "PIX",
+  ONLINE_CARD: "CREDIT_CARD",
+  ONSITE_CREDIT: "CARD_ON_DELIVERY",
+  ONSITE_DEBIT: "CARD_ON_DELIVERY",
+  CASH: "CASH",
+};
+
+function parseReaisToCents(value: string): number | null {
+  const normalized = value.replace(/\./g, "").replace(",", ".").trim();
+  if (!normalized) return null;
+  const number = Number(normalized);
+  return Number.isFinite(number) && number > 0 ? Math.round(number * 100) : null;
+}
 type Step = 1 | 2 | 3;
 
 const inputClass =
@@ -73,7 +98,11 @@ export function QuickCheckoutForm({
 }) {
   const [step, setStep] = useState<Step>(1);
   const [receive, setReceive] = useState<Receive>("DELIVERY");
-  const [pay, setPay] = useState<Pay>("PIX");
+  const [payChoice, setPayChoice] = useState<PayChoice>("PIX");
+  const [changeFor, setChangeFor] = useState("");
+  const [noChange, setNoChange] = useState(true);
+  const [includeDocument, setIncludeDocument] = useState(false);
+  const [offlineDone, setOfflineDone] = useState<{ orderNumber: number; whatsappUrl: string | null } | null>(null);
   const [name, setName] = useState(prefill.name);
   const [cpf, setCpf] = useState("");
   const [address, setAddress] = useState<ConfirmedAddress | null>(null);
@@ -90,6 +119,11 @@ export function QuickCheckoutForm({
   /* Dados pessoais só no fim: CPF na etapa de pagamento (é online), nome na revisão. */
   const askName = prefill.needsProfile && !prefill.name;
   const askDocument = prefill.needsProfile && !prefill.hasDocument;
+  const onlinePayment = payChoice === "PIX" || payChoice === "ONLINE_CARD";
+  const onsiteLabel = receive === "DELIVERY" ? "Pagar na entrega" : "Pagar na retirada / balcão";
+  const changeForCents = payChoice === "CASH" && !noChange ? parseReaisToCents(changeFor) : null;
+  /* CPF: obrigatório no online; no dinheiro só se o cliente quiser na nota. */
+  const docRequired = askDocument && (onlinePayment || (payChoice === "CASH" && includeDocument));
   const firstName = prefill.name.trim().split(/\s+/)[0];
 
   useEffect(() => {
@@ -103,7 +137,8 @@ export function QuickCheckoutForm({
     return null;
   }
   function documentStepError(): string | null {
-    if (!askDocument) return null;
+    if (payChoice === "CASH" && !noChange && changeForCents === null) return "Informe para quanto você precisa de troco.";
+    if (!docRequired) return null;
     const docErr = documentError(cpf);
     return docErr || onlyDigits(cpf).length !== 11 ? (docErr ?? "Informe um CPF válido.") : null;
   }
@@ -148,12 +183,15 @@ export function QuickCheckoutForm({
           checkout: {
             deliveryType: delivery ? "DELIVERY" : "PICKUP",
             ...(receive === "DINE_IN" ? { dineIn: true } : {}),
-            paymentMethod: pay,
+            paymentMethod: PAY_METHOD[payChoice],
+            ...(payChoice === "ONSITE_CREDIT" ? { onsiteCard: "CREDIT" } : {}),
+            ...(payChoice === "ONSITE_DEBIT" ? { onsiteCard: "DEBIT" } : {}),
+            ...(changeForCents ? { changeForCents } : {}),
             ...(notes.trim() ? { notes: notes.trim() } : {}),
             ...(prefill.needsProfile
               ? {
                   ...(prefill.name ? {} : { name }),
-                  ...(prefill.hasDocument ? {} : { document: cpf }),
+                  ...(prefill.hasDocument || !docRequired ? {} : { document: cpf }),
                 }
               : {}),
             ...(delivery && address
@@ -173,14 +211,23 @@ export function QuickCheckoutForm({
           },
         }),
       });
-      const data = (await res.json().catch(() => null)) as { ok: true; redirectUrl: string } | { ok: false; error?: string } | null;
+      const data = (await res.json().catch(() => null)) as
+        | { ok: true; redirectUrl: string }
+        | { ok: true; offline: true; orderNumber: number; whatsappUrl: string | null }
+        | { ok: false; error?: string }
+        | null;
       if (!res.ok || !data || !data.ok) {
         setError((data && !data.ok && data.error) || "Não foi possível continuar. Tente novamente.");
         setPhase("idle");
         return;
       }
-      setPhase("done");
       onSubmitted?.();
+      if ("offline" in data) {
+        setOfflineDone({ orderNumber: data.orderNumber, whatsappUrl: data.whatsappUrl });
+        setPhase("done");
+        return;
+      }
+      setPhase("done");
       window.location.assign(data.redirectUrl);
     } catch {
       setError("Sem conexão. Tente novamente.");
@@ -192,6 +239,25 @@ export function QuickCheckoutForm({
     event.preventDefault();
     if (step === 3) void submit();
     else next();
+  }
+
+  if (phase === "done" && offlineDone) {
+    return (
+      <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-[#F8FAFC] p-8 text-center text-[#0A2540]">
+        <span className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+          <Check className="h-8 w-8" />
+        </span>
+        <p className="text-lg font-bold">Pedido #{offlineDone.orderNumber} confirmado!</p>
+        <p className="max-w-sm text-sm text-slate-600">
+          Já mandamos para a cozinha. O pagamento é feito na {delivery ? "entrega" : "retirada"}: {PAY_LABEL[payChoice].toLowerCase()}.
+        </p>
+        {offlineDone.whatsappUrl ? (
+          <a href={offlineDone.whatsappUrl} className="flex h-12 items-center rounded-xl bg-[#25D366] px-6 font-bold text-[#052e16]">
+            Voltar ao WhatsApp
+          </a>
+        ) : null}
+      </div>
+    );
   }
 
   if (phase === "done") {
@@ -215,27 +281,31 @@ export function QuickCheckoutForm({
     { id: "PICKUP", label: "Retirada", icon: <Store className="h-6 w-6" strokeWidth={1.75} /> },
   ];
 
-  const payOption = (choice: Pay, icon: React.ReactNode, label: string, hint: string) => (
+  const payOption = (choice: PayChoice, icon: React.ReactNode, hint?: string) => (
     <button
       key={choice}
       type="button"
-      aria-pressed={pay === choice}
-      onClick={() => setPay(choice)}
-      className={cn(selectable(pay === choice), "flex w-full items-center gap-3 px-4 py-3.5")}
+      aria-pressed={payChoice === choice}
+      onClick={() => {
+        setPayChoice(choice);
+        setError(null);
+        if (choice === "CASH") setIncludeDocument(false);
+      }}
+      className={cn(selectable(payChoice === choice), "flex w-full items-center gap-3 px-4 py-3.5")}
     >
       <span className="shrink-0 text-[#0A2540]">{icon}</span>
       <span className="min-w-0 flex-1">
-        <span className="block text-sm font-semibold">{label}</span>
-        <span className="block text-xs text-slate-500">{hint}</span>
+        <span className="block text-sm font-semibold">{PAY_LABEL[choice].replace(" (online)", "")}</span>
+        {hint ? <span className="block text-xs text-slate-500">{hint}</span> : null}
       </span>
       <span
         aria-hidden="true"
         className={cn(
           "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2",
-          pay === choice ? "border-[#F59E0B] bg-[#F59E0B] text-[#0A2540]" : "border-slate-300",
+          payChoice === choice ? "border-[#F59E0B] bg-[#F59E0B] text-[#0A2540]" : "border-slate-300",
         )}
       >
-        {pay === choice ? <Check className="h-3 w-3" strokeWidth={3} /> : null}
+        {payChoice === choice ? <Check className="h-3 w-3" strokeWidth={3} /> : null}
       </span>
     </button>
   );
@@ -327,40 +397,129 @@ export function QuickCheckoutForm({
           {step === 2 ? (
             <>
               <h1 className="text-2xl font-extrabold">Forma de pagamento</h1>
+
               <section className={cardClass}>
                 <div className="flex items-center gap-2">
-                  <QrCode className="h-4 w-4" strokeWidth={1.75} />
+                  <QrCode className="h-4 w-4 text-[#0A2540]" strokeWidth={1.75} />
                   <h2 className="font-bold">Pagar online</h2>
                 </div>
                 <div className="space-y-2.5">
-                  {payOption("PIX", <QrCode className="h-5 w-5" strokeWidth={1.75} />, "PIX", "Aprovação na hora")}
-                  {payOption(
-                    "CREDIT_CARD",
-                    <CreditCard className="h-5 w-5" strokeWidth={1.75} />,
-                    "Cartão de crédito",
-                    "Você informa os dados na próxima tela",
-                  )}
+                  {payOption("PIX", <QrCode className="h-5 w-5" strokeWidth={1.75} />, "Aprovação na hora")}
+                  {payChoice === "PIX" ? (
+                    <div className="space-y-3 rounded-xl bg-slate-50 p-3">
+                      <p className="text-sm text-slate-600">Seu pedido vai para a cozinha assim que o PIX for confirmado.</p>
+                      {askDocument ? (
+                        <Field label="CPF/CNPJ (obrigatório para pagar online)">
+                          <input
+                            className={inputClass}
+                            value={cpf}
+                            onChange={(e) => setCpf(formatDocument(e.target.value))}
+                            inputMode="numeric"
+                            autoComplete="off"
+                            placeholder="CPF ou CNPJ"
+                            maxLength={18}
+                          />
+                        </Field>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {payOption("ONLINE_CARD", <CreditCard className="h-5 w-5" strokeWidth={1.75} />, "Você informa os dados na próxima tela")}
+                  {payChoice === "ONLINE_CARD" ? (
+                    <div className="space-y-3 rounded-xl bg-slate-50 p-3">
+                      <p className="text-sm text-slate-600">
+                        Você informa os dados do cartão na próxima tela, em ambiente seguro. Eles não ficam salvos no nosso sistema.
+                      </p>
+                      {askDocument ? (
+                        <Field label="CPF/CNPJ (obrigatório para pagar online)">
+                          <input
+                            className={inputClass}
+                            value={cpf}
+                            onChange={(e) => setCpf(formatDocument(e.target.value))}
+                            inputMode="numeric"
+                            autoComplete="off"
+                            placeholder="CPF ou CNPJ"
+                            maxLength={18}
+                          />
+                        </Field>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
-                <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">
-                  Seu pedido vai para a cozinha assim que o pagamento for confirmado. Você ainda pode trocar a forma na tela de pagamento.
-                </p>
               </section>
-              {askDocument ? (
-                <section className={cardClass}>
-                  <h2 className="font-bold">CPF</h2>
-                  <Field label="CPF do pagador">
-                    <input
-                      className={inputClass}
-                      value={cpf}
-                      onChange={(e) => setCpf(formatDocument(e.target.value).slice(0, 14))}
-                      inputMode="numeric"
-                      autoComplete="off"
-                      placeholder="000.000.000-00"
-                    />
-                  </Field>
-                  <p className="text-xs text-slate-500">Exigido para pagamentos online (Pix ou cartão).</p>
-                </section>
-              ) : null}
+
+              <section className={cardClass}>
+                <div className="flex items-center gap-2">
+                  {receive === "DELIVERY" ? (
+                    <Bike className="h-4 w-4 text-[#0A2540]" strokeWidth={1.75} />
+                  ) : (
+                    <Store className="h-4 w-4 text-[#0A2540]" strokeWidth={1.75} />
+                  )}
+                  <h2 className="font-bold">{onsiteLabel}</h2>
+                </div>
+                <div className="space-y-2.5">
+                  {payOption("ONSITE_CREDIT", <CreditCard className="h-5 w-5" strokeWidth={1.75} />)}
+                  {payOption("ONSITE_DEBIT", <CreditCard className="h-5 w-5" strokeWidth={1.75} />)}
+                  {payOption("CASH", <Banknote className="h-5 w-5" strokeWidth={1.75} />)}
+                  {payChoice === "CASH" ? (
+                    <div className="space-y-3 rounded-xl bg-slate-50 p-3">
+                      <p className="text-sm font-medium text-slate-700">Troco para quanto?</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          className={cn(selectable(noChange), "h-12 px-2 text-center text-sm font-semibold")}
+                          onClick={() => setNoChange(true)}
+                        >
+                          Não preciso de troco
+                        </button>
+                        <button
+                          type="button"
+                          className={cn(selectable(!noChange), "h-12 px-2 text-center text-sm font-semibold")}
+                          onClick={() => setNoChange(false)}
+                        >
+                          Preciso de troco
+                        </button>
+                      </div>
+                      {!noChange ? (
+                        <input
+                          className={inputClass}
+                          value={changeFor}
+                          onChange={(e) => setChangeFor(e.target.value)}
+                          inputMode="decimal"
+                          placeholder="Ex: 100,00"
+                          aria-label="Troco para quanto?"
+                        />
+                      ) : null}
+                      {askDocument ? (
+                        <>
+                          <div className="flex items-center justify-between gap-3 border-t border-slate-200 pt-3">
+                            <label htmlFor="quick-doc-switch" className="text-sm font-medium text-slate-700">
+                              Incluir CPF/CNPJ na nota
+                            </label>
+                            <Switch
+                              id="quick-doc-switch"
+                              checked={includeDocument}
+                              onCheckedChange={setIncludeDocument}
+                              className="bg-slate-300 focus-visible:ring-[#F59E0B] data-[state=checked]:bg-[#F59E0B]"
+                            />
+                          </div>
+                          {includeDocument ? (
+                            <input
+                              className={inputClass}
+                              value={cpf}
+                              onChange={(e) => setCpf(formatDocument(e.target.value))}
+                              inputMode="numeric"
+                              autoComplete="off"
+                              placeholder="CPF ou CNPJ"
+                              aria-label="CPF ou CNPJ"
+                              maxLength={18}
+                            />
+                          ) : null}
+                        </>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              </section>
 
             </>
           ) : null}
@@ -395,7 +554,15 @@ export function QuickCheckoutForm({
                   <div className="flex items-start justify-between gap-3 border-t border-slate-100 pt-3">
                     <div className="min-w-0">
                       <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Pagamento</p>
-                      <p className="font-medium">{pay === "PIX" ? "PIX" : "Cartão de crédito (online)"}</p>
+                      <p className="font-medium">
+                        {PAY_LABEL[payChoice]}
+                        {!onlinePayment ? ` • ${onsiteLabel.toLowerCase()}` : ""}
+                      </p>
+                      {payChoice === "CASH" ? (
+                        <p className="text-xs text-slate-500">
+                          {noChange ? "Sem troco" : changeForCents ? `Troco para ${formatCents(changeForCents)}` : ""}
+                        </p>
+                      ) : null}
                     </div>
                     <button type="button" onClick={() => setStep(2)} className="shrink-0 text-xs font-semibold underline underline-offset-2">
                       Alterar
@@ -477,7 +644,7 @@ export function QuickCheckoutForm({
               className="flex h-14 w-full items-center justify-center gap-2 rounded-xl bg-[#F59E0B] text-base font-bold text-[#0A2540] transition hover:brightness-105 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
             >
               {phase === "sending" ? <Loader2 className="h-5 w-5 animate-spin" /> : null}
-              {phase === "sending" ? "Enviando pedido..." : step === 3 ? "Seguir para o pagamento" : primaryLabel}
+              {phase === "sending" ? "Enviando pedido..." : step === 3 ? (onlinePayment ? "Seguir para o pagamento" : "Confirmar pedido") : primaryLabel}
             </button>
           </div>
         </div>
