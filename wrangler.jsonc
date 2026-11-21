@@ -26,6 +26,9 @@
 			"binding": "passaportburguer_cache"
 		}
 	],
+	"vars": {
+		"APP_URL": "https://passaportburguer.SEU-USUARIO.workers.dev"
+	},
 	// Substitui os crons da Vercel (worker.ts chama /api/cron/* com CRON_SECRET; defina APP_URL como var)
 	"triggers": {
 		"crons": [
