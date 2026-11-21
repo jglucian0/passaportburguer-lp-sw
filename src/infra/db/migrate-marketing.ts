@@ -25,6 +25,17 @@ async function main() {
       target_lost boolean NOT NULL DEFAULT true,
       updated_at timestamptz NOT NULL DEFAULT now()
     )`;
+  await sql`
+    CREATE TABLE IF NOT EXISTS funnel_events (
+      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      visitor_id text NOT NULL,
+      event text NOT NULL,
+      product_id uuid,
+      source text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  await sql`CREATE INDEX IF NOT EXISTS funnel_events_tenant_idx ON funnel_events (tenant_id, created_at)`;
   await sql`ALTER TABLE marketing_settings ADD COLUMN IF NOT EXISTS target_new boolean NOT NULL DEFAULT true`;
   await sql`ALTER TABLE orders ADD COLUMN IF NOT EXISTS attribution jsonb`;
   await sql`ALTER TABLE whatsapp_sessions ADD COLUMN IF NOT EXISTS ad_referral jsonb`;

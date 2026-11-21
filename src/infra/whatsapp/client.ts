@@ -223,16 +223,24 @@ export async function sendCtaUrlButton(to: string, bodyText: string, buttonText:
  * Mensagem de template aprovado pela Meta (única forma de falar com o cliente fora da janela de 24 h).
  * `bodyParams` preenchem {{1}}, {{2}}... do corpo, na ordem.
  */
-export function sendTemplateMessage(to: string, name: string, languageCode: string, bodyParams: string[] = []) {
+export function sendTemplateMessage(
+  to: string,
+  name: string,
+  languageCode: string,
+  bodyParams: string[] = [],
+  /** Template com cabeçalho de IMAGEM: URL pública (JPEG/PNG). Só informe se o template foi criado com esse cabeçalho. */
+  headerImageUrl?: string | null,
+) {
+  const components: unknown[] = [];
+  if (headerImageUrl) components.push({ type: "header", parameters: [{ type: "image", image: { link: headerImageUrl } }] });
+  if (bodyParams.length > 0) components.push({ type: "body", parameters: bodyParams.map((text) => ({ type: "text", text })) });
   return graphPost({
     to,
     type: "template",
     template: {
       name,
       language: { code: languageCode },
-      ...(bodyParams.length > 0
-        ? { components: [{ type: "body", parameters: bodyParams.map((text) => ({ type: "text", text })) }] }
-        : {}),
+      ...(components.length > 0 ? { components } : {}),
     },
   });
 }

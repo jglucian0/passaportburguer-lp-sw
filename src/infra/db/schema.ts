@@ -939,6 +939,25 @@ export const marketingSettings = pgTable("marketing_settings", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+export type FunnelEventType = "VISIT" | "VIEW_PRODUCT" | "ADD_TO_CART" | "CHECKOUT";
+
+/** Funil do cardápio (visitas anônimas, sem dados pessoais): o visitante é um id aleatório do navegador. */
+export const funnelEvents = pgTable(
+  "funnel_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    visitorId: text("visitor_id").notNull(),
+    event: text("event").$type<FunnelEventType>().notNull(),
+    productId: uuid("product_id"),
+    source: text("source"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("funnel_events_tenant_idx").on(t.tenantId, t.createdAt)],
+);
+
 export type MarketingSendStatus = "SENT" | "SKIPPED" | "FAILED";
 
 /** Registro de cada tentativa de campanha: limite por cliente, auditoria e atribuição (cupom -> pedido). */

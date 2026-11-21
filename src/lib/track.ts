@@ -10,6 +10,36 @@ declare global {
   }
 }
 
+export type FunnelEventName = "VISIT" | "VIEW_PRODUCT" | "ADD_TO_CART" | "CHECKOUT";
+
+const VISITOR_KEY = "pb_vid";
+
+function visitorId(): string | null {
+  try {
+    let id = window.localStorage.getItem(VISITOR_KEY);
+    if (!id) {
+      id = crypto.randomUUID();
+      window.localStorage.setItem(VISITOR_KEY, id);
+    }
+    return id;
+  } catch {
+    return null;
+  }
+}
+
+/** Funil do cardápio (próprio, sem terceiros): visitante anônimo + evento. Falha em silêncio. */
+export function funnelEvent(event: FunnelEventName, productId?: string) {
+  safe(() => {
+    // O Cardápio Rápido (link do WhatsApp) tem funil próprio: não entra na conta do site.
+    if (window.location.pathname.startsWith("/cardapio-rapido")) return;
+    const id = visitorId();
+    if (!id) return;
+    const body = JSON.stringify({ event, visitorId: id, productId });
+    if (navigator.sendBeacon?.("/api/track", new Blob([body], { type: "application/json" }))) return;
+    void fetch("/api/track", { method: "POST", body, keepalive: true, headers: { "Content-Type": "application/json" } }).catch(() => undefined);
+  });
+}
+
 export type TrackItem = { id: string; name: string; priceCents: number; quantity: number };
 
 const reais = (cents: number) => Math.round(cents) / 100;
@@ -23,6 +53,7 @@ function safe(fn: () => void) {
 }
 
 export function trackAddToCart(item: TrackItem) {
+  funnelEvent("ADD_TO_CART", item.id);
   safe(() => {
     const value = reais(item.priceCents * item.quantity);
     window.fbq?.("track", "AddToCart", {
@@ -41,6 +72,7 @@ export function trackAddToCart(item: TrackItem) {
 }
 
 export function trackInitiateCheckout(valueCents: number, itemCount: number) {
+  funnelEvent("CHECKOUT");
   safe(() => {
     window.fbq?.("track", "InitiateCheckout", { value: reais(valueCents), currency: "BRL", num_items: itemCount });
     window.gtag?.("event", "begin_checkout", { currency: "BRL", value: reais(valueCents) });

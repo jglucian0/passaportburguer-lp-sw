@@ -2,6 +2,8 @@
 
 import { BadgeCheck, Globe2, Search, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FunnelVisit } from "@/components/analytics/funnel-visit";
+import { funnelEvent } from "@/lib/track";
 
 import type { CatalogCategory, CatalogProduct } from "@/core/schemas/product";
 import { cn, normalizeSearch } from "@/lib/utils";
@@ -220,6 +222,7 @@ export function Menu({
 
   return (
     <section id="cardapio" className="scroll-mt-20 bg-[#F4F6F9] text-[#0A2540]">
+      <FunnelVisit />
       {/* Carimbos + categorias: fixos juntos ao topo ao rolar (abaixo do header) */}
       {/* Mobile: só a barra de categorias é sticky (wrapper vira `contents`); md+: ambos juntos */}
       <div className="contents md:sticky md:top-20 md:z-30 md:block md:bg-[#F4F6F9]/95 md:backdrop-blur-md">
@@ -441,7 +444,10 @@ export function Menu({
                       product={product}
                       destination={destinationByProduct.get(product.id) ?? null}
                       bestSeller={bestSellers.has(product.id)}
-                      onSelect={setSelected}
+                      onSelect={(p) => {
+                        funnelEvent("VIEW_PRODUCT", p.id);
+                        setSelected(p);
+                      }}
                     />
                   ))}
                 </div>

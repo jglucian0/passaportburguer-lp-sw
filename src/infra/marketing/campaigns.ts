@@ -45,6 +45,11 @@ export function secondOrderTemplate(): { name: string; language: string } | null
   return { name, language: process.env.WHATSAPP_TEMPLATE_LANG?.trim() || "pt_BR" };
 }
 
+/** Os templates de resgate foram criados com cabeçalho de imagem? (WHATSAPP_TEMPLATE_HEADER_IMAGE=true) */
+export function templateHasHeaderImage(): boolean {
+  return process.env.WHATSAPP_TEMPLATE_HEADER_IMAGE?.trim().toLowerCase() === "true";
+}
+
 /** Fotos locais (.webp) viram JPEG pela rota /api/marketing/photo; URLs absolutas só se já forem JPEG/PNG. */
 export function photoUrlFor(imageUrl: string | null | undefined): string | null {
   if (!imageUrl) return null;
@@ -245,12 +250,13 @@ export async function runWinbackCampaign(now: Date = new Date(), deps: Deps = de
         } else {
           // {{1}} nome, {{2}} lanche, {{3}} desconto, {{4}} validade
           body = (isNew ? secondOrderMessage : winbackMessage)(copy, 0);
-          await deps.template(session.phone, template!.name, template!.language, [
-            profile.firstName,
-            favoriteName ?? "burger",
-            `${percent}%`,
-            deadline,
-          ]);
+          const bodyParams = [profile.firstName, favoriteName ?? "burger", `${percent}%`, deadline];
+          if (templateHasHeaderImage()) {
+            // Foto do lanche favorito; sem foto, a imagem da marca (o cabeçalho do template é obrigatório).
+            await deps.template(session.phone, template!.name, template!.language, bodyParams, photo ?? `${appUrl()}/og-image.jpg`);
+          } else {
+            await deps.template(session.phone, template!.name, template!.language, bodyParams);
+          }
         }
         await db
           .insert(whatsappMessages)
