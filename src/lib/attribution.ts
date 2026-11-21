@@ -15,6 +15,8 @@ export type Attribution = {
   fbclid?: string;
   gclid?: string;
   fbp?: string;
+  /** Navegador do cliente no pedido do site (a API de Conversões exige para eventos de site). */
+  ua?: string;
   /** Onde o pedido nasceu: site, WhatsApp (cardápio rápido / bot) ou balcão. */
   channel?: "site" | "whatsapp" | "balcao";
 };
@@ -43,6 +45,7 @@ export function sanitizeAttribution(raw: unknown): Attribution | null {
     fbclid: clean(r.fbclid, 200),
     gclid: clean(r.gclid, 200),
     fbp: clean(r.fbp, 100),
+    ua: clean(r.ua, 300),
     channel,
   };
 }

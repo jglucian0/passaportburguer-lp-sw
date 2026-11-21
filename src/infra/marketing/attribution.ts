@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { and, eq, gte, inArray, notInArray, sql } from "drizzle-orm";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 import { db } from "@/infra/db";
 import { customers, orders, whatsappSessions } from "@/infra/db/schema";
@@ -69,6 +69,17 @@ export async function resolveOrderAttribution(opts: {
   channel: "site" | "whatsapp";
   phone?: string | null;
 }): Promise<Attribution> {
+  const attribution = await resolveCore(opts);
+  if (opts.channel !== "site") return attribution;
+  try {
+    const ua = (await headers()).get("user-agent")?.slice(0, 300);
+    return ua ? { ...attribution, ua } : attribution;
+  } catch {
+    return attribution;
+  }
+}
+
+async function resolveCore(opts: { channel: "site" | "whatsapp"; phone?: string | null }): Promise<Attribution> {
   try {
     if (opts.phone) {
       const referral = await sessionReferral(opts.phone);
@@ -124,6 +135,9 @@ export async function sendPurchaseEvent(orderId: string): Promise<void> {
     const first = row.name.trim().split(/\s+/)[0];
     if (first) userData.fn = [sha256(first)];
     if (attr?.fbp) userData.fbp = attr.fbp;
+    // Site: a Meta exige o navegador do cliente. Sem ele (ou pedido do WhatsApp) o evento vai como conversa/outro canal.
+    if (attr?.ua) userData.client_user_agent = attr.ua;
+    const actionSource = attr?.ua ? "website" : attr?.channel === "whatsapp" ? "chat" : "other";
     if (attr?.fbclid) userData.fbc = `fb.1.${row.createdAt.getTime()}.${attr.fbclid}`;
 
     const res = await fetch(`https://graph.facebook.com/v21.0/${encodeURIComponent(pixelId)}/events`, {
@@ -136,7 +150,7 @@ export async function sendPurchaseEvent(orderId: string): Promise<void> {
             event_name: "Purchase",
             event_time: Math.floor(Date.now() / 1000),
             event_id: orderId,
-            action_source: "website",
+            action_source: actionSource,
             event_source_url: appUrl(),
             user_data: userData,
             custom_data: { currency: "BRL", value: row.total / 100 },

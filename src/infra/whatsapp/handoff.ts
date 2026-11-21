@@ -23,8 +23,8 @@ export async function escalateForToday(phone: string, reason: string) {
   return { ok: true, pausedUntil: until.toISOString() };
 }
 
-export async function requestHumanHandoff(phone: string, reason: string) {
-  const until = new Date(Date.now() + HANDOFF_MINUTES * 60_000);
+export async function requestHumanHandoff(phone: string, reason: string, minutes: number = HANDOFF_MINUTES) {
+  const until = new Date(Date.now() + minutes * 60_000);
   const cleanReason = reason.trim().slice(0, 300) || "Sem motivo informado";
 
   await db

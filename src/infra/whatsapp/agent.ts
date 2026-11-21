@@ -4,7 +4,8 @@ import { db } from "@/infra/db";
 import { whatsappInboxBuffer, whatsappMessages, whatsappSessions, type PaymentMethod } from "@/infra/db/schema";
 
 import { downloadMedia, sendCtaUrlButton, sendInteractiveButtons, sendTextMessage } from "./client";
-import { escalateForToday } from "./handoff";
+import { escalateForToday, requestHumanHandoff } from "./handoff";
+import { ORDER_CHANGE_HANDOFF_MINUTES, orderChangeFor, orderChangeReply } from "./order-change";
 import { repeatLastOrder } from "./repeat-order";
 import {
   MENU_BUTTON_BODIES,
@@ -183,6 +184,7 @@ COMO RESPONDER
 - Não entendeu algo: peça para repetir de outro jeito, em uma frase.
 - Áudio: capture o pedido todo, inclusive observações ("sem cebola", "ao ponto"). Imagem: analise e responda ao que o cliente quer. Figurinha ([Figurinha do cliente] + imagem): interprete o sentimento (raiva, dúvida, aprovação, agradecimento) e responda de acordo. NUNCA diga "não entendi" para figurinha.
 - Reclamação, problema com pedido já feito, estorno, cliente irritado ou que pede uma pessoa: acolha em uma frase, chame requestHumanHandoff e avise que um atendente assume.
+- Cliente quer ALTERAR, ADICIONAR ou TIRAR algo de um pedido que já foi feito/pago: você NÃO consegue alterar pedido fechado e NUNCA reenvie o cardápio para isso. Diga em uma frase que não dá para alterar por aqui, chame requestHumanHandoff e avise que um atendente vai ajudar. (Um pedido novo e separado só se o cliente pedir.)
 - NÃO adicione itens, combos ou adicionais que o cliente não pediu. Pode sugerir UMA vez, em uma frase, depois que ele fechar o lanche; só entra no carrinho se ele aceitar.
 - Varie o jeito de falar; nunca repita frase pronta de uma mensagem para outra.
 - PROIBIDO: "Como posso ajudar?", "Para prosseguir...", "Selecione uma opção", menus numerados ("digite 1"), "Fique à vontade", "Bora lá", "Bora embarcar nessa".
@@ -551,8 +553,25 @@ export async function runBotTurn(
     const contents: GeminiContent[] = [...history, { role: "user", parts: userParts }];
     const systemInstruction = buildSystemPrompt({ greetingMode, context });
 
+    // Pedido já pago/na cozinha e o cliente quer alterar, adicionar ou tirar algo: o bot não altera pedido fechado.
+    // Responde com o aviso e passa para um atendente (bot calado até ele assumir), sem chamar a IA nem reenviar o cardápio.
+    const orderChange =
+      messages.every((m) => m.mediaType === "text") && context.customer.isRegistered
+        ? orderChangeFor(
+            messages.map((m) => m.content),
+            context.customer.activeOrder,
+          )
+        : null;
+    if (orderChange) {
+      await requestHumanHandoff(
+        phone,
+        `Cliente quer alterar o pedido #${orderChange.number} (${orderChange.status}): "${messages.map((m) => m.content).join(" ").slice(0, 200)}"`,
+        ORDER_CHANGE_HANDOFF_MINUTES,
+      );
+    }
+
     // Saudação pura / manipulação: resposta do backend, sem chamar a IA.
-    const canned = cannedReply(messages, context, greetingMode);
+    const canned = orderChange ? orderChangeReply(orderChange) : cannedReply(messages, context, greetingMode);
     // Tudo que a IA pode citar em reais: cardápio, sessão, cliente, regras da loja e retorno das ferramentas.
     const knownCents = collectKnownCents([context.menu, context.session, context.customer, context.store]);
     let reviewRetries = 0;

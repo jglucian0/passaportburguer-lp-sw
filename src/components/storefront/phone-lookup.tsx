@@ -131,6 +131,8 @@ export function PhoneLookup({
   const [sandbox, setSandbox] = useState(false);
   const [name, setName] = useState(autoStart?.name ?? "");
   const [cpf, setCpf] = useState(autoStart?.cpf ?? "");
+  /** Nome que o cadastro já tem (ex.: criado pelo WhatsApp): depois do código, só se pede o que falta. */
+  const [knownName, setKnownName] = useState<string | null>(null);
   const autoStarted = useRef(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -213,6 +215,7 @@ export function PhoneLookup({
               if (res.ok) return enter(res.data);
             }
             if (data.name) setName(data.name);
+            setKnownName(data.name && data.name.trim().length >= 2 ? data.name.trim() : null);
             setStep("register");
           } else {
             enter({ name: data.name, phone: data.phone });
@@ -371,9 +374,9 @@ export function PhoneLookup({
   const handleRegister = (event: React.FormEvent) =>
     run(event, async () => {
       const docErr = documentError(cpf);
-      if (name.trim().length < 2) return setError("Informe seu nome.");
+      if (!knownName && name.trim().length < 2) return setError("Informe seu nome.");
       if (docErr || onlyDigits(cpf).length !== 11) return setError(docErr ?? "Informe um CPF válido.");
-      const res = await postJson<Identity>("/api/auth/register", { name, document: cpf });
+      const res = await postJson<Identity>("/api/auth/register", { name: knownName ?? name, document: cpf });
       if (!res.ok) {
         setError(res.data.error ?? "Não foi possível concluir o cadastro.");
         return;
@@ -621,19 +624,25 @@ export function PhoneLookup({
 
         {step === "register" ? (
           <form onSubmit={handleRegister} className="relative space-y-4">
-            {field(
-              "Nome",
-              <Input
-                type="text"
-                autoComplete="given-name"
-                autoFocus
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Seu nome"
-                maxLength={80}
-                required
-                className={inputClass}
-              />,
+            {knownName ? (
+              <p className="text-sm text-slate-700">
+                Olá, <strong>{knownName.split(/\s+/)[0]}</strong>! Seu número já está confirmado. Falta só o seu CPF para abrir o passaporte.
+              </p>
+            ) : (
+              field(
+                "Nome",
+                <Input
+                  type="text"
+                  autoComplete="given-name"
+                  autoFocus
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Seu nome"
+                  maxLength={80}
+                  required
+                  className={inputClass}
+                />,
+              )
             )}
             {field(
               "CPF",
