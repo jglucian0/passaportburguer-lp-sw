@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "passaportburguer",
+  "main": "worker.ts",
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
+  "observability": { "enabled": true },
+  "r2_buckets": [
+    // Bucket só para o cache do Next (crie com: npx wrangler r2 bucket create passaportburguer-cache)
+    { "binding": "NEXT_INC_CACHE_R2_BUCKET", "bucket_name": "passaportburguer-cache" }
+  ],
+  // Substitui os crons da Vercel (worker.ts chama /api/cron/* com CRON_SECRET; defina APP_URL como var)
+  "triggers": { "crons": ["*/5 * * * *", "0 8 * * *"] }
+}
