@@ -143,6 +143,25 @@ export async function notifyOfflineOrderPlaced(orderId: string): Promise<void> {
   }
 }
 
+/** Pedido de retirada / consumo no local ficou pronto (painel, KDS ou Saipos). */
+export async function notifyReadyForPickup(orderId: string): Promise<void> {
+  try {
+    const chat = await findChat(orderId);
+    if (!chat || chat.order.deliveryType !== "PICKUP" || chat.order.status !== "READY_FOR_PICKUP") return;
+    const text = `Seu pedido ${orderLabel(chat.order.orderNumber)} está pronto! 🍔 Pode vir retirar no balcão do Passaporte Burguer.`;
+    const key = `notif:${orderId}:ready`;
+    if (!(await claimNotification(chat.session.phone, key, text))) return;
+    try {
+      await sendTextMessage(chat.session.phone, text);
+    } catch (error) {
+      await db.delete(whatsappMessages).where(eq(whatsappMessages.wamid, key)).catch(() => undefined);
+      throw error;
+    }
+  } catch (error) {
+    console.error("[whatsapp-notify] falha (pronto para retirada):", errorSummary(error));
+  }
+}
+
 /** Pedido saiu para entrega (painel ou Saipos). */
 export async function notifyOutForDelivery(orderId: string): Promise<void> {
   try {

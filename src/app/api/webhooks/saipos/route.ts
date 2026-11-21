@@ -6,7 +6,7 @@ import { after, NextResponse, type NextRequest } from "next/server";
 import type { DeliveryType, OrderStatus } from "@/core/schemas/common";
 import { db } from "@/infra/db";
 import { orders } from "@/infra/db/schema";
-import { notifyOutForDelivery } from "@/infra/whatsapp/notifications";
+import { notifyOutForDelivery, notifyReadyForPickup } from "@/infra/whatsapp/notifications";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -170,6 +170,9 @@ export async function POST(request: NextRequest) {
 
   if (updated.length > 0 && target === "OUT_FOR_DELIVERY") {
     after(() => notifyOutForDelivery(order.id));
+  }
+  if (updated.length > 0 && target === "READY_FOR_PICKUP") {
+    after(() => notifyReadyForPickup(order.id));
   }
 
   return NextResponse.json({ ok: true, updated: updated.length });

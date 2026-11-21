@@ -13,7 +13,7 @@ vi.mock("./client", () => ({ sendTextMessage: wa.text, sendCtaUrlButton: wa.cta 
 
 import { customerAddresses, customers, orders, whatsappMessages, whatsappSessions } from "@/infra/db/schema";
 
-import { notifyOutForDelivery, notifyPaymentConfirmed } from "./notifications";
+import { notifyOutForDelivery, notifyPaymentConfirmed, notifyReadyForPickup } from "./notifications";
 
 const ORDER = "11111111-1111-4111-8111-111111111111";
 const SESSION_PHONE = "554399999999"; // a Meta entregou sem o 9º dígito
@@ -112,6 +112,22 @@ describe("notifyPaymentConfirmed", () => {
     await expect(notifyPaymentConfirmed(ORDER)).resolves.toBeUndefined();
     expect(f.ctx.writes.some((w) => w.op === "delete" && w.table === whatsappMessages)).toBe(true);
     expect(wa.cta).not.toHaveBeenCalled();
+  });
+});
+
+describe("notifyReadyForPickup", () => {
+  it("avisa quando a retirada está pronta", async () => {
+    f.ctx.rows.set(orders, order({ deliveryType: "PICKUP", status: "READY_FOR_PICKUP" }));
+    await notifyReadyForPickup(ORDER);
+    expect(wa.text).toHaveBeenCalledWith(SESSION_PHONE, expect.stringContaining("#1234 está pronto"));
+  });
+
+  it("não avisa em entrega nem fora de READY_FOR_PICKUP", async () => {
+    f.ctx.rows.set(orders, order({ deliveryType: "DELIVERY", status: "READY_FOR_PICKUP" }));
+    await notifyReadyForPickup(ORDER);
+    f.ctx.rows.set(orders, order({ deliveryType: "PICKUP", status: "PREPARING" }));
+    await notifyReadyForPickup(ORDER);
+    expect(wa.text).not.toHaveBeenCalled();
   });
 });
 

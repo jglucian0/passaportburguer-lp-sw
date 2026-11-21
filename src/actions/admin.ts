@@ -6,7 +6,7 @@ import { revalidateTag } from "next/cache";
 import { after } from "next/server";
 import { z } from "zod";
 
-import { notifyOutForDelivery } from "@/infra/whatsapp/notifications";
+import { notifyOutForDelivery, notifyReadyForPickup } from "@/infra/whatsapp/notifications";
 import { sendOrderToSaipos } from "@/lib/saipos";
 
 import {
@@ -250,6 +250,9 @@ export async function advanceOrder(input: unknown): Promise<ActionResult<{ statu
 
     if (next === "OUT_FOR_DELIVERY") {
       after(() => notifyOutForDelivery(order.id));
+    }
+    if (next === "READY_FOR_PICKUP") {
+      after(() => notifyReadyForPickup(order.id));
     }
 
     // Pedido entregue: garante as milhas (cobre pagamento na entrega e liberação manual; idempotente).
